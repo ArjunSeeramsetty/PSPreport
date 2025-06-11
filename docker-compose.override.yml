@@ -1,0 +1,22 @@
+# docker-compose.override.yml - Simpler "Sidecar" Approach
+
+services:
+  # We only define the new service we want to add.
+  # We DO NOT touch the existing scheduler or webserver services.
+  selenium-chrome:
+    image: selenium/standalone-chrome:latest
+    container_name: selenium_chrome
+    shm_size: 2g
+    # This is the key: This container will share the same network
+    # stack as the scheduler. It's as if they are the same machine.
+    network_mode: "service:scheduler"
+
+  scheduler:
+    environment:
+      - JAVA_HOME=/usr/lib/jvm/default-java
+      - LD_LIBRARY_PATH=/usr/lib/jvm/java-17-openjdk-amd64/lib/server
+
+    volumes:
+      # This maps the './data' folder on your computer to the
+      # '/usr/local/airflow/data' folder inside the container.
+      - ./data:/usr/local/airflow/data
