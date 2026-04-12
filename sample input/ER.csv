@@ -1,2 +1,0 @@
-Date,Evening Peak (MW),Peak Shortage (MW),Energy Met (MU),Hydro Gen (MU),Wind Gen (MU),Solar Gen (MU)*,Energy Shortage (MU),Maximum Demand (MW),Max Demand Timestamp,Import Scheduled (MU),Import Actual (MU),OD/UD (MU),Central Outage (MW),State Outage (MW),Total Outage (MW),Coal (MU),Lignite (MU),Hydro (MU),Nuclear (MU),"Gas, Naptha & Diesel (MU)","RES (Wind, Solar, Biomass & Others) (MU)",Total (MU),RE Share (%),Non-fossil Share (%)
-4/19/2025,26838,0,548.02,29.73,-,3.43,0.07568,27140,20:59,-92.03,-90.56,1.47,2638,1569,4207,698.44,0,29.73,0,0,5.14,733.31,0.700931393,4.7551513

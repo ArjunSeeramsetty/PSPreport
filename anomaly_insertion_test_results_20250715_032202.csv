@@ -1,7 +1,0 @@
-test_case,period,issue,description,pdf_path,success,error,tables_extracted,tables_processed
-1,2025-26,COUNT_CHANGE,Latest period with count change issues,Output/NLDC_PSP_URLS/2025-26/APRIL/reports/20.04.25_NLDC_PSP.pdf,True,,N/A,N/A
-2,2025-26,COUNT_CHANGE,Latest period with count change issues,Output/NLDC_PSP_URLS/2025-26/APRIL/reports/19.04.25_NLDC_PSP.pdf,True,,N/A,N/A
-3,2024-25,MISSING_TABLES,Recent period with missing tables,Output/NLDC_PSP_URLS/2024-25/OCTOBER/reports/22.10.24_NLDC_PSP.pdf,True,,N/A,N/A
-4,2024-25,MISSING_TABLES,Recent period with missing tables,Output/NLDC_PSP_URLS/2024-25/MAY/reports/31.05.24_NLDC_PSP.pdf,True,,N/A,N/A
-5,2023-24,MISSING_TABLES,Older period with different layout,Output/NLDC_PSP_URLS/2023-24/SEPTEMBER/reports/30.09.23_NLDC_PSP.pdf,True,,N/A,N/A
-6,2023-24,MISSING_TABLES,Older period with different layout,Output/NLDC_PSP_URLS/2023-24/MAY/reports/31.05.23_NLDC_PSP.pdf,True,,N/A,N/A
