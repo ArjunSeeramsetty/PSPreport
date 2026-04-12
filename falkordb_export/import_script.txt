@@ -1,0 +1,43 @@
+# FalkorDB Import Script for Power System Knowledge Graph
+
+# Set the database
+USE power_system_graph;
+
+# Load schema
+SOURCE falkordb_schema.txt;
+
+# Import nodes
+LOAD CSV FROM 'nodes.csv' AS row
+CREATE (n:Node {
+    id: toInteger(row.id),
+    labels: row.labels
+});
+
+# Import relationships
+LOAD CSV FROM 'relationships.csv' AS row
+MATCH (a:Node {id: toInteger(row.source_id)})
+MATCH (b:Node {id: toInteger(row.target_id)})
+CREATE (a)-[r:RELATIONSHIP {
+    type: row.type
+}]->(b);
+
+# Create proper node labels
+MATCH (n:Node)
+WITH n, split(n.labels, ';') as labels
+UNWIND labels as label
+CALL apoc.create.addLabels([n], [label]) YIELD node
+RETURN count(node);
+
+# Create proper relationship types
+MATCH ()-[r:RELATIONSHIP]->()
+WITH r, r.type as rel_type
+CALL apoc.refactor.setType(r, rel_type) YIELD input, output
+RETURN count(output);
+
+# Remove temporary nodes and relationships
+MATCH (n:Node) DETACH DELETE n;
+MATCH ()-[r:RELATIONSHIP]-() DELETE r;
+
+# Verify import
+MATCH (n) RETURN labels(n) as labels, count(n) as count ORDER BY count DESC;
+MATCH ()-[r]->() RETURN type(r) as type, count(r) as count ORDER BY count DESC;

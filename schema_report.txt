@@ -1,0 +1,314 @@
+POWERFLOW DATABASE - STAR SCHEMA REPORT
+==================================================
+
+Generated on: 2025-07-15 23:30:58
+
+SUMMARY STATISTICS:
+• Total Tables: 20
+• Fact Tables: 8
+• Dimension Tables: 12
+• Total Columns: 123
+• Total Relationships: 27
+
+FACT TABLES:
+--------------------
+
+FactAllIndiaDailySummary:
+  Columns (31):
+    • DateID: INTEGER (PK) (FK)
+    • RegionID: INTEGER (PK) (FK)
+    • EveningPeakDemandMet: REAL
+    • PeakShortage: REAL
+    • EnergyMet: REAL
+    • EnergyShortage: REAL
+    • MaxDemandSCADA: REAL
+    • TimeOfMaxDemandMet: TEXT
+    • ScheduleDrawal: REAL
+    • ActualDrawal: REAL
+    • OverUnderDrawal: REAL
+    • CentralSectorOutage: REAL
+    • StateSectorOutage: REAL
+    • TotalOutage: REAL
+    • ShareRESInTotalGeneration: REAL
+    • ShareNonFossilInTotalGeneration: REAL
+    • FrequencyViolationIndex: REAL
+    • DurationFrequencyBelow49_7: REAL
+    • DurationFrequency_49_7_to_49_8: REAL
+    • DurationFrequency_49_8_to_49_9: REAL
+    • DurationFrequencyBelow49_9: REAL
+    • DurationFrequency_49_9_to_50_05: REAL
+    • DurationFrequencyAbove50_05: REAL
+    • RegionDDF: REAL
+    • StatesDDF: REAL
+    • SolarHRMaxDemand: REAL
+    • SolarHRMaxDemandTime: TEXT
+    • SolarHRShortage: REAL
+    • NonSolarHRMaxDemand: REAL
+    • NonSolarHRMaxDemandTime: TEXT
+    • NonSolarHRShortage: REAL
+  Foreign Keys (2):
+    • RegionID -> DimRegions.RegionID
+    • DateID -> DimDates.DateID
+
+
+FactDailyGenerationBreakdown:
+  Columns (4):
+    • DateID: INTEGER (PK) (FK)
+    • RegionID: INTEGER (PK) (FK)
+    • GenerationSourceID: INTEGER (PK) (FK)
+    • GenerationAmount: REAL
+  Foreign Keys (3):
+    • GenerationSourceID -> DimGenerationSources.GenerationSourceID
+    • DateID -> FactAllIndiaDailySummary.DateID
+    • RegionID -> FactAllIndiaDailySummary.RegionID
+
+
+FactStateDailyEnergy:
+  Columns (9):
+    • DateID: INTEGER (PK) (FK)
+    • StateID: INTEGER (PK) (FK)
+    • MaximumDemand: REAL
+    • Shortage: REAL
+    • EnergyMet: REAL
+    • DrawalSchedule: REAL
+    • OverUnderDrawal: REAL
+    • MaxOverDrawal: REAL
+    • EnergyShortage: REAL
+  Foreign Keys (2):
+    • StateID -> DimStates.StateID
+    • DateID -> DimDates.DateID
+
+
+FactTransmissionLinkFlow:
+  Columns (8):
+    • DateID: INTEGER (PK) (FK)
+    • LineID: INTEGER (PK) (FK)
+    • Inter_Region: TEXT (PK)
+    • MaxImport: REAL
+    • MaxExport: REAL
+    • ImportEnergy: REAL
+    • ExportEnergy: REAL
+    • NetImportEnergy: REAL
+  Foreign Keys (2):
+    • LineID -> DimTransmissionLines.LineID
+    • DateID -> DimDates.DateID
+
+
+FactInternationalTransmissionLinkFlow:
+  Columns (9):
+    • DateID: INTEGER (PK) (FK)
+    • LineID: INTEGER (PK) (FK)
+    • CountryID: INTEGER (FK)
+    • StateID: INTEGER (FK)
+    • RegionID: INTEGER (FK)
+    • MaxLoading: REAL
+    • MinLoading: REAL
+    • AvgLoading: REAL
+    • EnergyExchanged: REAL
+  Foreign Keys (5):
+    • RegionID -> DimRegions.RegionID
+    • StateID -> DimStates.StateID
+    • CountryID -> DimCountries.CountryID
+    • LineID -> DimTransmissionLines.LineID
+    • DateID -> DimDates.DateID
+
+
+FactTransnationalExchangeDetail:
+  Columns (5):
+    • DateID: INTEGER (PK) (FK)
+    • CountryID: INTEGER (PK) (FK)
+    • MechanismID: INTEGER (PK) (FK)
+    • ExchangeDirection: TEXT (PK)
+    • ExchangeValue: REAL
+  Foreign Keys (3):
+    • MechanismID -> DimExchangeMechanisms.MechanismID
+    • CountryID -> DimCountries.CountryID
+    • DateID -> DimDates.DateID
+
+
+FactTimeBlockPowerData:
+  Columns (8):
+    • DateID: INTEGER (PK) (FK)
+    • BlockTime: TEXT (PK)
+    • BlockNumber: INTEGER
+    • Frequency: REAL
+    • DemandMet: REAL
+    • NetDemandMet: REAL
+    • TotalGeneration: REAL
+    • NetTransnationalExchange: REAL
+  Foreign Keys (1):
+    • DateID -> DimDates.DateID
+
+
+FactTimeBlockGeneration:
+  Columns (5):
+    • DateID: INTEGER (PK) (FK)
+    • BlockTime: TEXT (PK) (FK)
+    • BlockNumber: INTEGER
+    • GenerationSourceID: INTEGER (PK) (FK)
+    • GenerationOutput: REAL
+  Foreign Keys (3):
+    • GenerationSourceID -> DimGenerationSources.GenerationSourceID
+    • DateID -> FactTimeBlockPowerData.DateID
+    • BlockTime -> FactTimeBlockPowerData.BlockTime
+
+DIMENSION TABLES:
+--------------------
+
+DimUnits:
+  Columns (5):
+    • UnitID: INTEGER (PK)
+    • UnitName: TEXT
+    • UnitSymbol: TEXT
+    • UnitCategory: TEXT
+    • Description: TEXT
+
+
+sqlite_sequence:
+  Columns (2):
+    • name: 
+    • seq: 
+
+
+MetaTableColumnUnits:
+  Columns (5):
+    • TableColumnUnitID: INTEGER (PK)
+    • SchemaName: TEXT
+    • TableName: TEXT
+    • ColumnName: TEXT
+    • UnitID: INTEGER (FK)
+  Foreign Keys (1):
+    • UnitID -> DimUnits.UnitID
+
+
+DimDates:
+  Columns (7):
+    • DateID: INTEGER (PK)
+    • ActualDate: TEXT
+    • DayOfWeek: TEXT
+    • DayOfMonth: INTEGER
+    • Month: INTEGER
+    • Quarter: INTEGER
+    • Year: INTEGER
+
+
+DimRegions:
+  Columns (2):
+    • RegionID: INTEGER (PK)
+    • RegionName: TEXT
+
+
+DimStates:
+  Columns (3):
+    • StateID: INTEGER (PK)
+    • StateName: TEXT
+    • RegionID: INTEGER (FK)
+  Foreign Keys (1):
+    • RegionID -> DimRegions.RegionID
+
+
+DimCountries:
+  Columns (2):
+    • CountryID: INTEGER (PK)
+    • CountryName: TEXT
+
+
+DimGenerationSources:
+  Columns (3):
+    • GenerationSourceID: INTEGER (PK)
+    • SourceName: TEXT
+    • SourceCategory: TEXT
+
+
+DimTransmissionLines:
+  Columns (5):
+    • LineID: INTEGER (PK)
+    • LineIdentifier: TEXT
+    • VoltageLevel_kV: TEXT
+    • NumberOfCircuits: INTEGER
+    • CountryID: INTEGER (FK)
+  Foreign Keys (1):
+    • CountryID -> DimCountries.CountryID
+
+
+DimExchangeMechanisms:
+  Columns (2):
+    • MechanismID: INTEGER (PK)
+    • MechanismName: TEXT
+
+
+DimReports:
+  Columns (4):
+    • DateID: INTEGER (PK) (FK)
+    • ReportName: TEXT (PK)
+    • ReportPath: TEXT
+    • Source: TEXT
+  Foreign Keys (1):
+    • DateID -> DimDates.DateID
+
+
+FactCountryDailyExchange:
+  Columns (4):
+    • DateID: INTEGER (PK) (FK)
+    • CountryID: INTEGER (PK) (FK)
+    • TotalEnergyExchanged: REAL
+    • PeakExchange: REAL
+  Foreign Keys (2):
+    • CountryID -> DimCountries.CountryID
+    • DateID -> DimDates.DateID
+
+RELATIONSHIPS SUMMARY:
+--------------------
+
+MetaTableColumnUnits references:
+  • DimUnits
+
+DimStates references:
+  • DimRegions
+
+DimTransmissionLines references:
+  • DimCountries
+
+DimReports references:
+  • DimDates
+
+FactAllIndiaDailySummary references:
+  • DimRegions
+  • DimDates
+
+FactDailyGenerationBreakdown references:
+  • DimGenerationSources
+  • FactAllIndiaDailySummary
+  • FactAllIndiaDailySummary
+
+FactStateDailyEnergy references:
+  • DimStates
+  • DimDates
+
+FactCountryDailyExchange references:
+  • DimCountries
+  • DimDates
+
+FactTransmissionLinkFlow references:
+  • DimTransmissionLines
+  • DimDates
+
+FactInternationalTransmissionLinkFlow references:
+  • DimRegions
+  • DimStates
+  • DimCountries
+  • DimTransmissionLines
+  • DimDates
+
+FactTransnationalExchangeDetail references:
+  • DimExchangeMechanisms
+  • DimCountries
+  • DimDates
+
+FactTimeBlockPowerData references:
+  • DimDates
+
+FactTimeBlockGeneration references:
+  • DimGenerationSources
+  • FactTimeBlockPowerData
+  • FactTimeBlockPowerData

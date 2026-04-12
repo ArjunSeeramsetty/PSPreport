@@ -1,0 +1,51 @@
+# FalkorDB Schema for Power System Knowledge Graph
+
+# Node Labels
+CREATE NODE LABEL Year (year INTEGER);
+CREATE NODE LABEL Month (year INTEGER, month INTEGER);
+CREATE NODE LABEL Day (date DATE);
+CREATE NODE LABEL Report (name STRING, source STRING, date DATE);
+CREATE NODE LABEL Region (name STRING, type STRING);
+CREATE NODE LABEL State (name STRING, type STRING);
+CREATE NODE LABEL Country (name STRING, type STRING);
+CREATE NODE LABEL Metric (name STRING);
+CREATE NODE LABEL Unit (name STRING);
+CREATE NODE LABEL MetricObservation (entity STRING, metric_name STRING, report_date DATE, time_block STRING, value FLOAT, confidence FLOAT, unit STRING, reported_at DATETIME);
+CREATE NODE LABEL TimeBlock (time STRING, block_number INTEGER, hour INTEGER, minute INTEGER, is_peak_hour BOOLEAN, time_category STRING);
+CREATE NODE LABEL ExchangeMechanism (name STRING);
+CREATE NODE LABEL GenerationSource (name STRING, category STRING);
+CREATE NODE LABEL PowerLine (line_identifier STRING, date DATE, voltage INTEGER, max_import FLOAT, max_export FLOAT, import_energy FLOAT, export_energy FLOAT, net_import_energy FLOAT, report STRING);
+
+# Relationship Types
+CREATE EDGE TYPE HAS_MONTH;
+CREATE EDGE TYPE HAS_DAY;
+CREATE EDGE TYPE FOR_DAY;
+CREATE EDGE TYPE HAS_OBSERVATION;
+CREATE EDGE TYPE APPLIES_TO;
+CREATE EDGE TYPE IS_METRIC;
+CREATE EDGE TYPE IN_REGION;
+CREATE EDGE TYPE IN_COUNTRY;
+CREATE EDGE TYPE HAS_UNIT;
+CREATE EDGE TYPE NEXT;
+CREATE EDGE TYPE NEXT_DAY;
+CREATE EDGE TYPE EXCHANGED_POWER_WITH;
+CREATE EDGE TYPE HAS_DATA_FOR_BLOCK;
+CREATE EDGE TYPE GENERATED_FROM;
+CREATE EDGE TYPE HAS_GENERATION_SOURCE;
+CREATE EDGE TYPE CONNECTS_TO;
+CREATE EDGE TYPE REPORTS_POWERLINE;
+CREATE EDGE TYPE IN_QUARTER;
+CREATE EDGE TYPE IN_YEAR;
+
+# Indexes for Performance
+CREATE INDEX ON :Year(year);
+CREATE INDEX ON :Month(year, month);
+CREATE INDEX ON :Day(date);
+CREATE INDEX ON :Report(name);
+CREATE INDEX ON :Region(name);
+CREATE INDEX ON :State(name);
+CREATE INDEX ON :Country(name);
+CREATE INDEX ON :Metric(name);
+CREATE INDEX ON :MetricObservation(entity, metric_name, report_date);
+CREATE INDEX ON :TimeBlock(time);
+CREATE INDEX ON :PowerLine(line_identifier, date);

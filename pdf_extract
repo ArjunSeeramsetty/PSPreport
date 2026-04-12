@@ -1,0 +1,206 @@
+import tabula
+import pandas as pd
+import os
+from PyPDF2 import PdfReader
+from datetime import datetime
+
+def create_output_directory():
+    """Create output directory if it doesn't exist"""
+    if not os.path.exists("sample output"):
+        os.makedirs("sample output")
+
+def clean_column_name(col):
+    """Clean individual column name"""
+    if pd.isna(col):
+        return ""
+    return str(col).strip().replace('\r', ' ').replace('\n', ' ')
+
+def make_header(table):
+    """Identify and set proper headers for tables"""
+    list_of_words = [
+        "date", "time", "frequency", "demand", "nuclear", "wind", "solar", 
+        "hydro", "gas", "thermal", "region", "state", "import", "export"
+    ]
+    
+    for i in range(len(table)):
+        for j in range(len(table.columns)):
+            cell = table.iloc[i, j]
+            try:
+                if pd.notna(cell) and any(word in str(cell).lower() for word in list_of_words):
+                    # Clean and make column names unique
+                    new_cols = []
+                    seen_cols = set()
+                    for idx, col in enumerate(table.iloc[i]):
+                        clean_col = clean_column_name(col)
+                        if not clean_col or clean_col in seen_cols:
+                            clean_col = f"Column_{idx}"
+                        seen_cols.add(clean_col)
+                        new_cols.append(clean_col)
+                    
+                    table.columns = new_cols
+                    table = table.iloc[i+1:]
+                    table.reset_index(drop=True, inplace=True)
+                    return table
+            except:
+                continue
+    return table
+
+def clean_table(table):
+    """Clean and process table data"""
+    # Remove empty rows and columns
+    table = table.dropna(how='all').dropna(axis=1, how='all')
+    
+    # Clean column names and ensure uniqueness
+    seen_cols = set()
+    new_cols = []
+    for idx, col in enumerate(table.columns):
+        clean_col = clean_column_name(col)
+        if not clean_col or clean_col in seen_cols:
+            clean_col = f"Column_{idx}"
+        seen_cols.add(clean_col)
+        new_cols.append(clean_col)
+    
+    table.columns = new_cols
+    
+    # Convert numeric columns
+    for col in table.columns:
+        try:
+            table[col] = pd.to_numeric(table[col], errors='coerce')
+            if table[col].notna().any():
+                table[col] = table[col].round(2)
+        except:
+            continue
+    
+    return table
+
+def identify_table_type(table):
+    """Identify the type of table based on its content"""
+    if table.empty:
+        return None
+    
+    # Get the first few rows as string for analysis
+    table_str = ' '.join([str(val) for val in table.iloc[0:3].values.flatten()]).lower()
+    
+    # Try to identify table type from content
+    identifiers = {
+        'time': 'Block-wise',
+        'frequency': 'Frequency',
+        'demand': 'Demand',
+        'nuclear': 'Generation',
+        'wind': 'Renewable',
+        'solar': 'Renewable',
+        'hydro': 'Generation',
+        'thermal': 'Generation',
+        'import': 'Exchange',
+        'export': 'Exchange',
+        'bhutan': 'International',
+        'nepal': 'International',
+        'bangladesh': 'International',
+        'state': 'State-wise',
+        'region': 'Regional'
+    }
+    
+    # Count occurrences of each identifier
+    type_scores = {}
+    for key, category in identifiers.items():
+        if key in table_str:
+            type_scores[category] = type_scores.get(category, 0) + 1
+    
+    # Return the category with highest score, or None if no identifiers found
+    if type_scores:
+        return max(type_scores.items(), key=lambda x: x[1])[0]
+    return 'Other'
+
+def extract_and_process_tables():
+    """Extract and process tables from PDF"""
+    pdf_path = "sample input/19.04.25_NLDC_PSP.pdf"
+    reader = PdfReader(pdf_path)
+    num_pages = len(reader.pages)
+    
+    # Dictionary to store processed tables (will grow dynamically)
+    processed_tables = {}
+    
+    print(f"Processing {num_pages} pages...")
+    
+    for page in range(1, num_pages + 1):
+        try:
+            tables = tabula.read_pdf(
+                pdf_path,
+                pages=page,
+                multiple_tables=True,
+                guess=True,
+                lattice=True,
+                stream=True
+            )
+            
+            for table_idx, table in enumerate(tables):
+                if isinstance(table, pd.DataFrame) and table.shape[0] > 1 and table.shape[1] > 1:
+                    table = make_header(table)
+                    table = clean_table(table)
+                    
+                    # Identify table type
+                    table_type = identify_table_type(table)
+                    
+                    # Initialize list for this table type if not exists
+                    if table_type not in processed_tables:
+                        processed_tables[table_type] = []
+                    
+                    table_with_metadata = {
+                        'data': table,
+                        'metadata': {
+                            'page_number': page,
+                            'table_number': table_idx + 1,
+                            'extraction_date': datetime.now().strftime('%Y-%m-%d'),
+                            'source_file': pdf_path
+                        }
+                    }
+                    processed_tables[table_type].append(table_with_metadata)
+            
+            print(f"Processed page {page}")
+            
+        except Exception as e:
+            print(f"Error processing page {page}: {str(e)}")
+    
+    # Print summary of found table types
+    print("\nFound table types:")
+    for table_type, tables in processed_tables.items():
+        print(f"{table_type}: {len(tables)} tables")
+    
+    return processed_tables
+
+def save_processed_tables(processed_tables):
+    """Save processed tables to CSV files"""
+    create_output_directory()
+    
+    for table_type, tables in processed_tables.items():
+        if tables:
+            try:
+                # Create a subfolder for each table type
+                type_folder = os.path.join("sample output", table_type.replace(" ", "_"))
+                if not os.path.exists(type_folder):
+                    os.makedirs(type_folder)
+                
+                # Save individual tables
+                for idx, table_data in enumerate(tables):
+                    output_path = os.path.join(type_folder, f"table_{idx+1}.csv")
+                    table_data['data'].to_csv(output_path, index=False)
+                    print(f"Saved {output_path}")
+                
+                # Also create a combined file if there are multiple tables
+                if len(tables) > 1:
+                    combined_table = pd.concat([t['data'] for t in tables], ignore_index=True)
+                    combined_path = os.path.join(type_folder, "combined.csv")
+                    combined_table.to_csv(combined_path, index=False)
+                    print(f"Saved combined file: {combined_path}")
+                    
+            except Exception as e:
+                print(f"Error saving {table_type} tables: {str(e)}")
+
+def main():
+    print("Starting table extraction and processing...")
+    processed_tables = extract_and_process_tables()
+    save_processed_tables(processed_tables)
+    print("Processing completed!")
+
+if __name__ == "__main__":
+    main()

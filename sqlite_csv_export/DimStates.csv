@@ -1,0 +1,40 @@
+StateID,StateName,RegionID
+1,Punjab,1
+2,Haryana,1
+3,Rajasthan,1
+4,Delhi,1
+5,UP,1
+6,Uttarakhand,1
+7,HP,1
+8,J&K(UT) & Ladakh(UT),1
+9,Chandigarh,1
+10,Railways_NR ISTS,1
+11,Chhattisgarh,2
+12,Gujarat,2
+13,MP,2
+14,Maharashtra,2
+15,Goa,2
+16,DNHDDPDCL,2
+17,AMNSIL,2
+18,BALCO,2
+19,RIL JAMNAGAR,2
+20,Andhra Pradesh,3
+21,Telangana,3
+22,Karnataka,3
+23,Kerala,3
+24,Tamil Nadu,3
+25,Puducherry,3
+26,Bihar,4
+27,DVC,4
+28,Jharkhand,4
+29,Odisha,4
+30,West Bengal,4
+31,Sikkim,4
+32,Railways_ER ISTS,4
+33,Arunachal Pradesh,5
+34,Assam,5
+35,Manipur,5
+36,Meghalaya,5
+37,Mizoram,5
+38,Nagaland,5
+39,Tripura,5

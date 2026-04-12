@@ -1,0 +1,10 @@
+UnitID,UnitName,UnitSymbol,UnitCategory,Description
+1,MegaWatts,MW,Power,Standard unit of active power
+2,Million Units,MU,Energy,"1 MU = 1 GWh, Standard unit of energy"
+3,Hertz,Hz,Frequency,Standard unit of electrical frequency
+4,Percent,%,Ratio,Dimensionless unit for ratios or shares
+5,Kilovolt,kV,Voltage,Unit of electrical potential
+6,Index,Index,Index,Dimensionless index value
+7,Hours,hrs,TimeDuration,Unit of time duration
+8,Count,Count,Count,Simple count of items
+9,Time,HH:MM:SS,Time,Time in hours:minutes:seconds format
