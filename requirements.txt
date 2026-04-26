@@ -1,8 +1,19 @@
-# Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
-bs4
-selenium
+beautifulsoup4
+httpx
+pandas
+pyarrow
 tabula-py
 JPype1
 PyPDF2
-pyarrow
-webdriver-manager
+pdfplumber
+camelot-py
+openpyxl
+python-dotenv
+psycopg[binary]
+neo4j
+minio
+playwright
+fuzzywuzzy
+python-Levenshtein
+pytest
+apache-airflow==2.10.0

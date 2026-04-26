@@ -1,0 +1,75 @@
+sources:
+  - id: srldc_daily_reports
+    domain: RLDC
+    region: SR
+    report_family: daily_psp
+    url: https://www.srldc.in/Daily-Reports
+    access_mode: public
+  - id: nrldc_portal
+    domain: RLDC
+    region: NR
+    report_family: daily_weekly_monthly_psp
+    url: https://www.nrldc.in/
+    access_mode: public
+  - id: nerldc_psp
+    domain: RLDC
+    region: NER
+    report_family: daily_weekly_monthly_psp
+    url: https://www.nerldc.in/power-supply-position-psp-report/
+    access_mode: public
+  - id: wrl_dc_reports
+    domain: RLDC
+    region: WR
+    report_family: psp_tripping
+    url: https://www.wrldc.in/
+    access_mode: public
+  - id: erldc_js_portal
+    domain: RLDC
+    region: ER
+    report_family: psp_outage_constraints
+    url: https://erldc.in/
+    access_mode: public
+  - id: erpc_commercial
+    domain: RPC
+    region: ER
+    report_family: rea_dsm_reactive_as
+    url: https://erpc.gov.in/en/commercial/
+    access_mode: public
+  - id: nrpc_commercial
+    domain: RPC
+    region: NR
+    report_family: rea_dsm
+    url: https://www.nrpc.gov.in/
+    access_mode: public
+  - id: srpc_uploads
+    domain: RPC
+    region: SR
+    report_family: rea_dsm
+    url: https://www.srpc.kar.nic.in/html/recent_uploads.html
+    access_mode: public
+  - id: wrpc_portal
+    domain: RPC
+    region: WR
+    report_family: rea_dsm_rta_rtda
+    url: https://www.wrpc.gov.in/
+    access_mode: public
+  - id: nerpc_uploads
+    domain: RPC
+    region: NER
+    report_family: rea_dsm
+    url: https://nerpc.gov.in/
+    access_mode: public
+  - id: grid_india_national
+    domain: NLDC
+    region: NATIONAL
+    report_family: daily_psp_interregional_ttc_atc
+    url: https://www.grid-india.in/
+    access_mode: public
+  - id: wbes_national
+    domain: WBES
+    region: ALL
+    report_family: 15min_schedule_actual
+    url: https://newwbes.grid-india.in/
+    access_mode: controlled
+    notes: Requires credential and likely allowlist.
+
