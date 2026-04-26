@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterable, List
+
+import yaml
 
 from .contracts import SourceDefinition
 
@@ -165,3 +168,39 @@ def filter_sources(
         return list(sources)
     return [s for s in sources if s.access_mode == "public"]
 
+
+def load_sources_from_yaml(config_path: Path) -> List[SourceDefinition]:
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    items = data.get("sources", [])
+    sources: List[SourceDefinition] = []
+    for item in items:
+        sources.append(
+            SourceDefinition(
+                source_id=item["id"],
+                domain=item["domain"],
+                region=item["region"],
+                report_family=item["report_family"],
+                url=item["url"],
+                fmt=item.get("fmt", "html/pdf/xlsx"),
+                cadence=item.get("cadence", "daily"),
+                access_mode=item.get("access_mode", "public"),
+                notes=item.get("notes", ""),
+            )
+        )
+    return sources
+
+
+def load_sources(config_path: Path | None = None) -> List[SourceDefinition]:
+    """
+    Primary source registry loader.
+    - If YAML exists, use it as source of truth.
+    - Otherwise, fallback to built-in defaults for portability.
+    """
+    if config_path is not None and config_path.exists():
+        return load_sources_from_yaml(config_path)
+
+    default_yaml = Path.cwd() / "config" / "sources.yaml"
+    if default_yaml.exists():
+        return load_sources_from_yaml(default_yaml)
+
+    return load_default_sources()

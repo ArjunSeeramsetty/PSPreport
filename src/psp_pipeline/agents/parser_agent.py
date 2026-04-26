@@ -86,6 +86,8 @@ def _infer_report_type(local_path: str) -> str:
 
 def _infer_region_from_source(source_id: str) -> str:
     sid = source_id.lower()
+    if "ner" in sid:
+        return "NER"
     if "sr" in sid:
         return "SR"
     if "nr" in sid:
@@ -94,7 +96,5 @@ def _infer_region_from_source(source_id: str) -> str:
         return "WR"
     if "er" in sid:
         return "ER"
-    if "ner" in sid:
-        return "NER"
     return "NATIONAL"
 

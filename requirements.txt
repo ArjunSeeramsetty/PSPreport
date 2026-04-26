@@ -9,6 +9,7 @@ pdfplumber
 camelot-py
 openpyxl
 python-dotenv
+PyYAML
 psycopg[binary]
 neo4j
 minio

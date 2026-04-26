@@ -17,6 +17,12 @@ class HttpFetcher:
     def close(self) -> None:
         self.client.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
     def fetch(self, source: SourceDefinition, out_dir: Path) -> Optional[FetchArtifact]:
         response = self.client.get(source.url)
         if response.status_code >= 400:
@@ -24,7 +30,7 @@ class HttpFetcher:
 
         out_dir.mkdir(parents=True, exist_ok=True)
         suffix = _infer_suffix(response.headers.get("content-type", "text/html"))
-        local_path = out_dir / f"{source.source_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
+        local_path = out_dir / f"{source.source_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}{suffix}"
         local_path.write_bytes(response.content)
         digest = hashlib.sha256(response.content).hexdigest()
 

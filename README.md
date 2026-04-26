@@ -50,5 +50,5 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
 - Phase B: credential and compliance onboarding.
 - Phase C+: Playwright login + endpoint catalog + 96-block extraction.
 
-See [`docs/BLOCKERS_AND_SOLUTIONS.md`](/C:/Users/arjun/Desktop/PSPreport/docs/BLOCKERS_AND_SOLUTIONS.md) for known risks and mitigations.
+See [`docs/BLOCKERS_AND_SOLUTIONS.md`](docs/BLOCKERS_AND_SOLUTIONS.md) for known risks and mitigations.
 

@@ -1,23 +1,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict
 from uuid import uuid4
 
 from psp_pipeline.agents.dq_alert_agent import DQAlertAgent
+from psp_pipeline.agents.graph_sync_agent import GraphSyncAgent
 from psp_pipeline.agents.parser_agent import ParserAgent
 from psp_pipeline.agents.report_fetch_agent import ReportFetchAgent
 from psp_pipeline.agents.schema_drift_agent import SchemaDriftAgent
 from psp_pipeline.agents.source_discovery_agent import SourceDiscoveryAgent
 from psp_pipeline.core.settings import AppSettings
 from psp_pipeline.storage.minio_store import MinioRawStore
+from psp_pipeline.storage.neo4j_repo import Neo4jRepository
 from psp_pipeline.storage.postgres_repo import PostgresRepository
 
 
 def run_bronze(settings: AppSettings, *, include_controlled: bool = False) -> Dict[str, int]:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + str(uuid4())[:8]
-    source_agent = SourceDiscoveryAgent()
+    source_agent = SourceDiscoveryAgent(settings.project_root / "config" / "sources.yaml")
     fetch_agent = ReportFetchAgent(raw_dir=settings.project_root / "data" / "raw")
     parser_agent = ParserAgent()
     drift_agent = SchemaDriftAgent()
@@ -45,12 +46,18 @@ def run_bronze(settings: AppSettings, *, include_controlled: bool = False) -> Di
             )
 
     repo = PostgresRepository(settings.postgres_dsn)
-    repo.insert_lineage(lineage)
-    repo.upsert_fact_observations(facts)
+    repo.run_in_transaction(lineage, facts)
+
+    neo4j_repo = Neo4jRepository(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
+    try:
+        graph_agent = GraphSyncAgent(neo4j_repo)
+        graph_agent.run(facts)
+    finally:
+        neo4j_repo.close()
 
     dq_alerts = dq_agent.run(
         drift_result=drift,
-        min_expected_sources=5,
+        min_expected_sources=max(1, len(sources) // 3),
         actual_sources=len({x.source_id for x in artifacts}),
     )
 
@@ -58,8 +65,8 @@ def run_bronze(settings: AppSettings, *, include_controlled: bool = False) -> Di
         "run_id_length": len(run_id),
         "sources_discovered": len(sources),
         "artifacts_fetched": len(artifacts),
+        "artifacts_failed": len(sources) - len(artifacts),
         "lineage_rows": len(lineage),
         "facts_rows": len(facts),
         "dq_alerts": len(dq_alerts),
     }
-

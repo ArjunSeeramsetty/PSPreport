@@ -29,5 +29,4 @@ with DAG(
         python_callable=run_public_pipeline,
     )
 
-    ingest
 
