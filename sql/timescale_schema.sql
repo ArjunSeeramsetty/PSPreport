@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS fact_observation (
     ingested_at TIMESTAMPTZ NOT NULL,
     timeseries_uuid UUID NOT NULL DEFAULT gen_random_uuid(),
     PRIMARY KEY (observation_id, ingested_at),
-    UNIQUE (entity_key, metric_name, time_block, valid_from, version_no)
+    UNIQUE (entity_key, metric_name, time_block, valid_from, version_no, ingested_at)
 );
 
 SELECT create_hypertable('fact_observation', by_range('ingested_at'), if_not_exists => TRUE);

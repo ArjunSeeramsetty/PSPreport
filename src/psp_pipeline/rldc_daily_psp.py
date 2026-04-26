@@ -1,0 +1,43 @@
+"""Backward-compatible imports for RLDC daily PSP ingestion."""
+
+from psp_pipeline.pipelines.rldc_daily_psp import (
+    DownloadedReport,
+    LocalReportInput,
+    OcrAssessment,
+    ParsedPspContent,
+    RawCell,
+    RawLine,
+    RawTextItem,
+    RldcSource,
+    TemplateMatch,
+    assess_ocr_need,
+    ensure_sqlite_schema,
+    extract_psp_content,
+    extract_psp_fields,
+    load_rldc_sources,
+    persist_report,
+    run_rldc_daily_psp_collection,
+    run_rldc_local_pdf_ingestion,
+    validate_report_family,
+)
+
+__all__ = [
+    "DownloadedReport",
+    "LocalReportInput",
+    "OcrAssessment",
+    "ParsedPspContent",
+    "RawCell",
+    "RawLine",
+    "RawTextItem",
+    "RldcSource",
+    "TemplateMatch",
+    "assess_ocr_need",
+    "ensure_sqlite_schema",
+    "extract_psp_content",
+    "extract_psp_fields",
+    "load_rldc_sources",
+    "persist_report",
+    "run_rldc_daily_psp_collection",
+    "run_rldc_local_pdf_ingestion",
+    "validate_report_family",
+]

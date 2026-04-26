@@ -14,9 +14,11 @@ class GraphSyncAgent(BaseAgent):
 
     def run(self, facts: Iterable[FactObservation]) -> None:
         for fact in facts:
-            self.repo.merge_entity(
+            self.repo.merge_observation_topology(
                 entity_key=fact.entity_key,
-                entity_type=fact.report_type,
+                report_type=fact.report_type,
+                metric_name=fact.metric_name,
+                source_region=fact.source_region,
                 timeseries_uuid=fact.timeseries_uuid,
+                time_block=fact.time_block,
             )
-

@@ -15,7 +15,10 @@ archive/
 *.sqlite
 *.sqlite3
 *.py[cod]
+downloads/
 data/raw/
+data/sqlite/
 data/wbes_probe/
 logs/
 .pytest_cache/
+.tmp_pytest*/

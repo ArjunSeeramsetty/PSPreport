@@ -1,0 +1,36 @@
+rldc_sources:
+  SRLDC:
+    mode: "adapter"
+    listing_url: "https://www.srldc.in/Daily-Reports"
+    pdf_link_regex: "(?i)psp.*\\.pdf$|\\.pdf$"
+    include_keywords: ["psp", "power supply position"]
+    allow_domains:
+      - "srldc.in"
+  NRLDC:
+    mode: "adapter"
+    listing_url: "https://www.nrldc.in/"
+    pdf_link_regex: "(?i)psp.*\\.pdf$|daily.*report.*\\.pdf$|\\.pdf$"
+    include_keywords: ["psp", "power supply position", "daily"]
+    allow_domains:
+      - "nrldc.in"
+  WRLDC:
+    mode: "generic"
+    listing_url: "https://www.wrldc.in/"
+    pdf_link_regex: "(?i)psp.*\\.pdf$|daily.*report.*\\.pdf$|\\.pdf$"
+    include_keywords: ["psp", "power supply position", "daily"]
+    allow_domains:
+      - "wrldc.in"
+  ERLDC:
+    mode: "generic"
+    listing_url: "https://erldc.in/"
+    pdf_link_regex: "(?i)psp.*\\.pdf$|daily.*report.*\\.pdf$|\\.pdf$"
+    include_keywords: ["psp", "power supply position", "daily"]
+    allow_domains:
+      - "erldc.in"
+  NERLDC:
+    mode: "generic"
+    listing_url: "https://www.nerldc.in/power-supply-position-psp-report/"
+    pdf_link_regex: "(?i)psp.*\\.pdf$|\\.pdf$"
+    include_keywords: ["psp", "power supply position", "daily"]
+    allow_domains:
+      - "nerldc.in"

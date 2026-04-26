@@ -10,4 +10,6 @@ requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
+markers = [
+    "integration: invokes local services or external command-line dependencies",
+]

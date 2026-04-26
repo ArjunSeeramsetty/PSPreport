@@ -17,6 +17,7 @@ This repository now includes a local/open-source-first build for:
   - `dq_alert_agent`
 - Data contracts and source registry (`src/psp_pipeline/models/`)
 - Pipeline flow (`src/psp_pipeline/pipelines/bronze_pipeline.py`)
+- Stage decomposition (`src/psp_pipeline/pipelines/stages.py`)
 - Airflow DAG (`dags/psp_daily_pipeline.py`)
 - Timescale schema (`sql/timescale_schema.sql`)
 - Neo4j constraints (`sql/neo4j_constraints.cypher`)
@@ -51,6 +52,7 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
 ## Airflow
 - UI: `http://localhost:8080`
 - DAG: `psp_daily_public_ingestion`
+- Task-level stages: discover -> fetch -> dedup -> parse -> reconcile -> persist_raw -> persist_sql -> sync_graph -> dq_summary
 
 ## WBES Rollout
 - Phase A: public sources live.
@@ -58,3 +60,9 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
 - Phase C+: Playwright login + endpoint catalog + 96-block extraction.
 
 See [`docs/BLOCKERS_AND_SOLUTIONS.md`](docs/BLOCKERS_AND_SOLUTIONS.md) for known risks and mitigations.
+
+## Neo4j Model
+Neo4j now stores relationship topology for observations:
+- `Region` -> `SourceEntity` -> `TimeSeries` -> `Metric`
+- `SourceEntity` -> `Observation` -> `Metric`
+- `Observation` -> `Region`
