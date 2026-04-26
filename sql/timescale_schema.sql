@@ -50,3 +50,14 @@ ALTER TABLE fact_observation
 SELECT add_compression_policy('fact_observation', INTERVAL '7 days', if_not_exists => TRUE);
 SELECT add_retention_policy('fact_observation', INTERVAL '5 years', if_not_exists => TRUE);
 
+CREATE TABLE IF NOT EXISTS reconciliation_result (
+    reconciliation_id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    entity_key TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    time_block TEXT NULL,
+    variance_pct DOUBLE PRECISION NULL,
+    source_region TEXT NOT NULL,
+    computed_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (run_id, entity_key, metric_name, time_block)
+);

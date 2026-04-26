@@ -31,7 +31,7 @@ def test_filter_sources_includes_controlled_when_enabled():
 
 
 def test_load_sources_reads_yaml_when_present():
-    cfg = Path("config/sources.yaml")
+    cfg = Path(__file__).resolve().parents[1] / "config" / "sources.yaml"
     sources = load_sources(cfg)
     assert len(sources) > 0
     assert any(x.source_id == "wbes_national" for x in sources)

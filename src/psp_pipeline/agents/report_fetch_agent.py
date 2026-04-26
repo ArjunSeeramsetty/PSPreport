@@ -9,13 +9,30 @@ from psp_pipeline.models.contracts import FetchArtifact, SourceDefinition
 
 
 class ReportFetchAgent(BaseAgent):
-    def __init__(self, raw_dir: Path):
+    def __init__(
+        self,
+        raw_dir: Path,
+        *,
+        max_attempts: int = 3,
+        base_delay_seconds: float = 1.0,
+        max_delay_seconds: float = 12.0,
+        jitter_seconds: float = 0.5,
+    ):
         super().__init__("report_fetch_agent")
         self.raw_dir = raw_dir
+        self.max_attempts = max_attempts
+        self.base_delay_seconds = base_delay_seconds
+        self.max_delay_seconds = max_delay_seconds
+        self.jitter_seconds = jitter_seconds
 
     def run(self, sources: Iterable[SourceDefinition]) -> List[FetchArtifact]:
         artifacts: List[FetchArtifact] = []
-        with HttpFetcher() as fetcher:
+        with HttpFetcher(
+            max_attempts=self.max_attempts,
+            base_delay_seconds=self.base_delay_seconds,
+            max_delay_seconds=self.max_delay_seconds,
+            jitter_seconds=self.jitter_seconds,
+        ) as fetcher:
             for source in sources:
                 try:
                     artifact = fetcher.fetch(source, self.raw_dir / source.source_id)

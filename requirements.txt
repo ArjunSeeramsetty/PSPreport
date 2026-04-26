@@ -14,6 +14,7 @@ psycopg[binary]
 neo4j
 minio
 playwright
+tenacity
 fuzzywuzzy
 python-Levenshtein
 pytest

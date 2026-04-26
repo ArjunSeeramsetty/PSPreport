@@ -63,3 +63,13 @@ class FactObservation:
     ingested_at: datetime
     timeseries_uuid: str
 
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    run_id: str
+    entity_key: str
+    metric_name: str
+    time_block: Optional[str]
+    variance_pct: Optional[float]
+    source_region: str
+    computed_at: datetime

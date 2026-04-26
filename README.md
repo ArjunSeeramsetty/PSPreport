@@ -23,6 +23,13 @@ This repository now includes a local/open-source-first build for:
 - Local infra stack (`docker-compose.yml`)
 - WBES probe stub (`scripts/run_wbes_probe.py`)
 
+## Operational Defaults
+- Retry policy: 3 attempts, exponential backoff with jitter (configurable via `.env`).
+- Preflight: HEAD check before GET; validates status and rejects explicit `Content-Length: 0`.
+- Dedup: content-hash dedup against `ingest_lineage` (no separate dedup table).
+- Failure policy: source-level fail-soft (continue with others), tracked via `artifacts_failed`.
+- Reconciliation: variance persisted to `reconciliation_result` and mirrored into `fact_observation.variance_pct`.
+
 ## Source Targets Included
 RLDC: SRLDC, NRLDC, NERLDC, WRLDC, ERLDC  
 RPC: ERPC, NRPC, SRPC, WRPC, NERPC  
@@ -51,4 +58,3 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
 - Phase C+: Playwright login + endpoint catalog + 96-block extraction.
 
 See [`docs/BLOCKERS_AND_SOLUTIONS.md`](docs/BLOCKERS_AND_SOLUTIONS.md) for known risks and mitigations.
-

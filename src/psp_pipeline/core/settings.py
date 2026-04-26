@@ -19,6 +19,10 @@ class AppSettings:
     minio_secure: bool
     wbes_username: str
     wbes_password: str
+    http_max_attempts: int
+    http_base_delay_seconds: float
+    http_max_delay_seconds: float
+    http_jitter_seconds: float
 
 
 def load_settings() -> AppSettings:
@@ -39,5 +43,8 @@ def load_settings() -> AppSettings:
         minio_secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
         wbes_username=os.getenv("WBES_USERNAME", ""),
         wbes_password=os.getenv("WBES_PASSWORD", ""),
+        http_max_attempts=int(os.getenv("HTTP_MAX_ATTEMPTS", "3")),
+        http_base_delay_seconds=float(os.getenv("HTTP_BASE_DELAY_SECONDS", "1.0")),
+        http_max_delay_seconds=float(os.getenv("HTTP_MAX_DELAY_SECONDS", "12.0")),
+        http_jitter_seconds=float(os.getenv("HTTP_JITTER_SECONDS", "0.5")),
     )
-
