@@ -186,7 +186,7 @@ FLAT_7_2023_SRLDCP_TEMPLATE = ReportTemplate(
     table_shapes=(
         TableShape(1, 1, 55, 65, 35, 45, "regional_and_state_combo"),
         TableShape(5, 1, 65, 80, 30, 45, "operations_combo"),
-        TableShape(6, 1, 55, 75, 35, 55, "market_and_events_combo"),
+        TableShape(6, 1, 53, 75, 35, 55, "market_and_events_combo"),
         TableShape(7, 1, 1, 25, 1, 15, "remarks"),
     ),
 )

@@ -12,6 +12,7 @@ SRLDC_FLAT_8_TEMPLATE_ID = "srldc_daily_psp_v2024_flat_08"
 SRLDC_FLAT_8_2025_TEMPLATE_ID = "srldc_daily_psp_v2025_flat_08"
 SRLDC_FLAT_6_2023_TEMPLATE_ID = "srldc_daily_psp_v2023_flat_06"
 SRLDC_FLAT_7_2023_TEMPLATE_ID = "srldc_daily_psp_v2023_flat_07"
+SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID = "srldc_daily_psp_v2024_flat_06_wide_operations"
 SRLDC_TEMPLATE_IDS = (
     SRLDC_TEMPLATE_ID,
     SRLDC_COMPACT_TEMPLATE_ID,
@@ -19,6 +20,7 @@ SRLDC_TEMPLATE_IDS = (
     SRLDC_FLAT_8_2025_TEMPLATE_ID,
     SRLDC_FLAT_6_2023_TEMPLATE_ID,
     SRLDC_FLAT_7_2023_TEMPLATE_ID,
+    SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID,
 )
 
 
@@ -139,6 +141,7 @@ def seed_srldc_schema_registry(conn: sqlite3.Connection) -> None:
             (SRLDC_FLAT_8_2025_TEMPLATE_ID, "2025.flat08", "family:8-pages:8-tables"),
             (SRLDC_FLAT_6_2023_TEMPLATE_ID, "2023.flat06", "family:6-pages:6-tables"),
             (SRLDC_FLAT_7_2023_TEMPLATE_ID, "2023.flat07", "family:7-pages:7-tables"),
+            (SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID, "2024.flat06.wide_operations", "family:6-pages:6-tables:wide-operations"),
         ),
     )
     sections = (
@@ -151,6 +154,7 @@ def seed_srldc_schema_registry(conn: sqlite3.Connection) -> None:
         ("voltage_profile", "Voltage-node daily extrema", "report,date,voltage_node", "FactSRLDCVoltageProfile", "required"),
         ("reservoir_daily", "Reservoir level and energy", "report,date,reservoir", "FactSRLDCReservoirDaily", "optional"),
         ("market_transaction", "Market and open-access transaction", "report,date,mechanism,product,direction", "FactSRLDCMarketTransaction", "optional"),
+        ("regional_market_transaction", "Regional aggregate market and open-access transaction", "report,date,region,mechanism,product,direction", "FactSRLDCRegionalMarketTransaction", "optional"),
         ("operational_event", "Constraint, weather, outage or compliance event", "report,date,event", "FactSRLDCOperationalEvent", "conditional"),
     )
     conn.executemany(
@@ -187,6 +191,14 @@ def seed_srldc_schema_registry(conn: sqlite3.Connection) -> None:
         "state_forecast_deviation_mu", "FactSRLDCStateDaily", "ForecastDeviationMU", "MU",
         "state_load_forecast", "report,date,state"
     ))
+    for canonical, column in (
+        ("regional_maximum_15_minute_block_frequency_hz", "Maximum15MinuteBlockFrequencyHz"),
+        ("regional_minimum_15_minute_block_frequency_hz", "Minimum15MinuteBlockFrequencyHz"),
+    ):
+        _seed_field(conn, ApprovedCellMapping(
+            canonical, "FactSRLDCRegionalDaily", column, "Hz",
+            "frequency_profile", "report,date,region"
+        ))
     for template_id in SRLDC_TEMPLATE_IDS:
         for (_, col_no), mapping in REGIONAL_MAPPINGS.items():
             _seed_mapping(conn, template_id, mapping.canonical_name, 1, 1, "row=3", f"col={col_no}")

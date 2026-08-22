@@ -53,7 +53,9 @@ services:
       - airflow_pg_data:/var/lib/postgresql/data
 
   airflow-init:
-    image: apache/airflow:2.10.0-python3.11
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     container_name: psp_airflow_init
     depends_on:
       - airflow-postgres
@@ -61,6 +63,10 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      PSP_PROJECT_ROOT: /opt/airflow
+      POSTGRES_DSN: postgresql://postgres:postgres@timescaledb:5432/power_kg
+      NEO4J_URI: bolt://neo4j:7687
+      MINIO_ENDPOINT: minio:9000
     entrypoint: >
       /bin/bash -c "
       airflow db migrate &&
@@ -75,42 +81,61 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
+      - ./config:/opt/airflow/config:ro
+      - ./data:/opt/airflow/data
 
   airflow-webserver:
-    image: apache/airflow:2.10.0-python3.11
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     container_name: psp_airflow_webserver
     depends_on:
-      - airflow-init
+      airflow-init:
+        condition: service_completed_successfully
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       PYTHONPATH: /opt/airflow/src
+      PSP_PROJECT_ROOT: /opt/airflow
+      POSTGRES_DSN: postgresql://postgres:postgres@timescaledb:5432/power_kg
+      NEO4J_URI: bolt://neo4j:7687
+      MINIO_ENDPOINT: minio:9000
     command: webserver
     ports:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
+      - ./config:/opt/airflow/config:ro
+      - ./data:/opt/airflow/data
 
   airflow-scheduler:
-    image: apache/airflow:2.10.0-python3.11
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     container_name: psp_airflow_scheduler
     depends_on:
-      - airflow-init
+      airflow-init:
+        condition: service_completed_successfully
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       PYTHONPATH: /opt/airflow/src
+      PSP_PROJECT_ROOT: /opt/airflow
+      POSTGRES_DSN: postgresql://postgres:postgres@timescaledb:5432/power_kg
+      NEO4J_URI: bolt://neo4j:7687
+      MINIO_ENDPOINT: minio:9000
     command: scheduler
     volumes:
       - ./dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
+      - ./config:/opt/airflow/config:ro
+      - ./data:/opt/airflow/data
 
 volumes:
   timescale_data:
   neo4j_data:
   minio_data:
   airflow_pg_data:
-

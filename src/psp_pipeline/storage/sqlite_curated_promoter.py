@@ -14,6 +14,7 @@ from psp_pipeline.schema_design.registry import (
     SRLDC_FLAT_8_TEMPLATE_ID,
     SRLDC_FLAT_8_2025_TEMPLATE_ID,
     SRLDC_FLAT_6_2023_TEMPLATE_ID,
+    SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID,
     SRLDC_FLAT_7_2023_TEMPLATE_ID,
     SRLDC_TEMPLATE_ID,
     SRLDC_TEMPLATE_IDS,
@@ -173,6 +174,81 @@ FLAT_6_2023_GENERATION_TABLE_SCOPES = (
     GenerationScope(RowWindow(4, 1, 51, 60), "regional_generation_totals", None),
 )
 
+FLAT_6_2023_STATE_ENERGY_MAPPINGS = {
+    2: STATE_ENERGY_MAPPINGS[2],
+    4: STATE_ENERGY_MAPPINGS[3],
+    7: STATE_ENERGY_MAPPINGS[4],
+    9: STATE_ENERGY_MAPPINGS[5],
+    11: STATE_ENERGY_MAPPINGS[6],
+    13: STATE_ENERGY_MAPPINGS[7],
+    16: STATE_ENERGY_MAPPINGS[8],
+    21: STATE_ENERGY_MAPPINGS[9],
+    25: STATE_ENERGY_MAPPINGS[10],
+    28: STATE_ENERGY_MAPPINGS[11],
+    31: STATE_ENERGY_MAPPINGS[12],
+    35: STATE_ENERGY_MAPPINGS[13],
+}
+
+FLAT_6_2023_STATE_FORECAST_MAPPINGS = {
+    3: STATE_FORECAST_MAPPINGS[2],
+    5: STATE_FORECAST_MAPPINGS[3],
+    10: STATE_FORECAST_MAPPINGS[4],
+    13: STATE_FORECAST_MAPPINGS[5],
+    17: STATE_FORECAST_MAPPINGS[6],
+    22: STATE_FORECAST_MAPPINGS[7],
+}
+
+FLAT_6_2023_STATE_PEAK_MAPPINGS = {
+    3: STATE_PEAK_MAPPINGS[2],
+    7: STATE_PEAK_MAPPINGS[3],
+    10: STATE_PEAK_MAPPINGS[4],
+    15: STATE_PEAK_MAPPINGS[5],
+    20: STATE_PEAK_MAPPINGS[6],
+    24: STATE_PEAK_MAPPINGS[7],
+    30: STATE_PEAK_MAPPINGS[8],
+    34: STATE_PEAK_MAPPINGS[9],
+}
+
+FLAT_7_2023_STATE_ENERGY_MAPPINGS = {
+    2: STATE_ENERGY_MAPPINGS[2],
+    4: STATE_ENERGY_MAPPINGS[3],
+    8: STATE_ENERGY_MAPPINGS[4],
+    11: STATE_ENERGY_MAPPINGS[5],
+    14: STATE_ENERGY_MAPPINGS[6],
+    17: STATE_ENERGY_MAPPINGS[7],
+    20: STATE_ENERGY_MAPPINGS[8],
+    25: STATE_ENERGY_MAPPINGS[9],
+    29: STATE_ENERGY_MAPPINGS[10],
+    32: STATE_ENERGY_MAPPINGS[11],
+    35: STATE_ENERGY_MAPPINGS[12],
+    39: STATE_ENERGY_MAPPINGS[13],
+}
+
+FLAT_7_2023_STATE_FORECAST_MAPPINGS = {
+    3: STATE_FORECAST_MAPPINGS[2],
+    5: STATE_FORECAST_MAPPINGS[3],
+    11: STATE_FORECAST_MAPPINGS[4],
+    16: STATE_FORECAST_MAPPINGS[5],
+    18: STATE_FORECAST_MAPPINGS[6],
+    24: STATE_FORECAST_MAPPINGS[7],
+    27: STATE_FORECAST_MAPPINGS[8],
+}
+
+FLAT_7_2023_STATE_PEAK_MAPPINGS = {
+    3: STATE_PEAK_MAPPINGS[2],
+    6: STATE_PEAK_MAPPINGS[3],
+    9: STATE_PEAK_MAPPINGS[4],
+    13: STATE_PEAK_MAPPINGS[5],
+    17: STATE_PEAK_MAPPINGS[6],
+    21: STATE_PEAK_MAPPINGS[7],
+    23: STATE_PEAK_MAPPINGS[8],
+    28: STATE_PEAK_MAPPINGS[9],
+    31: STATE_PEAK_MAPPINGS[10],
+    34: STATE_PEAK_MAPPINGS[11],
+    37: STATE_PEAK_MAPPINGS[12],
+    40: STATE_PEAK_MAPPINGS[13],
+}
+
 FLAT_7_2023_GENERATION_TABLE_SCOPES = (
     GenerationScope(RowWindow(1, 1, 39, 61), "state_andhra_pradesh", "Andhra Pradesh"),
     GenerationScope(RowWindow(2, 1, 1, 5), "state_andhra_pradesh", "Andhra Pradesh"),
@@ -181,10 +257,17 @@ FLAT_7_2023_GENERATION_TABLE_SCOPES = (
     GenerationScope(RowWindow(2, 1, 52, 68), "state_kerala", "Kerala"),
     GenerationScope(RowWindow(3, 1, 5, 29), "state_tamil_nadu", "Tamil Nadu"),
     GenerationScope(RowWindow(3, 1, 34, 58), "regional_generation", None),
-    GenerationScope(RowWindow(4, 1, 5, 19), "regional_generation", None),
-    GenerationScope(RowWindow(4, 1, 24, 30), "regional_renewable_wind", None),
-    GenerationScope(RowWindow(4, 1, 35, 68), "regional_renewable_solar", None),
+    # Page 4 changes section breaks between the 2023 and 2024 reports.
+    # Source headings in the rows determine the active fuel bucket.
+    GenerationScope(RowWindow(4, 1, 1, 68), "regional_generation", None),
     GenerationScope(RowWindow(5, 1, 1, 10), "regional_generation_totals", None),
+)
+
+FLAT_6_2024_WIDE_GENERATION_TABLE_SCOPES = (
+    *FLAT_6_2023_GENERATION_TABLE_SCOPES[:-1],
+    GenerationScope(RowWindow(4, 1, 5, 15), "regional_renewable_wind", None),
+    GenerationScope(RowWindow(4, 1, 20, 52), "regional_renewable_solar", None),
+    GenerationScope(RowWindow(4, 1, 54, 63), "regional_generation_totals", None),
 )
 
 
@@ -216,6 +299,8 @@ class SRLDCPromoterLayout:
     market_point_column_maps: tuple[tuple[RowWindow, str, tuple[tuple[int, str], ...]], ...] = ()
     market_energy_columns: tuple[tuple[int, str], ...] | None = None
     market_range_column_maps: tuple[tuple[RowWindow, tuple[tuple[str, int, int], ...]], ...] = ()
+    curtailment_columns: tuple[tuple[str, int, int], ...] | None = None
+    curtailment_reason_column: int = 9
 
 
 def _is_flat_8_layout(layout: SRLDCPromoterLayout) -> bool:
@@ -236,6 +321,22 @@ def _is_flat_2023_layout(layout: SRLDCPromoterLayout) -> bool:
     return layout in {
         SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2023_TEMPLATE_ID],
         SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_7_2023_TEMPLATE_ID],
+        SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID],
+    }
+
+
+def _is_flat_2024_wide_layout(layout: SRLDCPromoterLayout) -> bool:
+    """Return whether the active layout is the April 2024 wide-operations form."""
+
+    return layout == SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID]
+
+
+def _uses_compact_generation_columns(layout: SRLDCPromoterLayout) -> bool:
+    """Return whether a flattened layout omits minimum-generation columns."""
+
+    return layout in {
+        SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2023_TEMPLATE_ID],
+        SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID],
     }
 
 
@@ -359,7 +460,7 @@ SRLDC_PROMOTER_LAYOUTS = {
         schedule_exchange_table=RowWindow(5, 1, 10, 12),
         reservoir_tables=(RowWindow(5, 1, 58, 65),),
         market_point_tables=(),
-        market_energy_table=RowWindow(6, 1, 14, 19),
+        market_energy_table=RowWindow(6, 1, 14, 20),
         market_range_tables=(),
         curtailment_table=RowWindow(6, 1, 44, 43),
         compliance_table=RowWindow(6, 1, 44, 43),
@@ -375,11 +476,11 @@ SRLDC_PROMOTER_LAYOUTS = {
         ),
         schedule_actual_columns=(("TOTAL_ACTUAL", "ActualMU", 30), ("NET_UI", "DeviationMU", 34)),
         market_point_column_maps=(
-            (RowWindow(6, 1, 4, 9), "off_peak", (
+            (RowWindow(6, 1, 4, 10), "off_peak", (
                 (3, "TGNA"), (5, "IEX GDAM"), (7, "IEX DAM"),
                 (10, "IEX RTM"), (12, "PXIL GDAM"), (15, "PXIL DAM"), (17, "PXIL RTM"),
             )),
-            (RowWindow(6, 1, 4, 9), "evening_peak", (
+            (RowWindow(6, 1, 4, 10), "evening_peak", (
                 (20, "TGNA"), (22, "IEX GDAM"), (25, "IEX DAM"),
                 (27, "IEX RTM"), (30, "PXIL GDAM"), (33, "PXIL DAM"), (36, "PXIL RTM"),
             )),
@@ -389,8 +490,8 @@ SRLDC_PROMOTER_LAYOUTS = {
             (22, "DAM"), (27, "RTM"), (33, "TOTAL"),
         ),
         market_range_column_maps=(
-            (RowWindow(6, 1, 24, 29), (("ISGS+GNA", 4, 8), ("TGNA", 13, 19), ("IEX GDAM", 24, 28), ("PXIL GDAM", 33, 36))),
-            (RowWindow(6, 1, 33, 38), (("IEX DAM", 6, 11), ("PXIL DAM", 14, 19), ("IEX RTM", 21, 26), ("PXIL RTM", 29, 34))),
+            (RowWindow(6, 1, 24, 29), (("ISGS+GNA", 4, 8), ("TGNA", 13, 19), ("IEX GDAM", 24, 28), ("PXIL GDAM", 32, 35))),
+            (RowWindow(6, 1, 33, 38), (("IEX DAM", 6, 11), ("PXIL DAM", 14, 18), ("IEX RTM", 21, 26), ("PXIL RTM", 29, 34))),
         ),
     ),
     SRLDC_FLAT_7_2023_TEMPLATE_ID: SRLDCPromoterLayout(
@@ -410,7 +511,7 @@ SRLDC_PROMOTER_LAYOUTS = {
         schedule_exchange_table=RowWindow(5, 1, 34, 36),
         reservoir_tables=(RowWindow(6, 1, 8, 15),),
         market_point_tables=(),
-        market_energy_table=RowWindow(6, 1, 30, 35),
+        market_energy_table=RowWindow(6, 1, 30, 36),
         market_range_tables=(),
         curtailment_table=RowWindow(7, 1, 5, 10),
         compliance_table=RowWindow(7, 1, 12, 11),
@@ -426,11 +527,11 @@ SRLDC_PROMOTER_LAYOUTS = {
         ),
         schedule_actual_columns=(("TOTAL_ACTUAL", "ActualMU", 30), ("NET_UI", "DeviationMU", 34)),
         market_point_column_maps=(
-            (RowWindow(6, 1, 20, 25), "off_peak", (
+            (RowWindow(6, 1, 20, 26), "off_peak", (
                 (3, "TGNA"), (5, "IEX GDAM"), (7, "IEX DAM"),
                 (10, "IEX RTM"), (12, "PXIL GDAM"), (15, "PXIL DAM"), (17, "PXIL RTM"),
             )),
-            (RowWindow(6, 1, 20, 25), "evening_peak", (
+            (RowWindow(6, 1, 20, 26), "evening_peak", (
                 (20, "TGNA"), (22, "IEX GDAM"), (25, "IEX DAM"),
                 (27, "IEX RTM"), (30, "PXIL GDAM"), (33, "PXIL DAM"), (36, "PXIL RTM"),
             )),
@@ -443,6 +544,81 @@ SRLDC_PROMOTER_LAYOUTS = {
             (RowWindow(6, 1, 50, 55), (("ISGS+GNA", 4, 8), ("TGNA", 13, 19), ("IEX GDAM", 24, 28), ("PXIL GDAM", 33, 36))),
             (RowWindow(6, 1, 59, 64), (("IEX DAM", 6, 11), ("PXIL DAM", 14, 19), ("IEX RTM", 21, 26), ("PXIL RTM", 29, 34))),
         ),
+    ),
+    SRLDC_FLAT_6_2024_WIDE_TEMPLATE_ID: SRLDCPromoterLayout(
+        generation_table_scopes=FLAT_6_2024_WIDE_GENERATION_TABLE_SCOPES,
+        regional_summary_window=RowWindow(1, 1, 4, 4),
+        state_energy_window=RowWindow(1, 1, 8, 13),
+        state_forecast_window=RowWindow(1, 1, 18, 23),
+        state_peak_window=RowWindow(1, 1, 28, 33),
+        frequency_band_window=RowWindow(5, 1, 19, 19),
+        frequency_summary_window=RowWindow(5, 1, 23, 23),
+        voltage_tables=(
+            VoltageWindow(RowWindow(5, 1, 30, 39), 220.0),
+            VoltageWindow(RowWindow(5, 1, 43, 46), 765.0),
+        ),
+        physical_exchange_tables=(RowWindow(4, 1, 68, 73), RowWindow(5, 1, 1, 11)),
+        schedule_exchange_table=RowWindow(5, 1, 14, 16),
+        reservoir_tables=(RowWindow(5, 1, 50, 58),),
+        market_point_tables=(),
+        market_energy_table=RowWindow(6, 1, 14, 20),
+        market_range_tables=(),
+        curtailment_table=RowWindow(6, 1, 47, 52),
+        compliance_table=RowWindow(6, 1, 53, 52),
+        annotation_pages=(1, 6),
+        physical_exchange_columns=(
+            ("EveningPeakMW", 4), ("OffPeakMW", 6),
+            ("MaximumImportMW", 8), ("MaximumExportMW", 10),
+            ("ImportEnergyMU", 12), ("ExportEnergyMU", 14), ("NetEnergyMU", 17),
+        ),
+        schedule_exchange_columns=(
+            ("ISGS+URS+GNA", 4), ("TGNA", 10), ("GDAM", 14),
+            ("DAM", 18), ("HPDAM", 23), ("RTM", 29),
+            ("TOTAL_SCHEDULE", 34),
+        ),
+        schedule_actual_columns=(
+            ("TOTAL_ACTUAL", "ActualMU", 40), ("NET_UI", "DeviationMU", 44),
+        ),
+        market_point_column_maps=(
+            (RowWindow(5, 1, 62, 68), "off_peak", (
+                (3, "TGNA"), (7, "IEX GDAM"), (9, "IEX DAM"),
+                (12, "IEX HPDAM"), (16, "IEX RTM"), (19, "PXIL GDAM"),
+                (21, "PXIL DAM"), (26, "PXIL HPDAM"), (30, "PXIL RTM"),
+                (36, "HPX GDAM"), (38, "HPX DAM"), (42, "HPX HPDAM"),
+                (47, "HPX RTM"),
+            )),
+            (RowWindow(6, 1, 4, 10), "evening_peak", (
+                (3, "TGNA"), (5, "IEX GDAM"), (6, "IEX DAM"),
+                (10, "IEX HPDAM"), (13, "IEX RTM"), (15, "PXIL GDAM"),
+                (18, "PXIL DAM"), (21, "PXIL HPDAM"), (25, "PXIL RTM"),
+                (29, "HPX GDAM"), (32, "HPX DAM"), (36, "HPX HPDAM"),
+                (40, "HPX RTM"),
+            )),
+        ),
+        market_energy_columns=(
+            (6, "ISGS+GNA"), (11, "TGNA"), (16, "GDAM"),
+            (20, "DAM"), (26, "HPDAM"), (31, "RTM"), (38, "TOTAL"),
+        ),
+        market_range_column_maps=(
+            (RowWindow(6, 1, 24, 29), (
+                ("ISGS+GNA", 3, 5), ("TGNA", 6, 9),
+                ("IEX GDAM", 12, 14), ("PXIL GDAM", 17, 19),
+                ("HPX GDAM", 23, 27), ("IEX DAM", 30, 34),
+                ("PXIL DAM", 37, 41),
+            )),
+            (RowWindow(6, 1, 33, 38), (
+                ("HPX DAM", 3, 5), ("IEX HPDAM", 6, 9),
+                ("PXIL HPDAM", 12, 14), ("HPX HPDAM", 17, 19),
+                ("IEX RTM", 23, 27), ("PXIL RTM", 30, 34),
+                ("HPX RTM", 37, 41),
+            )),
+        ),
+        curtailment_columns=(
+            ("load_curtailment", 8, 4),
+            ("wind_curtailment", 18, 22),
+            ("solar_curtailment", 28, 33),
+        ),
+        curtailment_reason_column=39,
     ),
 }
 
@@ -506,6 +682,33 @@ def promote_report_to_curated(conn: sqlite3.Connection, report_document_id: int)
         populated_fields,
         validation_failures,
     )
+
+
+def repromote_srldc_reports(conn: sqlite3.Connection) -> dict[str, int]:
+    """Recompute curated SRLDC facts and coverage from persisted raw cells.
+
+    Reports that were intentionally gated for semantic review remain untouched;
+    their stored raw cells and pending schema proposals are preserved.  The
+    caller owns the transaction so a backfill can be committed atomically.
+    """
+
+    reports = conn.execute(
+        """
+        SELECT id, semantic_pass_required, template_id
+        FROM psp_report_document
+        WHERE rldc = 'srldc'
+        ORDER BY report_date, id
+        """
+    ).fetchall()
+    promoted = 0
+    skipped = 0
+    for report_id, semantic_pass_required, template_id in reports:
+        if semantic_pass_required or str(template_id or "") not in SRLDC_TEMPLATE_IDS:
+            skipped += 1
+            continue
+        promote_report_to_curated(conn, int(report_id))
+        promoted += 1
+    return {"reports_total": len(reports), "promoted": promoted, "skipped": skipped}
 
 
 def _layout_for_report(report: dict[str, object]) -> SRLDCPromoterLayout | None:
@@ -666,16 +869,58 @@ def _promote_state_positions(
 
         values: dict[str, object] = {}
         sources: dict[str, int] = {}
-        for col_no, (canonical, column, unit) in STATE_ENERGY_MAPPINGS.items():
+        for col_no, (canonical, column, unit) in _state_energy_mappings(layout).items():
             _assign(values, sources, populated_fields, energy, col_no, canonical, column, unit)
-        for col_no, (canonical, column, unit) in STATE_FORECAST_MAPPINGS.items():
+        for col_no, (canonical, column, unit) in _state_forecast_mappings(layout).items():
             _assign(values, sources, populated_fields, forecast, col_no, canonical, column, unit)
-        for col_no, (canonical, column, unit) in STATE_PEAK_MAPPINGS.items():
+        for col_no, (canonical, column, unit) in _state_peak_mappings(layout).items():
             _assign(values, sources, populated_fields, peak, col_no, canonical, column, unit)
 
-        forecast_value = _cell_float(forecast, 9)
-        deviation = _cell_float(forecast, 10)
-        actual = _cell_float(energy, 12)
+        if _is_flat_8_layout(layout):
+            forecast_value = _cell_float(forecast, 31)
+            deviation = _cell_float(forecast, 37)
+            actual = (
+                forecast_value - deviation
+                if forecast_value is not None and deviation is not None
+                else None
+            )
+            forecast_sources = {
+                "ForecastDemandMU": forecast.get(31),
+                "ForecastDeviationMU": forecast.get(37),
+            }
+        elif _is_flat_6_2023_layout(layout):
+            forecast_value = _cell_float(forecast, 27)
+            deviation = _cell_float(forecast, 33)
+            actual = (
+                forecast_value - deviation
+                if forecast_value is not None and deviation is not None
+                else None
+            )
+            forecast_sources = {
+                "ForecastDemandMU": forecast.get(27),
+                "ForecastDeviationMU": forecast.get(33),
+            }
+        elif _is_flat_7_2023_layout(layout):
+            forecast_value = _cell_float(forecast, 31)
+            deviation = _cell_float(forecast, 37)
+            actual = (
+                forecast_value - deviation
+                if forecast_value is not None and deviation is not None
+                else None
+            )
+            forecast_sources = {
+                "ForecastDemandMU": forecast.get(31),
+                "ForecastDeviationMU": forecast.get(37),
+            }
+        else:
+            forecast_value = _cell_float(forecast, 9)
+            deviation = _cell_float(forecast, 10)
+            actual = _cell_float(energy, 12)
+            forecast_sources = {
+                "ForecastDemandMU": forecast.get(9),
+                "ActualDemandMU": energy.get(12),
+                "ForecastDeviationMU": forecast.get(10),
+            }
         deviation_pct = None
         if forecast_value not in (None, 0) and actual is not None:
             deviation_pct = round(100.0 * (actual - forecast_value) / forecast_value, 4)
@@ -690,11 +935,7 @@ def _promote_state_positions(
                 "ForecastDeviationPct": deviation_pct,
             }
         )
-        for column, source in (
-            ("ForecastDemandMU", forecast.get(9)),
-            ("ActualDemandMU", energy.get(12)),
-            ("ForecastDeviationMU", forecast.get(10)),
-        ):
+        for column, source in forecast_sources.items():
             if source and _to_float(source[1]) is not None:
                 sources[column] = source[0]
         if forecast_value is not None:
@@ -718,6 +959,54 @@ def _promote_state_positions(
                 column, raw_cell_id, mapped_cells
             )
     return validation_failures
+
+
+def _is_flat_6_2023_layout(layout: SRLDCPromoterLayout) -> bool:
+    """Return whether the active layout is the sparse 2023 flat-six family."""
+
+    return layout == SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2023_TEMPLATE_ID]
+
+
+def _is_flat_7_2023_layout(layout: SRLDCPromoterLayout) -> bool:
+    """Return whether the active layout is the sparse 2023 flat-seven family."""
+
+    return layout == SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_7_2023_TEMPLATE_ID]
+
+
+def _state_energy_mappings(
+    layout: SRLDCPromoterLayout,
+) -> dict[int, tuple[str, str, str]]:
+    """Return approved state-energy columns for the active report layout."""
+
+    if _is_flat_6_2023_layout(layout):
+        return FLAT_6_2023_STATE_ENERGY_MAPPINGS
+    if _is_flat_7_2023_layout(layout):
+        return FLAT_7_2023_STATE_ENERGY_MAPPINGS
+    return STATE_ENERGY_MAPPINGS
+
+
+def _state_forecast_mappings(
+    layout: SRLDCPromoterLayout,
+) -> dict[int, tuple[str, str, str]]:
+    """Return approved state demand/forecast columns for the active layout."""
+
+    if _is_flat_6_2023_layout(layout):
+        return FLAT_6_2023_STATE_FORECAST_MAPPINGS
+    if _is_flat_7_2023_layout(layout):
+        return FLAT_7_2023_STATE_FORECAST_MAPPINGS
+    return STATE_FORECAST_MAPPINGS
+
+
+def _state_peak_mappings(
+    layout: SRLDCPromoterLayout,
+) -> dict[int, tuple[str, str, str]]:
+    """Return approved state maximum-demand columns for the active layout."""
+
+    if _is_flat_6_2023_layout(layout):
+        return FLAT_6_2023_STATE_PEAK_MAPPINGS
+    if _is_flat_7_2023_layout(layout):
+        return FLAT_7_2023_STATE_PEAK_MAPPINGS
+    return STATE_PEAK_MAPPINGS
 
 
 def _promote_generation(
@@ -751,15 +1040,18 @@ def _promote_generation(
             continue
         for row in _table_rows_for_window(conn, report_id, scope.window):
             entity_cell = row.get(1)
-            capacity_cell = row.get(2)
+            source_columns = _generation_source_columns(
+                layout, scope.window.page_no, row
+            )
+            capacity_cell = row.get(source_columns["InstalledCapacityMW"])
             entity_name = entity_cell[1].strip() if entity_cell else ""
             capacity = _to_float(capacity_cell[1]) if capacity_cell else None
-            if not entity_name or capacity is None:
-                continue
-            is_total = entity_name.lower().startswith("total ")
             source_name, current_source_name = _classify_generation_source(
                 entity_name, scope.section_name, current_source_name
             )
+            if not entity_name or capacity is None:
+                continue
+            is_total = entity_name.lower().startswith("total ")
             source_id = _lookup_generation_source_id(conn, source_name)
             try:
                 identity = resolve_generation_identity(
@@ -783,18 +1075,9 @@ def _promote_generation(
                 is_total,
                 identity,
             )
-            values = {
-                "InstalledCapacityMW": capacity,
-                "EveningPeakMW": _cell_float(row, 3),
-                "OffPeakMW": _cell_float(row, 4),
-                "DayPeakMW": _cell_float(row, 5),
-                "DayPeakTime": _cell_time(row, 6),
-                "MinimumGenerationMW": _cell_float(row, 7),
-                "MinimumGenerationTime": _cell_time(row, 8),
-                "GrossEnergyMU": _cell_float(row, 9),
-                "NetEnergyMU": _cell_float(row, 10),
-                "AverageMW": _cell_float(row, 11),
-            }
+            values, source_columns = _generation_values_for_layout(
+                row, capacity, layout, scope.window.page_no
+            )
             columns = list(values)
             conn.execute(
                 f"""
@@ -819,7 +1102,7 @@ def _promote_generation(
             )
             if entity_cell:
                 mapped_cells.add(entity_cell[0])
-            for col_no, column in enumerate(columns, start=2):
+            for column, col_no in source_columns.items():
                 raw = row.get(col_no)
                 if raw and values[column] is not None:
                     _insert_lineage(
@@ -835,6 +1118,151 @@ def _promote_generation(
                 if abs(float(average_mw) - expected) > tolerance:
                     validation_failures += 1
     return validation_failures
+
+
+def _generation_values_for_layout(
+    row: dict[int, tuple[int, str]],
+    capacity: float,
+    layout: SRLDCPromoterLayout,
+    page_no: int,
+) -> tuple[dict[str, float | str | None], dict[str, int]]:
+    """Map generation columns for the applicable SRLDC table geometry."""
+
+    source_columns = _generation_source_columns(layout, page_no, row)
+    if _uses_compact_generation_row(layout, page_no, row):
+        return {
+            "InstalledCapacityMW": capacity,
+            "EveningPeakMW": _cell_float(row, source_columns["EveningPeakMW"]),
+            "OffPeakMW": _cell_float(row, source_columns["OffPeakMW"]),
+            "DayPeakMW": _cell_float(row, source_columns["DayPeakMW"]),
+            "DayPeakTime": _cell_time(row, source_columns["DayPeakTime"]),
+            "MinimumGenerationMW": None,
+            "MinimumGenerationTime": None,
+            "GrossEnergyMU": _cell_float(row, source_columns["GrossEnergyMU"]),
+            "NetEnergyMU": _cell_float(row, source_columns["NetEnergyMU"]),
+            "AverageMW": _cell_float(row, source_columns["AverageMW"]),
+        }, source_columns
+
+    return {
+        "InstalledCapacityMW": capacity,
+        "EveningPeakMW": _cell_float(row, source_columns["EveningPeakMW"]),
+        "OffPeakMW": _cell_float(row, source_columns["OffPeakMW"]),
+        "DayPeakMW": _cell_float(row, source_columns["DayPeakMW"]),
+        "DayPeakTime": _cell_time(row, source_columns["DayPeakTime"]),
+        "MinimumGenerationMW": _cell_float(row, source_columns["MinimumGenerationMW"]),
+        "MinimumGenerationTime": _cell_time(row, source_columns["MinimumGenerationTime"]),
+        "GrossEnergyMU": _cell_float(row, source_columns["GrossEnergyMU"]),
+        "NetEnergyMU": _cell_float(row, source_columns["NetEnergyMU"]),
+        "AverageMW": _cell_float(row, source_columns["AverageMW"]),
+    }, source_columns
+
+
+def _generation_source_columns(
+    layout: SRLDCPromoterLayout,
+    page_no: int,
+    row: dict[int, tuple[int, str]],
+) -> dict[str, int]:
+    """Return source columns for one SRLDC generation-table page."""
+
+    if _uses_wide_page_four_generation_columns(layout, page_no, row):
+        return {
+            "InstalledCapacityMW": 3,
+            "EveningPeakMW": 5,
+            "OffPeakMW": 7,
+            "DayPeakMW": 9,
+            "DayPeakTime": 11,
+            "GrossEnergyMU": 13,
+            "NetEnergyMU": 15,
+            "AverageMW": 16,
+        }
+    if _uses_sparse_page_one_generation_columns(layout, page_no, row):
+        return {
+            "InstalledCapacityMW": 10,
+            "EveningPeakMW": 13,
+            "OffPeakMW": 18,
+            "DayPeakMW": 22,
+            "DayPeakTime": 26,
+            "GrossEnergyMU": 29,
+            "NetEnergyMU": 32,
+            "AverageMW": 34,
+        }
+    if _uses_compact_generation_row(layout, page_no, row):
+        return {
+            "InstalledCapacityMW": 2,
+            "EveningPeakMW": 3,
+            "OffPeakMW": 4,
+            "DayPeakMW": 5,
+            "DayPeakTime": 6,
+            "GrossEnergyMU": 7,
+            "NetEnergyMU": 8,
+            "AverageMW": 9,
+        }
+    return {
+        "InstalledCapacityMW": 2,
+        "EveningPeakMW": 3,
+        "OffPeakMW": 4,
+        "DayPeakMW": 5,
+        "DayPeakTime": 6,
+        "MinimumGenerationMW": 7,
+        "MinimumGenerationTime": 8,
+        "GrossEnergyMU": 9,
+        "NetEnergyMU": 10,
+        "AverageMW": 11,
+    }
+
+
+def _uses_wide_page_four_generation_columns(
+    layout: SRLDCPromoterLayout,
+    page_no: int,
+    row: dict[int, tuple[int, str]],
+) -> bool:
+    """Return whether one Page 4 generation row uses interstitial columns."""
+
+    if page_no != 4:
+        return False
+    if layout == SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2023_TEMPLATE_ID]:
+        return True
+    return (
+        layout == SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_7_2023_TEMPLATE_ID]
+        and _cell_float(row, 2) is None
+        and _cell_float(row, 3) is not None
+    )
+
+
+def _uses_sparse_page_one_generation_columns(
+    layout: SRLDCPromoterLayout,
+    page_no: int,
+    row: dict[int, tuple[int, str]],
+) -> bool:
+    """Return whether a flat-06/07 Page 1 row uses sparse station columns."""
+
+    return (
+        page_no == 1
+        and layout in {
+            SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_6_2023_TEMPLATE_ID],
+            SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_7_2023_TEMPLATE_ID],
+        }
+        and _cell_float(row, 10) is not None
+    )
+
+
+def _uses_compact_generation_row(
+    layout: SRLDCPromoterLayout,
+    page_no: int,
+    row: dict[int, tuple[int, str]],
+) -> bool:
+    """Identify a nine-column generation row without minimum-generation fields."""
+
+    if _uses_wide_page_four_generation_columns(layout, page_no, row):
+        return True
+    if _uses_sparse_page_one_generation_columns(layout, page_no, row):
+        return True
+    if _uses_compact_generation_columns(layout):
+        return True
+    if layout != SRLDC_PROMOTER_LAYOUTS[SRLDC_FLAT_7_2023_TEMPLATE_ID]:
+        return False
+    column_eight = row.get(8)
+    return column_eight is not None and _to_float(column_eight[1]) is not None
 
 
 def _promote_frequency(
@@ -854,7 +1282,27 @@ def _promote_frequency(
         return 0
     bands = _table_row_from_window(conn, report_id, layout.frequency_band_window)
     summary = _table_row_from_window(conn, report_id, layout.frequency_summary_window)
-    if _is_flat_2023_layout(layout):
+    if _is_flat_2024_wide_layout(layout):
+        mappings = {
+            "DurationBelow48_80Pct": (bands, 5, _to_float),
+            "DurationBelow49_00Pct": (bands, 8, _to_float),
+            "DurationBelow49_20Pct": (bands, 13, _to_float),
+            "DurationBelow49_50Pct": (bands, 17, _to_float),
+            "DurationBelow49_70Pct": (bands, 21, _to_float),
+            "DurationBelow49_90Pct": (bands, 27, _to_float),
+            "Duration49_90To50_05InclusivePct": (bands, 33, _to_float),
+            "Duration49_90To50_05Pct": (bands, 33, _to_float),
+            "DurationAbove50_00Pct": (bands, 39, _to_float),
+            "DurationAbove50_05Pct": (bands, 43, _to_float),
+            "MaximumFrequencyHz": (summary, 1, _to_float),
+            "MaximumFrequencyTime": (summary, 5, _normalize_time),
+            "MinimumFrequencyHz": (summary, 8, _to_float),
+            "MinimumFrequencyTime": (summary, 13, _normalize_time),
+            "AverageFrequencyHz": (summary, 17, _to_float),
+            "FrequencyVariationIndex": (summary, 25, _to_float),
+            "StandardDeviationHz": (summary, 31, _to_float),
+        }
+    elif _is_flat_2023_layout(layout):
         mappings = {
             "DurationBelow48_80Pct": (bands, 3, _to_float),
             "DurationBelow49_00Pct": (bands, 6, _to_float),
@@ -873,6 +1321,28 @@ def _promote_frequency(
             "AverageFrequencyHz": (summary, 13, _to_float),
             "FrequencyVariationIndex": (summary, 20, _to_float),
             "StandardDeviationHz": (summary, 24, _to_float),
+            "Maximum15MinuteBlockFrequencyHz": (summary, 31, _to_float),
+            "Minimum15MinuteBlockFrequencyHz": (summary, 35, _to_float),
+        }
+    elif _is_flat_8_2025_layout(layout):
+        mappings = {
+            "DurationBelow48_80Pct": (bands, 4, _to_float),
+            "DurationBelow49_00Pct": (bands, 6, _to_float),
+            "DurationBelow49_20Pct": (bands, 9, _to_float),
+            "DurationBelow49_50Pct": (bands, 13, _to_float),
+            "DurationBelow49_70Pct": (bands, 17, _to_float),
+            "DurationBelow49_90Pct": (bands, 22, _to_float),
+            "Duration49_90To50_05InclusivePct": (bands, 27, _to_float),
+            "Duration49_90To50_05Pct": (bands, 27, _to_float),
+            "DurationAbove50_00Pct": (bands, 31, _to_float),
+            "DurationAbove50_05Pct": (bands, 34, _to_float),
+            "MaximumFrequencyHz": (summary, 1, _to_float),
+            "MaximumFrequencyTime": (summary, 4, _normalize_time),
+            "MinimumFrequencyHz": (summary, 6, _to_float),
+            "MinimumFrequencyTime": (summary, 9, _normalize_time),
+            "AverageFrequencyHz": (summary, 13, _to_float),
+            "FrequencyVariationIndex": (summary, 21, _to_float),
+            "StandardDeviationHz": (summary, 25, _to_float),
         }
     elif _is_flat_8_layout(layout):
         mappings = {
@@ -1013,7 +1483,9 @@ def _promote_voltage(
         for row in _table_rows_for_window(conn, report_id, voltage_window.window):
             name_cell = row.get(1)
             node_name = name_cell[1].strip() if name_cell else ""
-            if _is_flat_8_2025_layout(layout) or _is_flat_2023_layout(layout):
+            if _is_flat_2024_wide_layout(layout):
+                gate_col = 8
+            elif _is_flat_8_2025_layout(layout) or _is_flat_2023_layout(layout):
                 gate_col = 6
             elif _is_flat_8_layout(layout):
                 gate_col = 7
@@ -1024,7 +1496,20 @@ def _promote_voltage(
             node_id = _get_or_create_voltage_node(
                 conn, node_name, voltage_window.nominal_kv, region_id
             )
-            if _is_flat_2023_layout(layout):
+            if _is_flat_2024_wide_layout(layout):
+                value_cols = {
+                    "MaximumKV": 8,
+                    "MaximumTime": 13,
+                    "MinimumKV": 17,
+                    "MinimumTime": 21,
+                    "LowCriticalPct": 27,
+                    "LowWarningPct": 33,
+                    "HighWarningPct": 39,
+                    "HighCriticalPct": 43,
+                    "BelowBandPct": 33,
+                    "AboveBandPct": 39,
+                }
+            elif _is_flat_2023_layout(layout):
                 value_cols = {
                     "MaximumKV": 6,
                     "MaximumTime": 9,
@@ -1131,7 +1616,9 @@ def _promote_reservoirs(
             name = name_cell[1].strip() if name_cell else ""
             if not name or name.lower() in {"reservoir", "total"}:
                 continue
-            if _is_flat_8_2025_layout(layout) or _is_flat_2023_layout(layout):
+            if _is_flat_2024_wide_layout(layout):
+                designed_col = 11
+            elif _is_flat_8_2025_layout(layout) or _is_flat_2023_layout(layout):
                 designed_col = 8
             elif _is_flat_8_layout(layout):
                 designed_col = 10
@@ -1140,7 +1627,21 @@ def _promote_reservoirs(
             if _cell_float(row, designed_col) is None:
                 continue
             reservoir_id = _get_or_create_reservoir(conn, name, region_id)
-            if _is_flat_2023_layout(layout):
+            if _is_flat_2024_wide_layout(layout):
+                value_cols = {
+                    "MinimumDrawdownLevelM": 6,
+                    "FullReservoirLevelM": 8,
+                    "DesignedEnergyMU": 11,
+                    "CurrentLevelM": 16,
+                    "CurrentEnergyMU": 20,
+                    "PreviousYearLevelM": 24,
+                    "PreviousYearEnergyMU": 27,
+                    "InflowMU": 32,
+                    "UsageMU": 37,
+                    "ProgressiveInflowMU": 41,
+                    "ProgressiveUsageMU": 46,
+                }
+            elif _is_flat_2023_layout(layout):
                 value_cols = {
                     "MinimumDrawdownLevelM": 5,
                     "FullReservoirLevelM": 6,
@@ -1245,12 +1746,7 @@ def _promote_interregional_exchange(
             name = name_cell[1].strip() if name_cell else ""
             if not name or name.lower() in {"sl.no.", "element"}:
                 continue
-            physical_columns = layout.physical_exchange_columns or (
-                ("EveningPeakMW", 3), ("OffPeakMW", 4),
-                ("MaximumImportMW", 5), ("MaximumExportMW", 6),
-                ("ImportEnergyMU", 7), ("ExportEnergyMU", 8),
-                ("NetEnergyMU", 9),
-            )
+            physical_columns = _physical_exchange_columns(layout, window)
             values = {
                 column: _cell_float(row, col_no)
                 for column, col_no in physical_columns
@@ -1329,7 +1825,34 @@ def _promote_interregional_exchange(
                 conn, report_id, "FactSRLDCInterRegionalExchange", key,
                 column, row[col_no][0], mapped_cells
             )
-        populated_fields.add("inter_regional_schedule_row")
+    populated_fields.add("inter_regional_schedule_row")
+
+
+def _physical_exchange_columns(
+    layout: SRLDCPromoterLayout,
+    window: RowWindow,
+) -> tuple[tuple[str, int], ...]:
+    """Return page-aware physical inter-regional exchange columns."""
+
+    if _is_flat_6_2023_layout(layout) and window.page_no == 5:
+        return (
+            ("EveningPeakMW", 10),
+            ("OffPeakMW", 14),
+            ("MaximumImportMW", 18),
+            ("MaximumExportMW", 23),
+            ("ImportEnergyMU", 28),
+            ("ExportEnergyMU", 32),
+            ("NetEnergyMU", 36),
+        )
+    return layout.physical_exchange_columns or (
+        ("EveningPeakMW", 3),
+        ("OffPeakMW", 4),
+        ("MaximumImportMW", 5),
+        ("MaximumExportMW", 6),
+        ("ImportEnergyMU", 7),
+        ("ExportEnergyMU", 8),
+        ("NetEnergyMU", 9),
+    )
 
 
 def _promote_market_transactions(
@@ -1340,18 +1863,22 @@ def _promote_market_transactions(
     populated_fields: set[str],
     layout: SRLDCPromoterLayout,
 ) -> None:
-    """Promote state market snapshots, daily energy and extrema."""
+    """Promote state and regional market snapshots, daily energy and extrema."""
 
     conn.execute(
         "DELETE FROM FactSRLDCMarketTransaction WHERE ReportDocumentID = ?",
+        (report_id,),
+    )
+    conn.execute(
+        "DELETE FROM FactSRLDCRegionalMarketTransaction WHERE ReportDocumentID = ?",
         (report_id,),
     )
     for window, time_category in layout.market_point_tables:
         for row in _table_rows_for_window(conn, report_id, window):
             state_cell = row.get(1)
             state_name = state_cell[1].strip() if state_cell else ""
-            state_id = _state_id(conn, state_name)
-            if state_id is None:
+            target = _market_target(conn, state_name)
+            if target is None:
                 continue
             if state_cell:
                 mapped_cells.add(state_cell[0])
@@ -1360,12 +1887,12 @@ def _promote_market_transactions(
                 value = _cell_float(row, col_no)
                 if value is None:
                     continue
-                _insert_market_fact(
-                    conn, report_id, date_id, state_id, label,
+                _insert_market_target_fact(
+                    conn, report_id, date_id, target, label,
                     time_category, scheduled_mw=value
                 )
-                _market_lineage(
-                    conn, report_id, date_id, state_id, label, time_category,
+                _market_target_lineage(
+                    conn, report_id, date_id, target, label, time_category,
                     "ScheduledMW", row[col_no][0], mapped_cells
                 )
             populated_fields.add("market_point_schedule_row")
@@ -1374,8 +1901,8 @@ def _promote_market_transactions(
         for row in _table_rows_for_window(conn, report_id, window):
             state_cell = row.get(1)
             state_name = state_cell[1].strip() if state_cell else ""
-            state_id = _state_id(conn, state_name)
-            if state_id is None:
+            target = _market_target(conn, state_name)
+            if target is None:
                 continue
             if state_cell:
                 mapped_cells.add(state_cell[0])
@@ -1383,12 +1910,12 @@ def _promote_market_transactions(
                 value = _cell_float(row, col_no)
                 if value is None:
                     continue
-                _insert_market_fact(
-                    conn, report_id, date_id, state_id, label,
+                _insert_market_target_fact(
+                    conn, report_id, date_id, target, label,
                     time_category, scheduled_mw=value,
                 )
-                _market_lineage(
-                    conn, report_id, date_id, state_id, label, time_category,
+                _market_target_lineage(
+                    conn, report_id, date_id, target, label, time_category,
                     "ScheduledMW", row[col_no][0], mapped_cells,
                 )
             populated_fields.add("market_point_schedule_row")
@@ -1396,8 +1923,8 @@ def _promote_market_transactions(
     for row in _table_rows_for_window(conn, report_id, layout.market_energy_table):
         state_cell = row.get(1)
         state_name = state_cell[1].strip() if state_cell else ""
-        state_id = _state_id(conn, state_name)
-        if state_id is None:
+        target = _market_target(conn, state_name)
+        if target is None:
             continue
         if state_cell:
             mapped_cells.add(state_cell[0])
@@ -1406,12 +1933,12 @@ def _promote_market_transactions(
             value = _cell_float(row, col_no)
             if value is None:
                 continue
-            _insert_market_fact(
-                conn, report_id, date_id, state_id, label,
+            _insert_market_target_fact(
+                conn, report_id, date_id, target, label,
                 "daily_energy", energy_mu=value
             )
-            _market_lineage(
-                conn, report_id, date_id, state_id, label, "daily_energy",
+            _market_target_lineage(
+                conn, report_id, date_id, target, label, "daily_energy",
                 "EnergyMU", row[col_no][0], mapped_cells
             )
         populated_fields.add("market_daily_energy_row")
@@ -1420,8 +1947,8 @@ def _promote_market_transactions(
         for row in _table_rows_for_window(conn, report_id, window):
             state_cell = row.get(1)
             state_name = state_cell[1].strip() if state_cell else ""
-            state_id = _state_id(conn, state_name)
-            if state_id is None:
+            target = _market_target(conn, state_name)
+            if target is None:
                 continue
             if state_cell:
                 mapped_cells.add(state_cell[0])
@@ -1432,8 +1959,8 @@ def _promote_market_transactions(
                 minimum = _cell_float(row, min_col)
                 if maximum is None and minimum is None:
                     continue
-                _insert_market_fact(
-                    conn, report_id, date_id, state_id, label,
+                _insert_market_target_fact(
+                    conn, report_id, date_id, target, label,
                     time_category, maximum_mw=maximum, minimum_mw=minimum
                 )
                 for column, col_no, value in (
@@ -1441,8 +1968,8 @@ def _promote_market_transactions(
                     ("MinimumMW", min_col, minimum),
                 ):
                     if value is not None:
-                        _market_lineage(
-                            conn, report_id, date_id, state_id, label,
+                        _market_target_lineage(
+                            conn, report_id, date_id, target, label,
                             time_category, column, row[col_no][0], mapped_cells
                         )
             populated_fields.add("market_daily_range_row")
@@ -1451,8 +1978,8 @@ def _promote_market_transactions(
         for row in _table_rows_for_window(conn, report_id, window):
             state_cell = row.get(1)
             state_name = state_cell[1].strip() if state_cell else ""
-            state_id = _state_id(conn, state_name)
-            if state_id is None:
+            target = _market_target(conn, state_name)
+            if target is None:
                 continue
             if state_cell:
                 mapped_cells.add(state_cell[0])
@@ -1461,8 +1988,8 @@ def _promote_market_transactions(
                 minimum = _cell_float(row, min_col)
                 if maximum is None and minimum is None:
                     continue
-                _insert_market_fact(
-                    conn, report_id, date_id, state_id, label,
+                _insert_market_target_fact(
+                    conn, report_id, date_id, target, label,
                     "daily_range", maximum_mw=maximum, minimum_mw=minimum,
                 )
                 for column, col_no, value in (
@@ -1470,8 +1997,8 @@ def _promote_market_transactions(
                     ("MinimumMW", min_col, minimum),
                 ):
                     if value is not None:
-                        _market_lineage(
-                            conn, report_id, date_id, state_id, label,
+                        _market_target_lineage(
+                            conn, report_id, date_id, target, label,
                             "daily_range", column, row[col_no][0], mapped_cells,
                         )
             populated_fields.add("market_daily_range_row")
@@ -1499,17 +2026,17 @@ def _promote_operational_events(
             continue
         if state_cell:
             mapped_cells.add(state_cell[0])
-        reason = row.get(9, (0, ""))[1] or None
-        curtailments = (
-            ("load_curtailment", 3, 2, None),
-            ("wind_curtailment", 5, 6, None),
-            ("solar_curtailment", 7, 8, None),
+        reason = row.get(layout.curtailment_reason_column, (0, ""))[1] or None
+        curtailments = layout.curtailment_columns or (
+            ("load_curtailment", 3, 2),
+            ("wind_curtailment", 5, 6),
+            ("solar_curtailment", 7, 8),
         )
-        for event_name, mw_col, mu_col, details in curtailments:
+        for event_name, mw_col, mu_col in curtailments:
             event_id = _insert_operational_event(
                 conn, report_id, date_id, state_id, event_name,
                 _cell_float(row, mw_col), _cell_float(row, mu_col),
-                None, reason, details
+                None, reason, None
             )
             key = f"report={report_id};event={event_id}"
             for column, col_no in (("EventMW", mw_col), ("EventMU", mu_col)):
@@ -1624,51 +2151,49 @@ def _promote_report_annotations(
             )
         return
 
-    lines = conn.execute(
-        """
-        SELECT id, line_text FROM psp_raw_line
-        WHERE report_document_id = ? AND page_no = ?
-        ORDER BY line_no
-        """,
-        (report_id, layout.annotation_pages[0]),
-    ).fetchall()
-    section: str | None = None
-    grouped: list[tuple[str, int, str]] = []
-    for raw_line_id, line_text in lines:
-        text = str(line_text).strip()
-        lowered = text.lower()
-        if lowered.startswith("11. significant events"):
-            section = "significant_events"
-            continue
-        if lowered.startswith("12. constraints"):
-            section = "transmission_constraints"
-            continue
-        if lowered.startswith("13. weather condition"):
-            section = "weather_condition"
-            continue
-        if lowered.startswith("14. re/load curtailment"):
-            section = None
-            continue
-        if section is None or not text:
-            continue
-        if section == "transmission_constraints" and grouped:
-            previous_section, previous_id, previous_text = grouped[-1]
-            if previous_section == section and not re.match(r"^\d+\)", text):
-                grouped[-1] = (
-                    previous_section, previous_id, f"{previous_text} {text}"
-                )
+    for annotation_page in layout.annotation_pages:
+        lines = conn.execute(
+            """
+            SELECT id, line_text FROM psp_raw_line
+            WHERE report_document_id = ? AND page_no = ?
+            ORDER BY line_no
+            """,
+            (report_id, annotation_page),
+        ).fetchall()
+        section: str | None = None
+        grouped: list[tuple[str, int, str]] = []
+        for raw_line_id, line_text in lines:
+            text = str(line_text).strip()
+            detected_section = _annotation_section_for_line(text)
+            if detected_section is not None:
+                section = detected_section
                 continue
-        grouped.append((section, int(raw_line_id), text))
+            if _is_structured_event_heading(text):
+                section = None
+                continue
+            if _is_availability_note(text):
+                grouped.append(("availability_note", int(raw_line_id), text))
+                continue
+            if section is None or not text:
+                continue
+            if section == "transmission_constraints" and grouped:
+                previous_section, previous_id, previous_text = grouped[-1]
+                if previous_section == section and not re.match(r"^\d+\)", text):
+                    grouped[-1] = (
+                        previous_section, previous_id, f"{previous_text} {text}"
+                    )
+                    continue
+            grouped.append((section, int(raw_line_id), text))
 
-    conn.executemany(
-        """
-        INSERT OR IGNORE INTO FactSRLDCReportAnnotation(
-            ReportDocumentID, SectionName, PageNo, RawLineID, AnnotationText
-        ) VALUES (?, ?, ?, ?, ?)
-        """,
-        ((report_id, section_name, layout.annotation_pages[0], raw_line_id, text)
-         for section_name, raw_line_id, text in grouped),
-    )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO FactSRLDCReportAnnotation(
+                ReportDocumentID, SectionName, PageNo, RawLineID, AnnotationText
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ((report_id, section_name, annotation_page, raw_line_id, text)
+             for section_name, raw_line_id, text in grouped),
+        )
 
 
 def _assign(
@@ -1725,12 +2250,12 @@ def _record_coverage(
             disposition, reason = "mapped_value", "approved_mapping"
         elif _is_narrative_marker(str(text)):
             disposition, reason = "intentionally_excluded", "narrative_annotation_preserved_in_raw_lines"
-        elif _is_structural_noise_cell(str(text)):
-            disposition, reason = "intentionally_excluded", "structural_noise"
-        elif row <= 2:
-            disposition, reason = "header", "leading_table_header"
+        elif _is_header_cell(str(text)):
+            disposition, reason = "header", "recognized_header_or_unit_label"
         elif col == 1:
             disposition, reason = "dimension", "row_label_or_entity"
+        elif _is_structural_noise_cell(str(text)):
+            disposition, reason = "intentionally_excluded", "structural_noise"
         elif _to_float(str(text)) is not None:
             disposition, reason = "ambiguous", "numeric_value_without_approved_mapping"
         else:
@@ -1742,7 +2267,13 @@ def _record_coverage(
                 {"raw_cell_id": raw_id, "row": row, "value": str(text)[:200]}
             )
 
-    expected = sum(1 for _, _, disposition, _ in dispositions if disposition not in {"header", "dimension"})
+    expected = sum(
+        1 for _, _, disposition, _ in dispositions
+        if disposition not in {
+            "header", "dimension", "derived", "duplicate", "decorative",
+            "intentionally_excluded",
+        }
+    )
     mapped = int(conn.execute(
         "SELECT COUNT(*) FROM curated_field_lineage WHERE ReportDocumentID = ?",
         (report_id,),
@@ -1827,11 +2358,72 @@ def _is_narrative_marker(text: str) -> bool:
     return any(marker in normalized for marker in markers)
 
 
+def _annotation_section_for_line(text: str) -> str | None:
+    """Return the canonical annotation section for a numbered PSP heading."""
+
+    compact = re.sub(r"\s+", "", text).lower()
+    if compact.startswith("11.significantevents"):
+        return "significant_events"
+    if compact.startswith("12.constraints"):
+        return "transmission_constraints"
+    if compact.startswith("13.weathercondition"):
+        return "weather_condition"
+    return None
+
+
+def _is_structured_event_heading(text: str) -> bool:
+    """Return whether a heading starts a separately promoted fact section."""
+
+    compact = re.sub(r"\s+", "", text).lower()
+    return compact.startswith((
+        "14.re/loadcurtailment",
+        "15.instancesofpersistant",
+    ))
+
+
+def _is_availability_note(text: str) -> bool:
+    """Return whether a raw line documents a published availability caveat."""
+
+    compact = re.sub(r"\s+", "", text).lower()
+    return compact.startswith("*mwavailabiltyindicatedaboveincludes")
+
+
+def _is_header_cell(text: str) -> bool:
+    """Return whether a non-empty cell is a known table heading or unit label."""
+
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    exact_labels = {
+        "state", "station", "station/constituents", "sl.no.", "sl.no",
+        "total", "frequency", "range(hz)", "%", "maximum", "minimum",
+        "time", "energy", "reason", "element", "link", "reservoir",
+        "shortage", "shortage #", "requirement", "demand met", "net sch",
+        "ui", "thermal", "hydro", "gas/diesel /naptha", "wind", "solar",
+        "others", "ace", "avg", "hrs", "peak mw", "off peak mw",
+    }
+    if normalized in exact_labels:
+        return True
+    if _to_float(normalized) is not None:
+        return False
+    header_markers = (
+        "(mw)", "(mu)", "(kv)", "(hz)", "(mts)", "maximum", "minimum",
+        "schedule", "availability", "drawal", "frequency", "voltage", "energy",
+        "installed capacity", "inst.capacity", "peak hours", "off-peak hours",
+        "20:00", "03:00", "day peak", "daypeak", "peakmw", "offpeakmw", "grossgen",
+        "netgen", "avg.mw", "mddl", "frl", "inflow", "usage", "import",
+        "export", "inter-regional", "open access", "bilateral", "isgs", "t-gna",
+        "gdam", "hpd", "rtm", "total ir", "netirui", "control area generation",
+        "forecast", "deviation", "min generation", "inst. capacity",
+    )
+    return any(marker in normalized for marker in header_markers)
+
+
 def _is_structural_noise_cell(text: str) -> bool:
     """Return whether a non-value cell is a known PSP presentation artefact."""
 
     normalized = re.sub(r"\s+", " ", text).strip().lower()
     if not normalized:
+        return True
+    if normalized in {"-", "nil", "n/a", "na"}:
         return True
     exact_labels = {
         "state",
@@ -2046,6 +2638,81 @@ def _insert_market_fact(
     )
 
 
+def _market_target(
+    conn: sqlite3.Connection,
+    published_name: str,
+) -> tuple[str, int] | None:
+    """Resolve a market row to its state or Southern Region reporting grain."""
+
+    normalized = re.sub(r"[^a-z0-9]", "", published_name.lower())
+    if normalized in {"total", "region", "southernregion"}:
+        region_id = _lookup_id(
+            conn,
+            "SELECT RegionID FROM DimRegions WHERE RegionName = ?",
+            (SR_REGION_NAME,),
+        )
+        return ("region", region_id) if region_id is not None else None
+    state_id = _state_id(conn, published_name)
+    return ("state", state_id) if state_id is not None else None
+
+
+def _insert_market_target_fact(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    target: tuple[str, int],
+    label: str,
+    time_category: str,
+    energy_mu: float | None = None,
+    scheduled_mw: float | None = None,
+    maximum_mw: float | None = None,
+    minimum_mw: float | None = None,
+) -> None:
+    """Insert a market observation at its resolved state or regional grain."""
+
+    target_kind, target_id = target
+    if target_kind == "state":
+        _insert_market_fact(
+            conn,
+            report_id,
+            date_id,
+            target_id,
+            label,
+            time_category,
+            energy_mu,
+            scheduled_mw,
+            maximum_mw,
+            minimum_mw,
+        )
+        return
+
+    mechanism_id = _get_or_create_exchange_mechanism(conn, label)
+    product_name = label.split()[-1]
+    signed_value = scheduled_mw if scheduled_mw is not None else energy_mu
+    direction = "range" if time_category == "daily_range" else _exchange_direction(signed_value)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO FactSRLDCRegionalMarketTransaction(
+            ReportDocumentID, DateID, RegionID, MechanismID, ProductName,
+            Direction, TimeCategory, EnergyMU, ScheduledMW, MaximumMW, MinimumMW
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            report_id,
+            date_id,
+            target_id,
+            mechanism_id,
+            product_name,
+            direction,
+            time_category,
+            energy_mu,
+            scheduled_mw,
+            maximum_mw,
+            minimum_mw,
+        ),
+    )
+
+
 def _market_lineage(
     conn: sqlite3.Connection,
     report_id: int,
@@ -2066,6 +2733,48 @@ def _market_lineage(
     _insert_lineage(
         conn, report_id, "FactSRLDCMarketTransaction", key,
         column, raw_cell_id, mapped_cells
+    )
+
+
+def _market_target_lineage(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    target: tuple[str, int],
+    label: str,
+    time_category: str,
+    column: str,
+    raw_cell_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Persist lineage for a state or regional market observation."""
+
+    target_kind, target_id = target
+    if target_kind == "state":
+        _market_lineage(
+            conn,
+            report_id,
+            date_id,
+            target_id,
+            label,
+            time_category,
+            column,
+            raw_cell_id,
+            mapped_cells,
+        )
+        return
+    key = (
+        f"report={report_id};date={date_id};region={target_id};"
+        f"mechanism={label};time={time_category}"
+    )
+    _insert_lineage(
+        conn,
+        report_id,
+        "FactSRLDCRegionalMarketTransaction",
+        key,
+        column,
+        raw_cell_id,
+        mapped_cells,
     )
 
 

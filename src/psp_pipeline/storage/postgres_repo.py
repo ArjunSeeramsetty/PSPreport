@@ -112,13 +112,7 @@ class PostgresRepository:
                     %(variance_pct)s, %(report_type)s, %(source_region)s, %(valid_from)s, %(valid_to)s,
                     %(version_no)s, %(ingested_at)s, %(timeseries_uuid)s
                 )
-                ON CONFLICT (entity_key, metric_name, time_block, valid_from, version_no)
-                DO UPDATE SET
-                    operational_value = EXCLUDED.operational_value,
-                    settlement_value = EXCLUDED.settlement_value,
-                    variance_pct = EXCLUDED.variance_pct,
-                    valid_to = EXCLUDED.valid_to,
-                    ingested_at = EXCLUDED.ingested_at
+                ON CONFLICT DO NOTHING
                 """,
                 payload,
             )

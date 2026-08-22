@@ -730,6 +730,8 @@ def _ensure_srldc_curated_tables(conn: sqlite3.Connection) -> None:
             AverageFrequencyHz REAL,
             StandardDeviationHz REAL,
             FrequencyVariationIndex REAL,
+            Maximum15MinuteBlockFrequencyHz REAL,
+            Minimum15MinuteBlockFrequencyHz REAL,
             DurationBelow49_70Pct REAL,
             Duration49_70To49_80Pct REAL,
             Duration49_80To49_90Pct REAL,
@@ -897,6 +899,24 @@ def _ensure_srldc_curated_tables(conn: sqlite3.Connection) -> None:
             )
         );
 
+        CREATE TABLE IF NOT EXISTS FactSRLDCRegionalMarketTransaction (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            MechanismID INTEGER NOT NULL,
+            ProductName TEXT NOT NULL,
+            Direction TEXT NOT NULL,
+            TimeCategory TEXT NOT NULL,
+            EnergyMU REAL,
+            ScheduledMW REAL,
+            MaximumMW REAL,
+            MinimumMW REAL,
+            PRIMARY KEY(
+                ReportDocumentID, DateID, RegionID, MechanismID,
+                ProductName, Direction, TimeCategory
+            )
+        );
+
         CREATE TABLE IF NOT EXISTS FactSRLDCOperationalEvent (
             EventID INTEGER PRIMARY KEY AUTOINCREMENT,
             ReportDocumentID INTEGER NOT NULL,
@@ -941,6 +961,8 @@ def _ensure_srldc_fact_columns(conn: sqlite3.Connection) -> None:
             ("DurationBelow49_90Pct", "REAL"),
             ("Duration49_90To50_05InclusivePct", "REAL"),
             ("DurationAbove50_00Pct", "REAL"),
+            ("Maximum15MinuteBlockFrequencyHz", "REAL"),
+            ("Minimum15MinuteBlockFrequencyHz", "REAL"),
         ),
         "FactSRLDCVoltageProfile": (
             ("LowCriticalPct", "REAL"),
@@ -1173,7 +1195,7 @@ def _seed_curated_dimensions(conn: sqlite3.Connection) -> None:
         "Karnataka": ("Karnataka", "KA"),
         "Kerala": ("Kerala", "KL"),
         "Tamil Nadu": ("Tamil Nadu", "Tamilnadu", "TN"),
-        "Puducherry": ("Puducherry", "Pondicherry", "PY"),
+        "Puducherry": ("Puducherry", "Pondicherry", "Pondicher", "PY"),
     }
     for state_name, aliases in state_aliases.items():
         state_row = conn.execute(

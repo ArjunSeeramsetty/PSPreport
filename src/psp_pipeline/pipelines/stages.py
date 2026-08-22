@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 from uuid import uuid4
@@ -24,6 +25,12 @@ from psp_pipeline.models.contracts import (
 from psp_pipeline.storage.minio_store import MinioRawStore
 from psp_pipeline.storage.neo4j_repo import Neo4jRepository
 from psp_pipeline.storage.postgres_repo import PostgresRepository
+from psp_pipeline.storage.sqlite_curated_export import export_srldc_daily_observations
+from psp_pipeline.storage.sqlite_curated_promoter import repromote_srldc_reports
+from psp_pipeline.pipelines.rldc_daily_psp import run_rldc_daily_psp_collection
+
+
+logger = logging.getLogger(__name__)
 
 
 def make_run_id() -> str:
@@ -143,6 +150,77 @@ def sync_graph(settings: AppSettings, facts: List[FactObservation]) -> None:
         neo4j_repo.close()
 
 
+def repromote_srldc_curated(sqlite_db_path: Path) -> Dict[str, int]:
+    """Refresh approved SRLDC curated facts from local raw-cell lineage."""
+
+    if not sqlite_db_path.exists():
+        return {"reports_total": 0, "promoted": 0, "skipped": 0}
+    import sqlite3
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        result = repromote_srldc_reports(conn)
+        conn.commit()
+    return result
+
+
+def export_srldc_curated_to_timescale(
+    settings: AppSettings,
+    sqlite_db_path: Path,
+) -> int:
+    """Append curated SRLDC regional and state facts to TimescaleDB."""
+
+    if not sqlite_db_path.exists():
+        return 0
+    import sqlite3
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        facts = export_srldc_daily_observations(conn)
+    if facts:
+        PostgresRepository(settings.postgres_dsn).upsert_fact_observations(facts)
+    return len(facts)
+
+
+def sync_srldc_curated_to_graph(settings: AppSettings, sqlite_db_path: Path) -> int:
+    """Synchronize curated SRLDC regional and state observation topology."""
+
+    if not sqlite_db_path.exists():
+        return 0
+    import sqlite3
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        facts = export_srldc_daily_observations(conn)
+    if facts:
+        sync_graph(settings, facts)
+    return len(facts)
+
+
+def collect_srldc_daily_psp(
+    settings: AppSettings,
+    target_date: date | None = None,
+) -> Dict[str, int]:
+    """Collect and curate public SRLDC daily PSP PDFs into local SQLite."""
+
+    try:
+        return run_rldc_daily_psp_collection(
+            config_path=settings.project_root / "config" / "rldc_report_sources.yaml",
+            sqlite_db_path=settings.project_root / "data" / "sqlite" / "srldc_daily.sqlite",
+            download_root=settings.project_root / "downloads",
+            target_rldcs={"srldc"},
+            max_reports_per_rldc=1,
+            target_date=target_date,
+        )
+    except Exception:
+        logger.exception("SRLDC daily PSP collection failed")
+        return {
+            "sources_scanned": 1,
+            "pdf_links_found": 0,
+            "reports_downloaded": 0,
+            "reports_persisted": 0,
+            "ocr_recommended": 0,
+            "report_family_rejected": 0,
+        }
+
+
 def evaluate_dq(
     sources: List[SourceDefinition],
     artifacts: List[FetchArtifact],
@@ -176,4 +254,3 @@ def summarize_run(
         "reconciliation_rows": len(reconciliation),
         "dq_alerts": len(dq_alerts),
     }
-

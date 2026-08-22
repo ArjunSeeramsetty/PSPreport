@@ -522,6 +522,25 @@ def _extract_line_total_metric(lines: list[str], label_patterns: list[str]) -> f
     return None
 
 
+def _should_try_liteparse(
+    use_liteparse_fallback: bool,
+    ocr: OcrAssessment | None,
+    extracted_fields: dict[str, float],
+    text: str,
+    raw_cells: list[RawCell],
+) -> bool:
+    """Return whether native extraction is insufficient for a spatial fallback."""
+
+    if not use_liteparse_fallback:
+        return False
+    return (
+        (ocr.should_use_ocr if ocr else False)
+        or not extracted_fields
+        or len(text.strip()) < 1200
+        or not raw_cells
+    )
+
+
 def extract_psp_content(
     pdf_path: Path,
     rldc: str,
@@ -539,11 +558,12 @@ def extract_psp_content(
     raw_text_items: list[RawTextItem] = []
     methods = ["pdfplumber"]
 
-    should_try_liteparse = use_liteparse_fallback and (
-        template_match.semantic_pass_required
-        or (ocr.should_use_ocr if ocr else False)
-        or not result
-        or len(text.strip()) < 1200
+    should_try_liteparse = _should_try_liteparse(
+        use_liteparse_fallback,
+        ocr,
+        result,
+        text,
+        raw_cells,
     )
     if should_try_liteparse and _liteparse_available():
         liteparse_text, raw_text_items = _extract_liteparse_content(pdf_path)

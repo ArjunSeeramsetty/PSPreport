@@ -47,3 +47,42 @@ def test_graph_sync_agent_calls_topology_merge():
     GraphSyncAgent(repo).run([fact])
     assert repo.calls == 1
 
+
+def test_graph_sync_agent_prefers_batch_topology_merge():
+    """Use the lock-safe repository batch API when it is available."""
+
+    now = datetime.now(timezone.utc)
+    fact = FactObservation(
+        entity_key="SR:state:IN-AP",
+        metric_name="state_demand_met_mw",
+        time_block=None,
+        operational_value=1.0,
+        settlement_value=None,
+        variance_pct=None,
+        report_type="srldc_daily_psp",
+        source_region="SR",
+        valid_from=now,
+        valid_to=None,
+        version_no=1,
+        ingested_at=now,
+        timeseries_uuid="uuid-1",
+    )
+
+    class FakeRepo:
+        def __init__(self):
+            self.payload = []
+
+        def merge_observation_topologies(self, payload):
+            self.payload = payload
+
+    repo = FakeRepo()
+    GraphSyncAgent(repo).run([fact])
+
+    assert repo.payload == [{
+        "entity_key": "SR:state:IN-AP",
+        "report_type": "srldc_daily_psp",
+        "metric_name": "state_demand_met_mw",
+        "source_region": "SR",
+        "timeseries_uuid": "uuid-1",
+        "time_block": None,
+    }]

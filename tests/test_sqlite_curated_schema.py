@@ -24,6 +24,7 @@ def test_sqlite_schema_includes_governed_srldc_tables() -> None:
     assert "FactSRLDCRegionalDaily" in tables
     assert "FactSRLDCStateDaily" in tables
     assert "FactSRLDCVoltageProfile" in tables
+    assert "FactSRLDCRegionalMarketTransaction" in tables
     assert "FactSRLDCOperationalEvent" in tables
     assert "FactSRLDCRegionalDailySummary" not in tables
     assert "FactSRLDCStateDailyPosition" not in tables

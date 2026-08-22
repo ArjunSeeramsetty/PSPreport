@@ -11,6 +11,7 @@ RECT_TABLE_SETTINGS = {
     "snap_tolerance": 3,
 }
 MAX_RECT_TO_CHAR_RATIO = 4.0
+DENSE_RECT_THRESHOLD = 10_000
 
 
 def extract_page_tables(page: Any) -> list[list[list[str | None]]]:
@@ -21,6 +22,9 @@ def extract_page_tables(page: Any) -> list[list[list[str | None]]]:
     and the fallback result has enough populated cells to resemble a table.
     """
 
+    if len(page.rects) >= DENSE_RECT_THRESHOLD:
+        return _extract_text_tables(page)
+
     tables = page.extract_tables() or []
     if tables:
         return tables
@@ -29,6 +33,12 @@ def extract_page_tables(page: Any) -> list[list[list[str | None]]]:
     rect_to_char_ratio = len(page.rects) / max(len(page.chars), 1)
     if rect_to_char_ratio > MAX_RECT_TO_CHAR_RATIO:
         return []
+    return _extract_text_tables(page)
+
+
+def _extract_text_tables(page: Any) -> list[list[list[str | None]]]:
+    """Extract credible tables with text boundaries, avoiding rect intersections."""
+
     candidates = page.extract_tables(table_settings=RECT_TABLE_SETTINGS) or []
     return [table for table in candidates if _is_credible_table(table)]
 

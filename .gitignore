@@ -19,6 +19,9 @@ downloads/
 data/raw/
 data/sqlite/
 data/wbes_probe/
+data/diagnostics/
+data/airflow_staging/
 logs/
 .pytest_cache/
 .tmp_pytest*/
+.pytest_tmp*/

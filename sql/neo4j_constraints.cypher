@@ -1,6 +1,9 @@
 CREATE CONSTRAINT region_code IF NOT EXISTS
 FOR (r:Region) REQUIRE r.code IS UNIQUE;
 
+CREATE CONSTRAINT state_code IF NOT EXISTS
+FOR (s:State) REQUIRE s.code IS UNIQUE;
+
 CREATE CONSTRAINT source_entity_key IF NOT EXISTS
 FOR (e:SourceEntity) REQUIRE e.entity_key IS UNIQUE;
 

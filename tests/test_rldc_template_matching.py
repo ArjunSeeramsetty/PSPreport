@@ -6,7 +6,10 @@ from time import monotonic
 
 import pytest
 
-from psp_pipeline.pipelines.rldc_daily_psp import _extract_liteparse_content
+from psp_pipeline.pipelines.rldc_daily_psp import (
+    _extract_liteparse_content,
+    _should_try_liteparse,
+)
 from psp_pipeline.parsing.rldc.templates import (
     COMPACT_SRLDCP_TEMPLATE,
     DEFAULT_SRLDCP_TEMPLATE,
@@ -202,6 +205,28 @@ def test_srldc_flat_7_2023_template_match_accepts_generation_continuation() -> N
     assert result.confidence == 1.0
 
 
+def test_srldc_flat_7_2023_template_accepts_shorter_market_rows() -> None:
+    """Accept the verified 53-row market section variation from 2023-24."""
+
+    structure = ReportStructure(
+        page_count=7,
+        table_count=7,
+        headings=(),
+        table_shapes=(
+            TableShape(1, 1, 61, 61, 40, 40, "observed"),
+            TableShape(5, 1, 75, 75, 31, 31, "observed"),
+            TableShape(6, 1, 53, 53, 35, 35, "observed"),
+            TableShape(7, 1, 11, 11, 9, 9, "observed"),
+        ),
+    )
+
+    result = match_report_template("srldc", structure)
+
+    assert result.template_id == FLAT_7_2023_SRLDCP_TEMPLATE.template_id
+    assert result.semantic_pass_required is False
+    assert result.confidence == 1.0
+
+
 def test_srldc_flat_6_2024_template_matches_wide_operations_layout() -> None:
     """Recognize the verified April 2024 layout without a semantic pass."""
 
@@ -224,6 +249,20 @@ def test_srldc_flat_6_2024_template_matches_wide_operations_layout() -> None:
 
 
 @pytest.mark.integration
+def test_liteparse_fallback_requires_native_extraction_failure() -> None:
+    """Do not invoke LiteParse merely because a template needs semantic review."""
+
+    assert not _should_try_liteparse(
+        True,
+        None,
+        {"field": 1.0},
+        "x" * 1200,
+        [object()],
+    )
+    assert _should_try_liteparse(True, None, {}, "x" * 1200, [object()])
+    assert _should_try_liteparse(True, None, {"field": 1.0}, "x" * 1200, [])
+
+
 def test_liteparse_extracts_spatial_items_for_rect_heavy_srldc_fixture() -> None:
     """Verify the local LiteParse fallback on the known rect-heavy SRLDC report.
 

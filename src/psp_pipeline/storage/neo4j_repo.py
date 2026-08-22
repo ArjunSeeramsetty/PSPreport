@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Mapping, Optional
 
 from neo4j import GraphDatabase
 
@@ -58,6 +58,78 @@ class Neo4jRepository:
                     "observation_key": observation_key,
                     "time_block": time_block,
                 },
+            )
+
+    def merge_observation_topologies(
+        self,
+        observations: Iterable[Mapping[str, object]],
+    ) -> None:
+        """Idempotently merge a bounded batch of observation topology links."""
+
+        rows = []
+        for observation in observations:
+            entity_key = str(observation["entity_key"])
+            region_code, source_entity_id = _split_entity_key(entity_key)
+            metric_name = str(observation["metric_name"])
+            time_block = observation.get("time_block")
+            state_code = (
+                source_entity_id.removeprefix("state:")
+                if source_entity_id.startswith("state:")
+                else None
+            )
+            rows.append(
+                {
+                    "region_code": region_code,
+                    "entity_key": entity_key,
+                    "source_entity_id": source_entity_id,
+                    "state_code": state_code,
+                    "report_type": str(observation["report_type"]),
+                    "metric_name": metric_name,
+                    "timeseries_uuid": str(observation["timeseries_uuid"]),
+                    "observation_key": (
+                        f"{entity_key}|{metric_name}|{time_block or 'NA'}"
+                    ),
+                    "time_block": time_block,
+                }
+            )
+        if not rows:
+            return
+        with self.driver.session() as session:
+            session.run(
+                """
+                UNWIND $rows AS row
+                MERGE (r:Region {code: row.region_code})
+                MERGE (e:SourceEntity {entity_key: row.entity_key})
+                ON CREATE SET e.entity_id = row.source_entity_id,
+                              e.created_at = datetime(),
+                              e.last_seen_at = datetime()
+                ON MATCH SET e.entity_id = row.source_entity_id,
+                             e.last_seen_at = datetime()
+                MERGE (rt:ReportType {name: row.report_type})
+                MERGE (m:Metric {name: row.metric_name})
+                MERGE (ts:TimeSeries {uuid: row.timeseries_uuid})
+                MERGE (o:Observation {observation_key: row.observation_key})
+                ON CREATE SET o.time_block = row.time_block,
+                              o.created_at = datetime(),
+                              o.last_seen_at = datetime()
+                ON MATCH SET o.time_block = row.time_block,
+                             o.last_seen_at = datetime()
+                FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
+                    MERGE (s:State {code: row.state_code})
+                    MERGE (r)-[:CONTAINS_STATE]->(s)
+                    MERGE (s)-[:HAS_ENTITY]->(e)
+                )
+                FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [1] ELSE [] END |
+                    MERGE (r)-[:HAS_ENTITY]->(e)
+                )
+                MERGE (e)-[:IN_REPORT_TYPE]->(rt)
+                MERGE (e)-[:HAS_TIMESERIES]->(ts)
+                MERGE (ts)-[:FOR_METRIC]->(m)
+                MERGE (e)-[:HAS_OBSERVATION]->(o)
+                MERGE (o)-[:MEASURES]->(m)
+                MERGE (o)-[:RECORDED_IN]->(r)
+                """,
+                {"rows": rows},
             )
 
 

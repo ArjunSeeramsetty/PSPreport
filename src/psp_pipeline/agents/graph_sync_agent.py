@@ -13,12 +13,22 @@ class GraphSyncAgent(BaseAgent):
         self.repo = repo
 
     def run(self, facts: Iterable[FactObservation]) -> None:
-        for fact in facts:
-            self.repo.merge_observation_topology(
-                entity_key=fact.entity_key,
-                report_type=fact.report_type,
-                metric_name=fact.metric_name,
-                source_region=fact.source_region,
-                timeseries_uuid=fact.timeseries_uuid,
-                time_block=fact.time_block,
-            )
+        payload = [
+            {
+                "entity_key": fact.entity_key,
+                "report_type": fact.report_type,
+                "metric_name": fact.metric_name,
+                "source_region": fact.source_region,
+                "timeseries_uuid": fact.timeseries_uuid,
+                "time_block": fact.time_block,
+            }
+            for fact in facts
+        ]
+        if not payload:
+            return
+        merge_batch = getattr(self.repo, "merge_observation_topologies", None)
+        if callable(merge_batch):
+            merge_batch(payload)
+            return
+        for item in payload:
+            self.repo.merge_observation_topology(**item)
