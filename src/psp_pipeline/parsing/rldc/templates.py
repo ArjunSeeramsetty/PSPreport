@@ -65,6 +65,7 @@ SRLDC_SPLIT_FAMILY_ID = "srldc_daily_psp_split_sections"
 SRLDC_FLAT_FAMILY_ID = "srldc_daily_psp_flattened_pages"
 SRLDC_FLAT_COMPACT_FAMILY_ID = "srldc_daily_psp_flattened_compact"
 NRLDC_STANDARD_FAMILY_ID = "nrldc_daily_psp_standard_pages"
+WRLDC_STANDARD_FAMILY_ID = "wrldc_daily_psp_standard_pages"
 UNCLASSIFIED_FAMILY_ID = "unclassified"
 
 
@@ -267,6 +268,204 @@ NRLDC_2026_TEMPLATE = ReportTemplate(
     ),
 )
 
+
+WRLDC_2023_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2023_standard_09_column_generation",
+    version="2023.standard09",
+    rldc="wrldc",
+    min_pages=7,
+    max_pages=7,
+    min_tables=8,
+    max_tables=8,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 48, 70, 34, 38, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 9, 9, "state_generation"),
+        TableShape(3, 1, 55, 85, 18, 18, "regional_generation"),
+        TableShape(5, 1, 42, 68, 23, 27, "interregional_exchange"),
+        TableShape(5, 2, 3, 28, 10, 14, "schedule_exchange"),
+        TableShape(6, 1, 50, 82, 28, 34, "operations_and_market"),
+        TableShape(7, 1, 4, 25, 7, 12, "report_annotations"),
+    ),
+)
+
+WRLDC_2024_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2024_standard_09_column_generation",
+    version="2024.standard09",
+    rldc="wrldc",
+    min_pages=8,
+    max_pages=8,
+    min_tables=9,
+    max_tables=9,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 50, 72, 38, 42, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 9, 9, "state_generation"),
+        TableShape(3, 1, 55, 85, 18, 18, "regional_generation"),
+        TableShape(5, 1, 50, 82, 29, 35, "interregional_exchange"),
+        TableShape(5, 2, 2, 12, 7, 12, "schedule_exchange"),
+        TableShape(6, 1, 45, 75, 18, 24, "operations"),
+        TableShape(7, 1, 38, 65, 36, 44, "market_operations"),
+        TableShape(8, 1, 5, 25, 7, 12, "report_annotations"),
+    ),
+)
+
+WRLDC_2023_REVISED_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2023_revised_09_column_generation",
+    version="2023.revised09",
+    rldc="wrldc",
+    min_pages=7,
+    max_pages=7,
+    min_tables=8,
+    max_tables=8,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 52, 72, 38, 42, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 9, 9, "state_generation"),
+        TableShape(3, 1, 55, 85, 18, 18, "regional_generation"),
+        TableShape(4, 1, 55, 85, 16, 18, "generation_continuation"),
+        TableShape(5, 1, 45, 75, 24, 29, "interregional_exchange"),
+        TableShape(5, 2, 5, 22, 10, 14, "schedule_exchange"),
+        TableShape(6, 1, 48, 78, 18, 24, "operations"),
+        TableShape(7, 1, 38, 70, 32, 40, "market_operations"),
+    ),
+)
+
+WRLDC_2025_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2025_standard_11_column_generation",
+    version="2025.standard11",
+    rldc="wrldc",
+    min_pages=9,
+    max_pages=9,
+    min_tables=10,
+    max_tables=10,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 52, 75, 41, 45, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 11, 11, "state_generation"),
+        TableShape(3, 1, 55, 85, 20, 20, "regional_generation"),
+        TableShape(4, 1, 18, 40, 10, 14, "generation_continuation"),
+        TableShape(5, 1, 55, 85, 20, 26, "interregional_exchange"),
+        TableShape(6, 1, 40, 75, 23, 30, "operations"),
+        TableShape(6, 2, 5, 25, 10, 14, "schedule_exchange"),
+        TableShape(8, 1, 35, 65, 27, 34, "market_operations"),
+        TableShape(9, 1, 5, 25, 7, 12, "report_annotations"),
+    ),
+)
+
+WRLDC_2024_REVISED_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2024_revised_11_column_generation",
+    version="2024.revised11",
+    rldc="wrldc",
+    min_pages=8,
+    max_pages=8,
+    min_tables=9,
+    max_tables=9,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 52, 75, 41, 45, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 11, 11, "state_generation"),
+        TableShape(3, 1, 55, 85, 20, 20, "regional_generation"),
+        TableShape(4, 1, 18, 40, 10, 14, "generation_continuation"),
+        TableShape(5, 1, 55, 85, 20, 27, "interregional_exchange"),
+        TableShape(6, 1, 35, 65, 23, 30, "operations"),
+        TableShape(6, 2, 5, 28, 10, 14, "schedule_exchange"),
+        TableShape(7, 1, 45, 80, 23, 30, "market_operations"),
+        TableShape(8, 1, 30, 70, 26, 34, "report_annotations"),
+    ),
+)
+
+WRLDC_2025_REVISED_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2025_revised_11_column_generation",
+    version="2025.revised11",
+    rldc="wrldc",
+    min_pages=9,
+    max_pages=9,
+    min_tables=10,
+    max_tables=10,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 52, 75, 41, 45, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 11, 11, "state_generation"),
+        TableShape(3, 1, 55, 85, 20, 20, "regional_generation"),
+        TableShape(4, 1, 18, 40, 10, 14, "generation_continuation"),
+        TableShape(5, 1, 55, 90, 18, 24, "physical_exchange_first_page"),
+        TableShape(6, 1, 48, 78, 28, 35, "operations"),
+        TableShape(6, 2, 4, 20, 10, 14, "schedule_exchange"),
+        TableShape(7, 1, 40, 75, 18, 24, "market_operations_first_page"),
+        TableShape(8, 1, 45, 75, 34, 45, "market_operations"),
+        TableShape(9, 1, 5, 25, 7, 12, "report_annotations"),
+    ),
+)
+
+WRLDC_2024_TRANSITION_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2024_transition_11_column_generation",
+    version="2024.transition11",
+    rldc="wrldc",
+    min_pages=8,
+    max_pages=8,
+    min_tables=9,
+    max_tables=9,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 55, 75, 41, 45, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 11, 11, "state_generation"),
+        TableShape(3, 1, 55, 85, 20, 20, "regional_generation"),
+        TableShape(4, 1, 18, 40, 10, 14, "generation_continuation"),
+        TableShape(5, 1, 55, 85, 20, 26, "interregional_exchange"),
+        TableShape(6, 1, 35, 65, 23, 30, "operations"),
+        TableShape(6, 2, 5, 28, 10, 14, "schedule_exchange"),
+        TableShape(7, 1, 40, 70, 18, 24, "market_operations_first_page"),
+        TableShape(8, 1, 40, 70, 32, 40, "market_operations"),
+    ),
+)
+
+WRLDC_2026_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2026_standard_11_column_generation",
+    version="2026.standard11",
+    rldc="wrldc",
+    min_pages=9,
+    max_pages=9,
+    min_tables=10,
+    max_tables=10,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 52, 75, 41, 45, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 11, 11, "state_generation"),
+        TableShape(3, 1, 55, 85, 20, 20, "regional_generation"),
+        TableShape(4, 1, 18, 40, 10, 14, "generation_continuation"),
+        TableShape(5, 1, 55, 90, 10, 15, "physical_exchange_first_page"),
+        TableShape(6, 1, 55, 90, 20, 26, "interregional_exchange"),
+        TableShape(7, 1, 25, 55, 23, 30, "operations"),
+        TableShape(7, 2, 20, 45, 10, 14, "schedule_exchange"),
+        TableShape(8, 1, 40, 75, 23, 30, "market_operations"),
+        TableShape(9, 1, 30, 70, 26, 34, "report_annotations"),
+    ),
+)
+
+WRLDC_2026_EARLY_TEMPLATE = ReportTemplate(
+    template_id="wrldc_daily_psp_v2026_early_11_column_generation",
+    version="2026.early11",
+    rldc="wrldc",
+    min_pages=9,
+    max_pages=9,
+    min_tables=10,
+    max_tables=10,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 52, 75, 41, 45, "regional_and_state_position"),
+        TableShape(2, 1, 50, 78, 11, 11, "state_generation"),
+        TableShape(3, 1, 55, 85, 20, 20, "regional_generation"),
+        TableShape(4, 1, 18, 40, 10, 14, "generation_continuation"),
+        TableShape(5, 1, 55, 90, 10, 15, "physical_exchange_first_page"),
+        TableShape(6, 1, 55, 90, 20, 26, "interregional_exchange"),
+        TableShape(7, 1, 5, 20, 23, 28, "operations_first_page"),
+        TableShape(7, 2, 35, 65, 10, 14, "operations"),
+        TableShape(8, 1, 50, 75, 27, 34, "market_operations"),
+        TableShape(9, 1, 20, 45, 15, 20, "report_annotations"),
+    ),
+)
+
 TEMPLATES: tuple[ReportTemplate, ...] = (
     DEFAULT_SRLDCP_TEMPLATE,
     COMPACT_SRLDCP_TEMPLATE,
@@ -278,6 +477,15 @@ TEMPLATES: tuple[ReportTemplate, ...] = (
     NRLDC_2024_TEMPLATE,
     NRLDC_2025_TEMPLATE,
     NRLDC_2026_TEMPLATE,
+    WRLDC_2023_TEMPLATE,
+    WRLDC_2023_REVISED_TEMPLATE,
+    WRLDC_2024_TEMPLATE,
+    WRLDC_2024_REVISED_TEMPLATE,
+    WRLDC_2024_TRANSITION_TEMPLATE,
+    WRLDC_2025_TEMPLATE,
+    WRLDC_2025_REVISED_TEMPLATE,
+    WRLDC_2026_TEMPLATE,
+    WRLDC_2026_EARLY_TEMPLATE,
 )
 
 
@@ -324,6 +532,11 @@ def infer_structural_family(rldc: str, structure: ReportStructure) -> str:
     if rldc.lower() == "nrldc":
         if structure.page_count in {12, 13} and structure.table_count >= 13:
             return NRLDC_STANDARD_FAMILY_ID
+        return UNCLASSIFIED_FAMILY_ID
+
+    if rldc.lower() == "wrldc":
+        if structure.page_count in {7, 8, 9} and structure.table_count >= 8:
+            return WRLDC_STANDARD_FAMILY_ID
         return UNCLASSIFIED_FAMILY_ID
 
     if rldc.lower() != "srldc":

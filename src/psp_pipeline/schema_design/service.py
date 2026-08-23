@@ -257,6 +257,21 @@ def _infer_report_date(pdf_path: Path, source_id: str = "srldc") -> str | None:
             return _to_iso_date(day, month, f"20{short_year}")
         day, month, year = digits[:2], digits[2:4], digits[4:]
         return _to_iso_date(day, month, year)
+
+    if source == "wrldc":
+        match = re.search(r"wrldc_psp_report_(\d{2})-(\d{2})-(\d{4})\.pdf$", filename)
+        if not match:
+            return None
+        day, month, year = match.groups()
+        return _to_iso_date(day, month, year)
+
+    if source in {"erldc", "nerldc"}:
+        match = re.search(r"psp_(\d{2})-(\d{2})-(\d{4})\.pdf$", filename)
+        if not match:
+            return None
+        day, month, year = match.groups()
+        return _to_iso_date(day, month, year)
+
     return None
 
 

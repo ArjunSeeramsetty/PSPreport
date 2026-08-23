@@ -163,6 +163,79 @@ def export_nrldc_daily_observations(
     ]
 
 
+def export_wrldc_daily_observations(
+    conn: sqlite3.Connection,
+    report_document_id: int | None = None,
+    *,
+    ingested_at: datetime | None = None,
+) -> list[FactObservation]:
+    """Return curated WRLDC facts as portable bitemporal observations."""
+
+    recorded_at = ingested_at or datetime.now(timezone.utc)
+    common = {
+        "report_document_id": report_document_id,
+        "ingested_at": recorded_at,
+        "source_id": "wrldc",
+        "metric_prefix": "wrldc",
+        "report_type": "wrldc_daily_psp",
+        "source_region": "WR",
+    }
+    return [
+        *_export_table(
+            conn,
+            table_name="FactWRLDCRegionalDaily",
+            entity_expression="'WR:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactWRLDCStateDaily",
+            entity_expression="'WR:state:' || state.StateCode",
+            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactWRLDCGenerationDaily",
+            entity_expression="'WR:generation:' || entity.EntityName",
+            joins="JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactWRLDCFrequencyDaily",
+            entity_expression="'WR:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactWRLDCVoltageProfile",
+            entity_expression="'WR:voltage:' || node.NodeName",
+            joins="JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactWRLDCReservoirDaily",
+            entity_expression="'WR:reservoir:' || reservoir.ReservoirName",
+            joins="JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactWRLDCInterRegionalExchange",
+            entity_expression="'WR:line:' || element.ElementName",
+            joins=(
+                "JOIN DimTransmissionElements AS element "
+                "ON element.ElementID = fact.ElementID"
+            ),
+            **common,
+        ),
+    ]
+
+
 def _export_table(
     conn: sqlite3.Connection,
     *,

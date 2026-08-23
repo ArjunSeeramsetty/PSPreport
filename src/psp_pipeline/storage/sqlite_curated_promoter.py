@@ -636,6 +636,13 @@ def promote_report_to_curated(conn: sqlite3.Connection, report_document_id: int)
 
         promote_nrldc_report_to_curated(conn, report_document_id)
         return
+    if report["rldc"] == "wrldc":
+        from psp_pipeline.storage.sqlite_wrldc_promoter import (
+            promote_wrldc_report_to_curated,
+        )
+
+        promote_wrldc_report_to_curated(conn, report_document_id)
+        return
     if report["rldc"] != "srldc":
         return
     layout = _layout_for_report(report)

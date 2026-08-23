@@ -11,6 +11,10 @@ from psp_pipeline.storage.sqlite_srldc_enrichment import (
     transmission_location,
     voltage_node_state_name,
 )
+from psp_pipeline.storage.sqlite_wrldc_enrichment import (
+    transmission_location as wrldc_transmission_location,
+    voltage_node_location as wrldc_voltage_node_location,
+)
 
 
 UNIT_ROWS = (
@@ -404,7 +408,10 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_schema_design_tables(conn)
     _ensure_srldc_curated_tables(conn)
     _ensure_nrldc_curated_tables(conn)
+    _ensure_wrldc_curated_tables(conn)
+    _migrate_curated_lineage_for_raw_lines(conn)
     _seed_curated_dimensions(conn)
+    _backfill_wrldc_dimension_locations(conn)
     seed_srldc_schema_registry(conn)
     conn.commit()
 
@@ -540,15 +547,65 @@ def _ensure_schema_design_tables(conn: sqlite3.Connection) -> None:
             DestinationColumn TEXT NOT NULL,
             RawCellID INTEGER,
             RawTextItemID INTEGER,
+            RawLineID INTEGER,
             ExtractionMethod TEXT NOT NULL,
             Confidence REAL NOT NULL,
             CreatedAt TEXT NOT NULL,
-            CHECK(RawCellID IS NOT NULL OR RawTextItemID IS NOT NULL),
+            CHECK(
+                RawCellID IS NOT NULL OR RawTextItemID IS NOT NULL
+                OR RawLineID IS NOT NULL
+            ),
             UNIQUE(
                 ReportDocumentID, DestinationTable, DestinationKey,
-                DestinationColumn, RawCellID, RawTextItemID
+                DestinationColumn, RawCellID, RawTextItemID, RawLineID
             )
         );
+        """
+    )
+
+
+def _migrate_curated_lineage_for_raw_lines(conn: sqlite3.Connection) -> None:
+    """Rebuild legacy lineage tables so text-line-derived facts stay auditable."""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(curated_field_lineage)")
+    }
+    if "RawLineID" in columns:
+        return
+    conn.executescript(
+        """
+        ALTER TABLE curated_field_lineage RENAME TO curated_field_lineage_legacy;
+        CREATE TABLE curated_field_lineage (
+            LineageID INTEGER PRIMARY KEY AUTOINCREMENT,
+            ReportDocumentID INTEGER NOT NULL,
+            DestinationTable TEXT NOT NULL,
+            DestinationKey TEXT NOT NULL,
+            DestinationColumn TEXT NOT NULL,
+            RawCellID INTEGER,
+            RawTextItemID INTEGER,
+            RawLineID INTEGER,
+            ExtractionMethod TEXT NOT NULL,
+            Confidence REAL NOT NULL,
+            CreatedAt TEXT NOT NULL,
+            CHECK(
+                RawCellID IS NOT NULL OR RawTextItemID IS NOT NULL
+                OR RawLineID IS NOT NULL
+            ),
+            UNIQUE(
+                ReportDocumentID, DestinationTable, DestinationKey,
+                DestinationColumn, RawCellID, RawTextItemID, RawLineID
+            )
+        );
+        INSERT INTO curated_field_lineage(
+            LineageID, ReportDocumentID, DestinationTable, DestinationKey,
+            DestinationColumn, RawCellID, RawTextItemID, ExtractionMethod,
+            Confidence, CreatedAt
+        )
+        SELECT LineageID, ReportDocumentID, DestinationTable, DestinationKey,
+               DestinationColumn, RawCellID, RawTextItemID, ExtractionMethod,
+               Confidence, CreatedAt
+        FROM curated_field_lineage_legacy;
+        DROP TABLE curated_field_lineage_legacy;
         """
     )
 
@@ -1212,6 +1269,162 @@ def _ensure_nrldc_generation_columns(conn: sqlite3.Connection) -> None:
             )
 
 
+def _ensure_wrldc_curated_tables(conn: sqlite3.Connection) -> None:
+    """Create WRLDC facts at regional, state, and generating-entity grains."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS FactWRLDCRegionalDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            EveningPeakDemandMetMW REAL,
+            EveningPeakShortageMW REAL,
+            EveningPeakRequirementMW REAL,
+            EveningPeakFrequencyHz REAL,
+            OffPeakDemandMetMW REAL,
+            OffPeakShortageMW REAL,
+            OffPeakRequirementMW REAL,
+            OffPeakFrequencyHz REAL,
+            DayEnergyMetMU REAL,
+            DayEnergyShortageMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactWRLDCStateDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            StateID INTEGER NOT NULL,
+            ThermalGenerationMU REAL,
+            HydroGenerationMU REAL,
+            GasNapthaDieselGenerationMU REAL,
+            WindGenerationMU REAL,
+            SolarGenerationMU REAL,
+            OtherGenerationMU REAL,
+            TotalGenerationMU REAL,
+            ScheduledDrawalMU REAL,
+            ActualDrawalMU REAL,
+            UIMU REAL,
+            TotalAvailabilityMU REAL,
+            RequirementMU REAL,
+            EnergyShortageMU REAL,
+            ConsumptionMU REAL,
+            EveningPeakDemandMetMW REAL,
+            EveningPeakShortageMW REAL,
+            EveningPeakRequirementMW REAL,
+            OffPeakDemandMetMW REAL,
+            OffPeakShortageMW REAL,
+            OffPeakRequirementMW REAL,
+            AverageDemandMW REAL,
+            ForecastDemandMU REAL,
+            ForecastDeviationMU REAL,
+            MaximumDemandMetMW REAL,
+            MaximumDemandTime TEXT,
+            MaximumDemandShortageMW REAL,
+            MaximumDemandRequirementMW REAL,
+            MaximumACEMW REAL,
+            MaximumACETime TEXT,
+            MinimumACEMW REAL,
+            MinimumACETime TEXT,
+            PRIMARY KEY(ReportDocumentID, DateID, StateID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactWRLDCGenerationDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            StateID INTEGER,
+            GenerationSourceID INTEGER,
+            StationID INTEGER,
+            GeneratingUnitID INTEGER,
+            AggregateID INTEGER,
+            InstalledCapacityMW REAL,
+            EveningPeakMW REAL,
+            OffPeakMW REAL,
+            DayPeakMW REAL,
+            DayPeakTime TEXT,
+            MinimumGenerationMW REAL,
+            MinimumGenerationTime TEXT,
+            ScheduledEnergyMU REAL,
+            GrossEnergyMU REAL,
+            NetEnergyMU REAL,
+            AverageMW REAL,
+            IsTotalRow INTEGER NOT NULL DEFAULT 0,
+            GenerationGrain TEXT NOT NULL DEFAULT 'power_station',
+            SectionName TEXT NOT NULL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID, SectionName),
+            CHECK(AggregateID IS NOT NULL OR StationID IS NOT NULL)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactWRLDCFrequencyDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            MaximumFrequencyHz REAL,
+            MaximumFrequencyTime TEXT,
+            MinimumFrequencyHz REAL,
+            MinimumFrequencyTime TEXT,
+            AverageFrequencyHz REAL,
+            FrequencyVariationIndex REAL,
+            StandardDeviationHz REAL,
+            Maximum15MinuteBlockFrequencyHz REAL,
+            Minimum15MinuteBlockFrequencyHz REAL,
+            PercentageOutsideIEGCBand REAL,
+            HoursOutsideIEGCBand REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactWRLDCVoltageProfile (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            VoltageNodeID INTEGER NOT NULL,
+            NominalVoltageKV REAL NOT NULL,
+            MaximumKV REAL,
+            MaximumTime TEXT,
+            MinimumKV REAL,
+            MinimumTime TEXT,
+            LowCriticalPct REAL,
+            IEGCBandPct REAL,
+            HighCriticalPct REAL,
+            VoltageDeviationIndexPct REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, VoltageNodeID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactWRLDCReservoirDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            ReservoirID INTEGER NOT NULL,
+            MinimumDrawdownLevelM REAL,
+            FullReservoirLevelM REAL,
+            DesignedEnergyMU REAL,
+            CurrentLevelM REAL,
+            CurrentEnergyMU REAL,
+            PreviousYearLevelM REAL,
+            PreviousYearEnergyMU REAL,
+            InflowMU REAL,
+            ProgressiveInflowMU REAL,
+            ProgressiveUsageMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ReservoirID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactWRLDCInterRegionalExchange (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            ElementID INTEGER NOT NULL,
+            CounterpartyRegion TEXT NOT NULL,
+            EveningPeakMW REAL,
+            OffPeakMW REAL,
+            MaximumImportMW REAL,
+            MaximumExportMW REAL,
+            ImportEnergyMU REAL,
+            ExportEnergyMU REAL,
+            NetEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ElementID, CounterpartyRegion)
+        );
+        """
+    )
+
+
 def _backfill_srldc_dimension_locations(conn: sqlite3.Connection) -> None:
     """Backfill deterministic SRLDC location metadata on existing dimensions."""
 
@@ -1270,6 +1483,86 @@ def _backfill_srldc_dimension_locations(conn: sqlite3.Connection) -> None:
         )
 
 
+def _backfill_wrldc_dimension_locations(conn: sqlite3.Connection) -> None:
+    """Enrich only WRLDC-referenced topology from the controlled registry."""
+
+    raw_document_table = conn.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'psp_report_document'
+        """
+    ).fetchone()
+    if raw_document_table is None:
+        return
+
+    voltage_nodes = conn.execute(
+        """
+        SELECT DISTINCT node.VoltageNodeID, node.NodeName
+        FROM DimVoltageNodes AS node
+        JOIN FactWRLDCVoltageProfile AS fact
+          ON fact.VoltageNodeID = node.VoltageNodeID
+        JOIN psp_report_document AS document
+          ON document.id = fact.ReportDocumentID
+        WHERE document.rldc = 'wrldc'
+        """
+    ).fetchall()
+    for voltage_node_id, node_name in voltage_nodes:
+        location = wrldc_voltage_node_location(str(node_name))
+        if location.state_name is None:
+            continue
+        conn.execute(
+            """
+            UPDATE DimVoltageNodes
+            SET StateID = COALESCE(StateID, ?),
+                RegionID = COALESCE(RegionID, ?)
+            WHERE VoltageNodeID = ?
+            """,
+            (
+                _wrldc_state_id(conn, location.state_name),
+                _region_id(conn, location.region_name),
+                voltage_node_id,
+            ),
+        )
+
+    elements = conn.execute(
+        """
+        SELECT DISTINCT element.ElementID, element.ElementName
+        FROM DimTransmissionElements AS element
+        JOIN FactWRLDCInterRegionalExchange AS fact
+          ON fact.ElementID = element.ElementID
+        JOIN psp_report_document AS document
+          ON document.id = fact.ReportDocumentID
+        WHERE document.rldc = 'wrldc'
+        """
+    ).fetchall()
+    for element_id, element_name in elements:
+        metadata = wrldc_transmission_location(str(element_name))
+        if (
+            metadata.from_location.state_name is None
+            or metadata.to_location.state_name is None
+        ):
+            continue
+        conn.execute(
+            """
+            UPDATE DimTransmissionElements
+            SET ElementType = COALESCE(ElementType, ?),
+                NominalVoltageKV = COALESCE(NominalVoltageKV, ?),
+                FromRegionID = COALESCE(FromRegionID, ?),
+                ToRegionID = COALESCE(ToRegionID, ?),
+                FromStateID = COALESCE(FromStateID, ?),
+                ToStateID = COALESCE(ToStateID, ?)
+            WHERE ElementID = ?
+            """,
+            (
+                metadata.element_type,
+                metadata.nominal_voltage_kv,
+                _region_id(conn, metadata.from_location.region_name),
+                _region_id(conn, metadata.to_location.region_name),
+                _wrldc_state_id(conn, metadata.from_location.state_name),
+                _wrldc_state_id(conn, metadata.to_location.state_name),
+                element_id,
+            ),
+        )
 def _backfill_srldc_generation_dimensions(conn: sqlite3.Connection) -> None:
     """Populate newly added denormalized generation dimensions for legacy rows."""
 
@@ -1438,6 +1731,34 @@ def _seed_curated_dimensions(conn: sqlite3.Connection) -> None:
                 """,
                 (alias, normalized, state_row[0]),
             )
+    wrldc_state_aliases = {
+        "Chhattisgarh": ("Chhattisgarh",),
+        "Gujarat": ("Gujarat",),
+        "MP": ("MP", "Madhya Pradesh", "MadhyaPradesh"),
+        "Maharashtra": ("Maharashtra",),
+        "Goa": ("Goa",),
+        "DNHDDPDCL": ("DNHDDPDCL",),
+        "AMNSIL": ("AMNSIL",),
+        "BALCO": ("BALCO",),
+        "RIL JAMNAGAR": ("RILJAMNAGAR", "RIL JAMNAGAR"),
+    }
+    for state_name, aliases in wrldc_state_aliases.items():
+        state_row = conn.execute(
+            "SELECT StateID FROM DimStates WHERE StateName = ?", (state_name,)
+        ).fetchone()
+        if not state_row:
+            continue
+        for alias in aliases:
+            normalized = re.sub(r"[^a-z0-9]", "", alias.lower())
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO DimStateAliases(
+                    SourceID, RawName, NormalizedName, StateID,
+                    ApprovalStatus, MatchConfidence
+                ) VALUES ('wrldc', ?, ?, ?, 'approved', 1.0)
+                """,
+                (alias, normalized, state_row[0]),
+            )
     for table_name, column_name, unit_symbol in UNIT_MAPPINGS:
         conn.execute(
             """
@@ -1457,6 +1778,17 @@ def _state_id(conn: sqlite3.Connection, state_name: str | None) -> int | None:
         "SELECT StateID FROM DimStates WHERE StateName = ?", (state_name,)
     ).fetchone()
     return int(row[0]) if row else None
+
+
+def _wrldc_state_id(conn: sqlite3.Connection, state_name: str | None) -> int | None:
+    """Resolve WRLDC registry display names to existing canonical state keys."""
+
+    canonical_name = {
+        "Dadra and Nagar Haveli and Daman and Diu": "DNHDDPDCL",
+        "Madhya Pradesh": "MP",
+        "Uttar Pradesh": "UP",
+    }.get(state_name or "", state_name)
+    return _state_id(conn, canonical_name)
 
 
 def _region_id(conn: sqlite3.Connection, region_name: str | None) -> int | None:

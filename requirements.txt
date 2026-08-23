@@ -6,6 +6,7 @@ tabula-py
 JPype1
 PyPDF2
 pdfplumber
+pypdf
 camelot-py
 openpyxl
 python-dotenv

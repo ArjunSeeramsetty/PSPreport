@@ -26,6 +26,16 @@ from psp_pipeline.parsing.rldc.templates import (
     SRLDC_FLAT_FAMILY_ID,
     SRLDC_SPLIT_FAMILY_ID,
     TableShape,
+    WRLDC_2023_TEMPLATE,
+    WRLDC_2023_REVISED_TEMPLATE,
+    WRLDC_2024_TEMPLATE,
+    WRLDC_2024_REVISED_TEMPLATE,
+    WRLDC_2024_TRANSITION_TEMPLATE,
+    WRLDC_2025_TEMPLATE,
+    WRLDC_2025_REVISED_TEMPLATE,
+    WRLDC_2026_TEMPLATE,
+    WRLDC_2026_EARLY_TEMPLATE,
+    WRLDC_STANDARD_FAMILY_ID,
     infer_structural_family,
     match_report_template,
 )
@@ -85,7 +95,7 @@ def test_srldc_compact_template_match_accepts_expected_structure() -> None:
 def test_template_match_requires_semantic_pass_for_unknown_rldc() -> None:
     structure = ReportStructure(page_count=10, table_count=41, headings=(), table_shapes=())
 
-    result = match_report_template("wrldc", structure)
+    result = match_report_template("erldc", structure)
 
     assert result.template_id is None
     assert result.semantic_pass_required is True
@@ -319,6 +329,170 @@ def test_nrldc_2025_and_2026_templates_preserve_known_expansions() -> None:
 
         assert result.template_id == template.template_id
         assert result.semantic_pass_required is False
+
+
+def test_wrldc_templates_preserve_observed_2023_to_2026_layouts() -> None:
+    """Recognize the verified WRLDC annual layout families deterministically."""
+
+    cases = (
+        (
+            WRLDC_2023_TEMPLATE,
+            7,
+            8,
+            (
+                TableShape(1, 1, 55, 55, 36, 36, "observed"),
+                TableShape(2, 1, 65, 65, 9, 9, "observed"),
+                TableShape(3, 1, 72, 72, 18, 18, "observed"),
+                TableShape(5, 1, 53, 53, 25, 25, "observed"),
+                TableShape(5, 2, 18, 18, 12, 12, "observed"),
+                TableShape(6, 1, 67, 67, 31, 31, "observed"),
+                TableShape(7, 1, 11, 11, 9, 9, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2024_TEMPLATE,
+            8,
+            9,
+            (
+                TableShape(1, 1, 59, 59, 40, 40, "observed"),
+                TableShape(2, 1, 65, 65, 9, 9, "observed"),
+                TableShape(3, 1, 73, 73, 18, 18, "observed"),
+                TableShape(5, 1, 66, 66, 32, 32, "observed"),
+                TableShape(5, 2, 4, 4, 9, 9, "observed"),
+                TableShape(6, 1, 58, 58, 20, 20, "observed"),
+                TableShape(7, 1, 51, 51, 40, 40, "observed"),
+                TableShape(8, 1, 13, 13, 9, 9, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2023_REVISED_TEMPLATE,
+            7,
+            8,
+            (
+                TableShape(1, 1, 59, 59, 40, 40, "observed"),
+                TableShape(2, 1, 66, 66, 9, 9, "observed"),
+                TableShape(3, 1, 73, 73, 18, 18, "observed"),
+                TableShape(4, 1, 71, 71, 17, 17, "observed"),
+                TableShape(5, 1, 59, 59, 26, 26, "observed"),
+                TableShape(5, 2, 11, 11, 12, 12, "observed"),
+                TableShape(6, 1, 63, 63, 20, 20, "observed"),
+                TableShape(7, 1, 57, 57, 36, 36, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2025_TEMPLATE,
+            9,
+            10,
+            (
+                TableShape(1, 1, 62, 62, 43, 43, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(3, 1, 73, 73, 20, 20, "observed"),
+                TableShape(4, 1, 28, 28, 12, 12, "observed"),
+                TableShape(5, 1, 72, 72, 23, 23, "observed"),
+                TableShape(6, 1, 57, 57, 26, 26, "observed"),
+                TableShape(6, 2, 14, 14, 12, 12, "observed"),
+                TableShape(8, 1, 48, 48, 30, 30, "observed"),
+                TableShape(9, 1, 14, 14, 9, 9, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2024_REVISED_TEMPLATE,
+            8,
+            9,
+            (
+                TableShape(1, 1, 59, 59, 43, 43, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(3, 1, 73, 73, 20, 20, "observed"),
+                TableShape(4, 1, 28, 28, 12, 12, "observed"),
+                TableShape(5, 1, 72, 72, 24, 24, "observed"),
+                TableShape(6, 1, 48, 48, 26, 26, "observed"),
+                TableShape(6, 2, 23, 23, 12, 12, "observed"),
+                TableShape(7, 1, 64, 64, 26, 26, "observed"),
+                TableShape(8, 1, 46, 46, 29, 29, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2025_REVISED_TEMPLATE,
+            9,
+            10,
+            (
+                TableShape(1, 1, 62, 62, 43, 43, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(3, 1, 73, 73, 20, 20, "observed"),
+                TableShape(4, 1, 29, 29, 12, 12, "observed"),
+                TableShape(5, 1, 73, 73, 20, 20, "observed"),
+                TableShape(6, 1, 61, 61, 32, 32, "observed"),
+                TableShape(6, 2, 9, 9, 12, 12, "observed"),
+                TableShape(7, 1, 55, 55, 20, 20, "observed"),
+                TableShape(8, 1, 61, 61, 39, 39, "observed"),
+                TableShape(9, 1, 15, 15, 9, 9, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2024_TRANSITION_TEMPLATE,
+            8,
+            9,
+            (
+                TableShape(1, 1, 62, 62, 43, 43, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(3, 1, 73, 73, 20, 20, "observed"),
+                TableShape(4, 1, 28, 28, 12, 12, "observed"),
+                TableShape(5, 1, 72, 72, 23, 23, "observed"),
+                TableShape(6, 1, 48, 48, 26, 26, "observed"),
+                TableShape(6, 2, 23, 23, 12, 12, "observed"),
+                TableShape(7, 1, 54, 54, 20, 20, "observed"),
+                TableShape(8, 1, 56, 56, 35, 35, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2026_TEMPLATE,
+            9,
+            10,
+            (
+                TableShape(1, 1, 62, 62, 43, 43, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(3, 1, 73, 73, 20, 20, "observed"),
+                TableShape(4, 1, 29, 29, 12, 12, "observed"),
+                TableShape(5, 1, 73, 73, 12, 12, "observed"),
+                TableShape(6, 1, 72, 72, 23, 23, "observed"),
+                TableShape(7, 1, 39, 39, 26, 26, "observed"),
+                TableShape(7, 2, 32, 32, 12, 12, "observed"),
+                TableShape(8, 1, 57, 57, 26, 26, "observed"),
+                TableShape(9, 1, 49, 49, 29, 29, "observed"),
+            ),
+        ),
+        (
+            WRLDC_2026_EARLY_TEMPLATE,
+            9,
+            10,
+            (
+                TableShape(1, 1, 62, 62, 43, 43, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(3, 1, 73, 73, 20, 20, "observed"),
+                TableShape(4, 1, 29, 29, 12, 12, "observed"),
+                TableShape(5, 1, 73, 73, 12, 12, "observed"),
+                TableShape(6, 1, 73, 73, 23, 23, "observed"),
+                TableShape(7, 1, 12, 12, 25, 25, "observed"),
+                TableShape(7, 2, 50, 50, 12, 12, "observed"),
+                TableShape(8, 1, 64, 64, 30, 30, "observed"),
+                TableShape(9, 1, 31, 31, 17, 17, "observed"),
+            ),
+        ),
+    )
+    for template, page_count, table_count, shapes in cases:
+        structure = ReportStructure(
+            page_count=page_count,
+            table_count=table_count,
+            headings=template.required_headings,
+            table_shapes=shapes,
+        )
+
+        result = match_report_template("wrldc", structure)
+
+        assert result.template_id == template.template_id
+        assert result.confidence == 1.0
+        assert result.semantic_pass_required is False
+        assert infer_structural_family("wrldc", structure) == WRLDC_STANDARD_FAMILY_ID
 
 
 @pytest.mark.integration

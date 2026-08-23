@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from psp_pipeline.pipelines.rldc_daily_psp import ensure_sqlite_schema
+from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
 
 
 def test_sqlite_schema_includes_governed_srldc_tables() -> None:
@@ -85,3 +86,42 @@ def test_sqlite_curated_schema_seeds_dimensions_and_unit_mappings() -> None:
         "SELECT COUNT(*) FROM schema_field_mapping WHERE ApprovalStatus = 'approved'"
     ).fetchone()[0]
     assert approved_mappings >= 40
+
+
+def test_curated_lineage_migrates_legacy_rows_for_raw_line_provenance() -> None:
+    """The lineage upgrade preserves pre-existing cell-derived records."""
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE curated_field_lineage (
+            LineageID INTEGER PRIMARY KEY AUTOINCREMENT,
+            ReportDocumentID INTEGER NOT NULL,
+            DestinationTable TEXT NOT NULL,
+            DestinationKey TEXT NOT NULL,
+            DestinationColumn TEXT NOT NULL,
+            RawCellID INTEGER,
+            RawTextItemID INTEGER,
+            ExtractionMethod TEXT NOT NULL,
+            Confidence REAL NOT NULL,
+            CreatedAt TEXT NOT NULL
+        );
+        INSERT INTO curated_field_lineage(
+            ReportDocumentID, DestinationTable, DestinationKey,
+            DestinationColumn, RawCellID, ExtractionMethod, Confidence, CreatedAt
+        ) VALUES (1, 'FactLegacy', 'report=1', 'Value', 99, 'pdfplumber', 1.0, 'now');
+        """
+    )
+
+    ensure_curated_sqlite_schema(conn)
+
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(curated_field_lineage)")
+    }
+    preserved = conn.execute(
+        """
+        SELECT RawCellID, RawLineID, DestinationTable
+        FROM curated_field_lineage
+        """
+    ).fetchone()
+    assert "RawLineID" in columns
+    assert preserved == (99, None, "FactLegacy")
