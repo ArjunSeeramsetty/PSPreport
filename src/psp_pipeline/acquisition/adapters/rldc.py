@@ -397,3 +397,87 @@ class NRLDCAdapter(BaseRLDCAdapter):
 
     def requires_playwright(self) -> bool:
         return False
+
+
+class PublicListingPSPAdapter(BaseRLDCAdapter):
+    """Discover PSP PDFs exposed directly on a public regional listing page."""
+
+    LISTING_PATH = "/"
+
+    def discover(self, client: httpx.Client, target_date: date) -> list[DiscoveredLink]:
+        """Return exact-date public PSP files without constructing speculative URLs."""
+
+        listing_url = urljoin(self.BASE_URL, self.LISTING_PATH)
+        try:
+            response = client.get(listing_url)
+        except httpx.HTTPError as error:
+            logger.warning("%s listing request failed: %s", self.SOURCE_ID, error)
+            return []
+        if response.status_code >= 400:
+            logger.warning(
+                "%s listing returned status %s", self.SOURCE_ID, response.status_code
+            )
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        candidates = {
+            (anchor["href"].strip(), anchor.get_text(" ", strip=True))
+            for anchor in soup.find_all("a", href=True)
+        }
+        candidates.update(
+            (url, "") for url in _extract_pdf_candidates_from_html(response.text, listing_url)
+        )
+        links: list[DiscoveredLink] = []
+        seen_urls: set[str] = set()
+        for href, text in candidates:
+            candidate_text = f"{href} {text}".lower()
+            if ".pdf" not in candidate_text:
+                continue
+            if "psp" not in candidate_text and "power supply position" not in candidate_text:
+                continue
+            report_date = _parse_report_date_from_text(f"{href} {text}")
+            if report_date != target_date:
+                continue
+            document_url = urljoin(listing_url, href)
+            if document_url in seen_urls:
+                continue
+            if urlparse(document_url).netloc != urlparse(self.BASE_URL).netloc:
+                continue
+            seen_urls.add(document_url)
+            links.append(
+                DiscoveredLink(
+                    url=document_url,
+                    report_date=report_date,
+                    source_id=self.SOURCE_ID,
+                    report_family="psp",
+                    confidence=0.9,
+                )
+            )
+        return links
+
+    def requires_playwright(self) -> bool:
+        """Public HTML listing discovery does not need browser automation."""
+
+        return False
+
+
+class WRLDCAdapter(PublicListingPSPAdapter):
+    """Conservative public PSP discovery for the Western Regional Load Despatch Centre."""
+
+    SOURCE_ID = "wrldc"
+    BASE_URL = "https://www.wrldc.in"
+
+
+class ERLDCAdapter(PublicListingPSPAdapter):
+    """Conservative public PSP discovery for the Eastern Regional Load Despatch Centre."""
+
+    SOURCE_ID = "erldc"
+    BASE_URL = "https://erldc.in"
+
+
+class NERLDCAdapter(PublicListingPSPAdapter):
+    """Public PSP discovery for the North Eastern Regional Load Despatch Centre."""
+
+    SOURCE_ID = "nerldc"
+    BASE_URL = "https://www.nerldc.in"
+    LISTING_PATH = "/power-supply-position-psp-report/"

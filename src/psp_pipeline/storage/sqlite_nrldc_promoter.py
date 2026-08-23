@@ -192,6 +192,10 @@ def promote_nrldc_report_to_curated(
     validation_failures += _promote_state_generation(
         conn, report_document_id, date_id, region_id, template_id, mapped_cells
     )
+    _promote_frequency_daily(conn, report_document_id, date_id, region_id, mapped_cells)
+    _promote_voltage_profiles(conn, report_document_id, date_id, region_id, mapped_cells)
+    _promote_reservoirs(conn, report_document_id, date_id, region_id, mapped_cells)
+    _promote_physical_exchanges(conn, report_document_id, date_id, mapped_cells)
     _record_initial_coverage(
         conn, report_document_id, template_id, mapped_cells, validation_failures
     )
@@ -246,6 +250,17 @@ def _clear_nrldc_curated_report(
         "DELETE FROM FactNRLDCGenerationDaily WHERE ReportDocumentID = ?",
         (report_document_id,),
     )
+    for table_name in (
+        "FactNRLDCFrequencyDaily",
+        "FactNRLDCVoltageProfile",
+        "FactNRLDCReservoirDaily",
+        "FactNRLDCInterRegionalExchange",
+        "FactNRLDCInterRegionalScheduleExchange",
+    ):
+        conn.execute(
+            f"DELETE FROM {table_name} WHERE ReportDocumentID = ?",
+            (report_document_id,),
+        )
 
 
 def repromote_nrldc_reports(conn: sqlite3.Connection) -> dict[str, int]:
@@ -465,6 +480,278 @@ def _promote_state_generation(
     return validation_failures
 
 
+def _promote_frequency_daily(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote the regional frequency summary from the Section 5 data row."""
+
+    for _, row in _rows_on_pages(conn, report_id, (9, 10, 11)):
+        maximum = _cell_float(row, 1)
+        minimum = _cell_float(row, 4)
+        average = _cell_float(row, 12)
+        if maximum is None or minimum is None or average is None:
+            continue
+        if not 45.0 <= maximum <= 55.0 or not 45.0 <= minimum <= 55.0:
+            continue
+        values, sources = _mapped_values(
+            row,
+            {
+                "MaximumFrequencyHz": 1,
+                "MinimumFrequencyHz": 4,
+                "AverageFrequencyHz": 12,
+                "FrequencyVariationIndex": 15,
+                "StandardDeviationHz": 18,
+                "Maximum15MinuteBlockFrequencyHz": 19,
+                "Minimum15MinuteBlockFrequencyHz": 22,
+                "FrequencyDeviationIndexPct": 24,
+            },
+        )
+        values["MaximumFrequencyTime"] = _cell_time(row, 3)
+        values["MinimumFrequencyTime"] = _cell_time(row, 8)
+        for column in ("MaximumFrequencyTime", "MinimumFrequencyTime"):
+            raw = row.get(3 if column.startswith("Maximum") else 8)
+            if raw and values[column] is not None:
+                sources[column] = raw[0]
+        columns = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCFrequencyDaily(
+                ReportDocumentID, DateID, RegionID, {', '.join(columns)}
+            ) VALUES (?, ?, ?, {', '.join('?' for _ in columns)})
+            """,
+            (report_id, date_id, region_id, *(values[column] for column in columns)),
+        )
+        _write_lineage(
+            conn,
+            report_id,
+            "FactNRLDCFrequencyDaily",
+            f"report={report_id};date={date_id};region={region_id}",
+            sources,
+            mapped_cells,
+        )
+        return
+
+
+def _promote_voltage_profiles(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote 400 and 765 kV voltage rows using their printed section headings."""
+
+    nominal_kv: float | None = None
+    for page_no, row in _rows_on_pages(conn, report_id, (10, 11)):
+        label = _clean_label(row.get(1, (0, ""))[1])
+        heading = re.search(r"voltage\s*profile\s*:\s*(\d+)", label, re.IGNORECASE)
+        if heading:
+            nominal_kv = float(heading.group(1))
+            continue
+        if label.lower().startswith("7(a)"):
+            break
+        if nominal_kv is None or not label or _is_header_or_unit(label):
+            continue
+        if page_no == 10:
+            columns = {
+                "MaximumKV": 3,
+                "MinimumKV": 8,
+                "LowCriticalPct": 15,
+                "LowWarningPct": 18,
+                "HighWarningPct": 19,
+                "HighCriticalPct": 22,
+                "VoltageDeviationIndexPct": 24,
+            }
+            maximum_time_column, minimum_time_column = 4, 12
+        else:
+            columns = {
+                "MaximumKV": 3,
+                "MinimumKV": 10,
+                "LowCriticalPct": 18,
+                "LowWarningPct": 20,
+                "HighWarningPct": 22,
+                "HighCriticalPct": 24,
+                "VoltageDeviationIndexPct": 27,
+            }
+            maximum_time_column, minimum_time_column = 6, 14
+        maximum = _cell_float(row, columns["MaximumKV"])
+        minimum = _cell_float(row, columns["MinimumKV"])
+        if maximum is None or minimum is None:
+            continue
+        values, sources = _mapped_values(row, columns)
+        values["MaximumTime"] = _cell_time(row, maximum_time_column)
+        values["MinimumTime"] = _cell_time(row, minimum_time_column)
+        for column, cell_column in (
+            ("MaximumTime", maximum_time_column),
+            ("MinimumTime", minimum_time_column),
+        ):
+            raw = row.get(cell_column)
+            if raw and values[column] is not None:
+                sources[column] = raw[0]
+        node_id = _get_or_create_voltage_node(conn, label, nominal_kv, region_id)
+        columns_to_insert = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCVoltageProfile(
+                ReportDocumentID, DateID, VoltageNodeID, NominalVoltageKV,
+                {', '.join(columns_to_insert)}
+            ) VALUES (?, ?, ?, ?, {', '.join('?' for _ in columns_to_insert)})
+            """,
+            (
+                report_id,
+                date_id,
+                node_id,
+                nominal_kv,
+                *(values[column] for column in columns_to_insert),
+            ),
+        )
+        if row.get(1):
+            mapped_cells.add(row[1][0])
+        _write_lineage(
+            conn,
+            report_id,
+            "FactNRLDCVoltageProfile",
+            f"report={report_id};date={date_id};node={node_id}",
+            sources,
+            mapped_cells,
+        )
+
+
+def _promote_reservoirs(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote Section 8 reservoir levels, energy, inflow, and usage values."""
+
+    in_section = False
+    for _, row in _rows_on_pages(conn, report_id, (12, 13)):
+        label = _clean_label(row.get(1, (0, ""))[1])
+        normalized = re.sub(r"\s+", "", label.lower())
+        if normalized.startswith("8.majorreservoir"):
+            in_section = True
+            continue
+        if in_section and normalized.startswith("9.systemreliability"):
+            break
+        if not in_section or not label or _is_total_row(label):
+            continue
+        if _cell_float(row, 3) is None or _cell_float(row, 7) is None:
+            continue
+        values, sources = _mapped_values(
+            row,
+            {
+                "MinimumDrawdownLevelM": 3,
+                "FullReservoirLevelM": 7,
+                "EnergyContentAtFullReservoirMU": 12,
+                "CurrentLevelM": 17,
+                "CurrentEnergyMU": 19,
+                "PreviousYearLevelM": 23,
+                "PreviousYearEnergyMU": 25,
+                "InflowCusec": 28,
+                "UsageCusec": 31,
+            },
+        )
+        reservoir_id = _get_or_create_reservoir(conn, label, region_id)
+        columns = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCReservoirDaily(
+                ReportDocumentID, DateID, ReservoirID, {', '.join(columns)}
+            ) VALUES (?, ?, ?, {', '.join('?' for _ in columns)})
+            """,
+            (report_id, date_id, reservoir_id, *(values[column] for column in columns)),
+        )
+        if row.get(1):
+            mapped_cells.add(row[1][0])
+        _write_lineage(
+            conn,
+            report_id,
+            "FactNRLDCReservoirDaily",
+            f"report={report_id};date={date_id};reservoir={reservoir_id}",
+            sources,
+            mapped_cells,
+        )
+
+
+def _promote_physical_exchanges(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote Section 4(A) line-level exchange energy by counterparty region."""
+
+    counterparty = ""
+    in_section = False
+    for page_no, row in _rows_on_pages(conn, report_id, (9, 10)):
+        label = _clean_label(row.get(1, (0, ""))[1])
+        normalized = re.sub(r"\s+", "", label.lower())
+        if normalized.startswith(("4(a)interregionalexchange", "4(a)inter-region")):
+            in_section = True
+            continue
+        if in_section and normalized.startswith("4(b)"):
+            break
+        if not in_section:
+            continue
+        region_match = re.search(r"between(.+?)andnorthregion", normalized)
+        if region_match:
+            counterparty = region_match.group(1).upper().replace("_", " ")
+            continue
+        name_cell = row.get(2) if page_no == 9 else row.get(3)
+        element_name = _clean_label(name_cell[1]) if name_cell else ""
+        if not counterparty or not re.search(r"(?:kv|hvdc)", element_name, re.I):
+            continue
+        columns = (
+            {
+                "EveningPeakMW": 7,
+                "OffPeakMW": 11,
+                "MaximumImportMW": 13,
+                "MaximumExportMW": 16,
+                "ImportEnergyMU": 20,
+                "ExportEnergyMU": 22,
+                "NetEnergyMU": 23,
+            }
+            if page_no == 9
+            else {
+                "EveningPeakMW": 7,
+                "OffPeakMW": 9,
+                "MaximumImportMW": 12,
+                "MaximumExportMW": 15,
+                "ImportEnergyMU": 19,
+                "ExportEnergyMU": 22,
+                "NetEnergyMU": 24,
+            }
+        )
+        values, sources = _mapped_values(row, columns)
+        element_id = _get_or_create_transmission_element(conn, element_name)
+        names = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCInterRegionalExchange(
+                ReportDocumentID, DateID, ElementID, CounterpartyRegion,
+                {', '.join(names)}
+            ) VALUES (?, ?, ?, ?, {', '.join('?' for _ in names)})
+            """,
+            (report_id, date_id, element_id, counterparty, *(values[name] for name in names)),
+        )
+        if name_cell:
+            mapped_cells.add(name_cell[0])
+        _write_lineage(
+            conn,
+            report_id,
+            "FactNRLDCInterRegionalExchange",
+            f"report={report_id};date={date_id};element={element_id};region={counterparty}",
+            sources,
+            mapped_cells,
+        )
+
+
 def _mapped_values(
     row: dict[int, tuple[int, str]],
     columns: dict[str, int],
@@ -655,6 +942,20 @@ def _table_rows(
     return [rows[row_no] for row_no in sorted(rows)]
 
 
+def _rows_on_pages(
+    conn: sqlite3.Connection,
+    report_id: int,
+    page_numbers: tuple[int, ...],
+) -> list[tuple[int, dict[int, tuple[int, str]]]]:
+    """Return page-tagged table-one rows in report order for section scanning."""
+
+    return [
+        (page_no, row)
+        for page_no in page_numbers
+        for row in _table_rows(conn, report_id, page_no, 1)
+    ]
+
+
 def _table_row(
     conn: sqlite3.Connection,
     report_id: int,
@@ -717,6 +1018,55 @@ def _write_lineage(
 def _cell_float(row: dict[int, tuple[int, str]], col_no: int) -> float | None:
     raw = row.get(col_no)
     return _to_float(raw[1]) if raw else None
+
+
+def _cell_time(row: dict[int, tuple[int, str]], col_no: int) -> str | None:
+    """Return a normalized time from a sparse PDF cell when present."""
+
+    raw = row.get(col_no)
+    return _normalize_time(raw[1]) if raw else None
+
+
+def _get_or_create_transmission_element(
+    conn: sqlite3.Connection,
+    name: str,
+) -> int:
+    """Delegate canonical line identity creation to the shared dimension helper."""
+
+    from psp_pipeline.storage.sqlite_curated_promoter import (
+        _get_or_create_transmission_element as resolver,
+    )
+
+    return resolver(conn, name)
+
+
+def _get_or_create_voltage_node(
+    conn: sqlite3.Connection,
+    name: str,
+    nominal_kv: float,
+    region_id: int,
+) -> int:
+    """Delegate canonical voltage-node identity creation to shared dimensions."""
+
+    from psp_pipeline.storage.sqlite_curated_promoter import (
+        _get_or_create_voltage_node as resolver,
+    )
+
+    return resolver(conn, name, nominal_kv, region_id)
+
+
+def _get_or_create_reservoir(
+    conn: sqlite3.Connection,
+    name: str,
+    region_id: int,
+) -> int:
+    """Delegate canonical reservoir identity creation to shared dimensions."""
+
+    from psp_pipeline.storage.sqlite_curated_promoter import (
+        _get_or_create_reservoir as resolver,
+    )
+
+    return resolver(conn, name, region_id)
 
 
 def _to_float(value: str | None) -> float | None:

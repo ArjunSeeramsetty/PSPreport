@@ -17,6 +17,10 @@ _DIMENSION_COLUMNS = {
     "DateID",
     "RegionID",
     "StateID",
+    "ElementID",
+    "VoltageNodeID",
+    "ReservoirID",
+    "IsTotalRow",
 }
 
 
@@ -42,6 +46,10 @@ def export_srldc_daily_observations(
             joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
             report_document_id=report_document_id,
             ingested_at=recorded_at,
+            source_id="srldc",
+            metric_prefix="srldc",
+            report_type=REPORT_TYPE,
+            source_region=SOURCE_REGION,
         ),
         *_export_table(
             conn,
@@ -50,6 +58,76 @@ def export_srldc_daily_observations(
             joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
             report_document_id=report_document_id,
             ingested_at=recorded_at,
+            source_id="srldc",
+            metric_prefix="srldc",
+            report_type=REPORT_TYPE,
+            source_region=SOURCE_REGION,
+        ),
+    ]
+
+
+def export_nrldc_daily_observations(
+    conn: sqlite3.Connection,
+    report_document_id: int | None = None,
+    *,
+    ingested_at: datetime | None = None,
+) -> list[FactObservation]:
+    """Return curated NRLDC facts as portable bitemporal observations."""
+
+    recorded_at = ingested_at or datetime.now(timezone.utc)
+    common = {
+        "report_document_id": report_document_id,
+        "ingested_at": recorded_at,
+        "source_id": "nrldc",
+        "metric_prefix": "nrldc",
+        "report_type": "nrldc_daily_psp",
+        "source_region": "NR",
+    }
+    return [
+        *_export_table(
+            conn,
+            table_name="FactNRLDCRegionalDaily",
+            entity_expression="'NR:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNRLDCStateDaily",
+            entity_expression="'NR:state:' || state.StateCode",
+            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNRLDCFrequencyDaily",
+            entity_expression="'NR:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNRLDCVoltageProfile",
+            entity_expression="'NR:voltage:' || node.NodeName",
+            joins="JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNRLDCReservoirDaily",
+            entity_expression="'NR:reservoir:' || reservoir.ReservoirName",
+            joins="JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNRLDCInterRegionalExchange",
+            entity_expression="'NR:line:' || element.ElementName",
+            joins=(
+                "JOIN DimTransmissionElements AS element "
+                "ON element.ElementID = fact.ElementID"
+            ),
+            **common,
         ),
     ]
 
@@ -62,14 +140,18 @@ def _export_table(
     joins: str,
     report_document_id: int | None,
     ingested_at: datetime,
+    source_id: str,
+    metric_prefix: str,
+    report_type: str,
+    source_region: str,
 ) -> Iterable[FactObservation]:
     """Yield each non-null numeric fact column from one daily curated table."""
 
     numeric_columns = _numeric_columns(conn, table_name)
     if not numeric_columns:
         return []
-    predicates = ["document.rldc = 'srldc'"]
-    parameters: list[object] = []
+    predicates = ["document.rldc = ?"]
+    parameters: list[object] = [source_id]
     if report_document_id is not None:
         predicates.append("fact.ReportDocumentID = ?")
         parameters.append(report_document_id)
@@ -97,7 +179,7 @@ def _export_table(
         for column, value in zip(numeric_columns, values, strict=True):
             if value is None:
                 continue
-            metric_name = f"srldc.{table_name}.{column}"
+            metric_name = f"{metric_prefix}.{table_name}.{column}"
             observations.append(
                 FactObservation(
                     entity_key=str(entity_key),
@@ -106,8 +188,8 @@ def _export_table(
                     operational_value=float(value),
                     settlement_value=None,
                     variance_pct=None,
-                    report_type=REPORT_TYPE,
-                    source_region=SOURCE_REGION,
+                    report_type=report_type,
+                    source_region=source_region,
                     valid_from=valid_from,
                     valid_to=None,
                     version_no=1,

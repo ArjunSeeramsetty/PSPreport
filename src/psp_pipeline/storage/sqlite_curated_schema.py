@@ -1088,6 +1088,87 @@ def _ensure_nrldc_curated_tables(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(ReportDocumentID, DateID, EntityID, SectionName),
             CHECK(AggregateID IS NOT NULL OR StationID IS NOT NULL)
         );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCFrequencyDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            MaximumFrequencyHz REAL,
+            MaximumFrequencyTime TEXT,
+            MinimumFrequencyHz REAL,
+            MinimumFrequencyTime TEXT,
+            AverageFrequencyHz REAL,
+            FrequencyVariationIndex REAL,
+            StandardDeviationHz REAL,
+            Maximum15MinuteBlockFrequencyHz REAL,
+            Minimum15MinuteBlockFrequencyHz REAL,
+            FrequencyDeviationIndexPct REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCVoltageProfile (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            VoltageNodeID INTEGER NOT NULL,
+            NominalVoltageKV REAL NOT NULL,
+            MaximumKV REAL,
+            MaximumTime TEXT,
+            MinimumKV REAL,
+            MinimumTime TEXT,
+            LowCriticalPct REAL,
+            LowWarningPct REAL,
+            HighWarningPct REAL,
+            HighCriticalPct REAL,
+            VoltageDeviationIndexPct REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, VoltageNodeID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCReservoirDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            ReservoirID INTEGER NOT NULL,
+            MinimumDrawdownLevelM REAL,
+            FullReservoirLevelM REAL,
+            EnergyContentAtFullReservoirMU REAL,
+            CurrentLevelM REAL,
+            CurrentEnergyMU REAL,
+            PreviousYearLevelM REAL,
+            PreviousYearEnergyMU REAL,
+            InflowCusec REAL,
+            UsageCusec REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ReservoirID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCInterRegionalExchange (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            ElementID INTEGER NOT NULL,
+            CounterpartyRegion TEXT NOT NULL,
+            EveningPeakMW REAL,
+            OffPeakMW REAL,
+            MaximumImportMW REAL,
+            MaximumExportMW REAL,
+            ImportEnergyMU REAL,
+            ExportEnergyMU REAL,
+            NetEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ElementID, CounterpartyRegion)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCInterRegionalScheduleExchange (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            CounterpartyRegion TEXT NOT NULL,
+            IsTotalRow INTEGER NOT NULL DEFAULT 0,
+            ISGSAndGNAScheduleMU REAL,
+            BilateralScheduleMU REAL,
+            GDAMScheduleMU REAL,
+            DAMScheduleMU REAL,
+            RTMScheduleMU REAL,
+            TotalScheduleMU REAL,
+            ActualMU REAL,
+            DeviationMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, CounterpartyRegion)
+        );
         """
     )
 

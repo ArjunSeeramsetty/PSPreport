@@ -43,6 +43,29 @@ def test_nrldc_promotes_regional_state_and_generation_facts() -> None:
         1: "BAWANA GPS(2*253+4*216)", 2: "1,370", 3: "186", 4: "180",
         5: "258.03", 6: "07:00", 7: "0", 8: "", 9: "4.21", 10: "4.04", 11: "168",
     })
+    _insert_cells(conn, 1, 10, 1, {1: "4(A) INTER REGIONAL EXCHANGES"})
+    _insert_cells(conn, 1, 10, 2, {1: "Import/Export between EAST REGION and NORTH REGION"})
+    _insert_cells(conn, 1, 10, 3, {
+        3: "765KV-SASARAM-FATEHPUR", 7: "530", 9: "-1,138", 12: "1,138",
+        15: "649", 19: "10.2", 22: "0", 24: "10.2",
+    })
+    _insert_cells(conn, 1, 10, 4, {1: "4(B) Inter Regional Schedule"})
+    _insert_cells(conn, 1, 10, 5, {1: "5. Frequency Profile"})
+    _insert_cells(conn, 1, 10, 6, {
+        1: "50.396", 3: "18:03", 4: "49.816", 8: "14:37", 12: "50.023",
+        15: "0.076", 18: "0.084", 19: "50.281", 22: "49.863", 24: "99.99",
+    })
+    _insert_cells(conn, 1, 11, 1, {1: "6.1 Voltage Profile: 765kV"})
+    _insert_cells(conn, 1, 11, 3, {
+        1: "ANTA RS 765KV", 3: "791", 6: "19:10", 10: "772", 14: "14:40",
+        18: "0", 20: "0", 22: "0", 24: "0", 27: "0",
+    })
+    _insert_cells(conn, 1, 12, 1, {1: "8. Major Reservoir Particulars"})
+    _insert_cells(conn, 1, 12, 3, {
+        1: "Bhakra", 3: "445.62", 7: "513.59", 12: "1728.8", 17: "482.03",
+        19: "503", 23: "476.21", 25: "375", 28: "305.85", 31: "385.76",
+    })
+    _insert_cells(conn, 1, 12, 4, {1: "9. System Reliability Indices"})
 
     promote_report_to_curated(conn, 1)
 
@@ -70,6 +93,12 @@ def test_nrldc_promotes_regional_state_and_generation_facts() -> None:
     assert regional == (60306.0, 1294.0)
     assert punjab == (71.12, 88.36, 159.49)
     assert generation == (1370.0, 4.04, 168.0)
+    assert conn.execute("SELECT COUNT(*) FROM FactNRLDCFrequencyDaily").fetchone() == (1,)
+    assert conn.execute("SELECT COUNT(*) FROM FactNRLDCVoltageProfile").fetchone() == (1,)
+    assert conn.execute("SELECT COUNT(*) FROM FactNRLDCReservoirDaily").fetchone() == (1,)
+    assert conn.execute(
+        "SELECT NetEnergyMU FROM FactNRLDCInterRegionalExchange"
+    ).fetchone() == (10.2,)
     assert coverage[0] > 0
     assert coverage[1] == 0
     assert coverage[2] == "review_required"

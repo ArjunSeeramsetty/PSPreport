@@ -8,19 +8,27 @@ from pathlib import Path
 
 from psp_pipeline.core.settings import load_settings
 from psp_pipeline.storage.postgres_repo import PostgresRepository
-from psp_pipeline.storage.sqlite_curated_export import export_srldc_daily_observations
+from psp_pipeline.storage.sqlite_curated_export import (
+    export_nrldc_daily_observations,
+    export_srldc_daily_observations,
+)
 
 
 def main() -> None:
     """Export local curated facts and append them to the configured TimescaleDB."""
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=Path, required=True, help="Curated SRLDC SQLite database")
+    parser.add_argument("--db", type=Path, required=True, help="Curated RLDC SQLite database")
+    parser.add_argument("--rldc", choices=("srldc", "nrldc"), default="srldc")
     parser.add_argument("--report-id", type=int, help="Optional psp_report_document id")
     args = parser.parse_args()
 
     with sqlite3.connect(args.db) as conn:
-        facts = export_srldc_daily_observations(conn, args.report_id)
+        exporter = (
+            export_nrldc_daily_observations if args.rldc == "nrldc"
+            else export_srldc_daily_observations
+        )
+        facts = exporter(conn, args.report_id)
     if not facts:
         return
     settings = load_settings()
