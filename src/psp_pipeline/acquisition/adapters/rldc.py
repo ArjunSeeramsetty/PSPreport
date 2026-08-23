@@ -429,6 +429,7 @@ class PublicListingPSPAdapter(BaseRLDCAdapter):
         )
         links: list[DiscoveredLink] = []
         seen_urls: set[str] = set()
+        listing_host = urlparse(self.BASE_URL).hostname
         for href, text in candidates:
             candidate_text = f"{href} {text}".lower()
             if ".pdf" not in candidate_text:
@@ -441,7 +442,11 @@ class PublicListingPSPAdapter(BaseRLDCAdapter):
             document_url = urljoin(listing_url, href)
             if document_url in seen_urls:
                 continue
-            if urlparse(document_url).netloc != urlparse(self.BASE_URL).netloc:
+            document_parts = urlparse(document_url)
+            if (
+                document_parts.scheme not in {"http", "https"}
+                or document_parts.hostname != listing_host
+            ):
                 continue
             seen_urls.add(document_url)
             links.append(

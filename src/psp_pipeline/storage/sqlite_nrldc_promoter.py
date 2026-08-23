@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import re
 import sqlite3
@@ -10,6 +11,10 @@ from psp_pipeline.parsing.rldc.templates import (
     NRLDC_2024_TEMPLATE,
     NRLDC_2025_TEMPLATE,
     NRLDC_2026_TEMPLATE,
+)
+from psp_pipeline.parsing.rldc.spatial_rows import (
+    SpatialTextItem,
+    reconstruct_generation_rows,
 )
 from psp_pipeline.storage.sqlite_dimensions import (
     DimensionResolutionError,
@@ -192,10 +197,18 @@ def promote_nrldc_report_to_curated(
     validation_failures += _promote_state_generation(
         conn, report_document_id, date_id, region_id, template_id, mapped_cells
     )
+    validation_failures += _promote_regional_generation(
+        conn, report_document_id, date_id, region_id, template_id, mapped_cells
+    )
+    validation_failures += _promote_spatial_continuation_generation(
+        conn, report_document_id, date_id, region_id, template_id
+    )
     _promote_frequency_daily(conn, report_document_id, date_id, region_id, mapped_cells)
     _promote_voltage_profiles(conn, report_document_id, date_id, region_id, mapped_cells)
     _promote_reservoirs(conn, report_document_id, date_id, region_id, mapped_cells)
     _promote_physical_exchanges(conn, report_document_id, date_id, mapped_cells)
+    _promote_schedule_exchanges(conn, report_document_id, date_id, mapped_cells)
+    _promote_nepal_exchanges(conn, report_document_id, date_id, mapped_cells)
     _record_initial_coverage(
         conn, report_document_id, template_id, mapped_cells, validation_failures
     )
@@ -256,6 +269,7 @@ def _clear_nrldc_curated_report(
         "FactNRLDCReservoirDaily",
         "FactNRLDCInterRegionalExchange",
         "FactNRLDCInterRegionalScheduleExchange",
+        "FactNRLDCInternationalExchange",
     ):
         conn.execute(
             f"DELETE FROM {table_name} WHERE ReportDocumentID = ?",
@@ -478,6 +492,342 @@ def _promote_state_generation(
                 if abs(float(average_mw) - expected_average) > tolerance:
                     validation_failures += 1
     return validation_failures
+
+
+def _promote_regional_generation(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    template_id: str,
+    mapped_cells: set[int],
+) -> int:
+    """Promote the clean page-five Section 3(B) regional entity table.
+
+    Later pages continue with large IPP and renewable lists whose text cells are
+    frequently collapsed by the PDF extractor.  This bounded promoter handles
+    only the stable, grid-aligned first page and leaves those continuation pages
+    for their source-specific spatial extraction pass.
+    """
+
+    validation_failures = 0
+    in_section = False
+    columns = _regional_generation_columns(template_id)
+    for row in _table_rows(conn, report_id, 5, 1):
+        entity_cell = row.get(1)
+        entity_name = _clean_label(entity_cell[1]) if entity_cell else ""
+        normalized = re.sub(r"\s+", "", entity_name.lower())
+        if normalized.startswith("3(b)regionalentitiesgeneration"):
+            in_section = True
+            continue
+        if not in_section or not entity_name:
+            continue
+        values, sources = _generation_values(row, columns)
+        capacity = values["InstalledCapacityMW"]
+        if capacity is None:
+            continue
+        is_total = _is_total_row(entity_name)
+        source_id = _generation_source_id(conn, entity_name)
+        try:
+            identity = resolve_generation_identity(
+                conn,
+                "nrldc",
+                entity_name,
+                None,
+                region_id,
+                source_id,
+                float(capacity),
+                is_total,
+            )
+        except DimensionResolutionError as error:
+            record_resolution_issue(
+                conn,
+                report_id,
+                "nrldc",
+                "regional_generation_entity",
+                entity_name,
+                str(error),
+            )
+            continue
+        entity_id = _get_or_create_grid_entity(
+            conn,
+            entity_name,
+            "generation_aggregate" if is_total else "generating_entity",
+            None,
+            region_id,
+            source_id,
+            float(capacity),
+            is_total,
+            identity,
+        )
+        section_name = "regional_entities_generation"
+        names = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCGenerationDaily(
+                ReportDocumentID, DateID, EntityID, StateID, GenerationSourceID,
+                StationID, GeneratingUnitID, AggregateID, IsTotalRow,
+                GenerationGrain, SectionName, {', '.join(names)}
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?,
+                {', '.join('?' for _ in names)})
+            """,
+            (
+                report_id,
+                date_id,
+                entity_id,
+                source_id,
+                identity.station_id,
+                identity.generating_unit_id,
+                identity.aggregate_id,
+                int(is_total),
+                identity.entity_type,
+                section_name,
+                *(values[name] for name in names),
+            ),
+        )
+        if entity_cell:
+            mapped_cells.add(entity_cell[0])
+        key = f"report={report_id};date={date_id};entity={entity_id};section={section_name}"
+        _write_lineage(
+            conn, report_id, "FactNRLDCGenerationDaily", key, sources, mapped_cells
+        )
+        net_energy = values["NetEnergyMU"]
+        average_mw = values["AverageMW"]
+        if net_energy is not None and average_mw is not None:
+            expected_average = float(net_energy) * 1000.0 / 24.0
+            tolerance = max(5.0, abs(expected_average) * 0.01)
+            if abs(float(average_mw) - expected_average) > tolerance:
+                validation_failures += 1
+    return validation_failures
+
+
+def _regional_generation_columns(template_id: str) -> dict[str, int]:
+    """Return Section 3(B) columns for the approved NRLDC report family."""
+
+    common = {
+        "InstalledCapacityMW": 2,
+        "DeclaredCapacityMW": 3,
+        "EveningPeakMW": 4,
+        "OffPeakMW": 5,
+        "DayPeakMW": 6,
+        "DayPeakTime": 7,
+    }
+    if template_id == NRLDC_2024_TEMPLATE.template_id:
+        return {
+            **common,
+            "ScheduledEnergyMU": 8,
+            "GrossEnergyMU": 9,
+            "NetEnergyMU": 10,
+            "AGCEnergyMU": 11,
+            "AverageMW": 12,
+            "UIMU": 13,
+        }
+    return {
+        **common,
+        "MinimumGenerationMW": 8,
+        "MinimumGenerationTime": 9,
+        "ScheduledEnergyMU": 10,
+        "GrossEnergyMU": 11,
+        "NetEnergyMU": 12,
+        "AGCEnergyMU": 13,
+        "AverageMW": 14,
+        "UIMU": 15,
+    }
+
+
+def _promote_spatial_continuation_generation(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    template_id: str,
+) -> int:
+    """Promote verified 2025/2026 IPP, renewable, hybrid, and storage rows.
+
+    The native PDF table grid collapses many continuation rows into the first
+    column.  Only persisted LiteParse coordinates are used here; reports
+    without that forensic layer remain review-required and receive no guessed
+    continuation facts.
+    """
+
+    if template_id == NRLDC_2024_TEMPLATE.template_id or not _table_exists(
+        conn, "psp_raw_text_item"
+    ):
+        return 0
+    items_by_page: dict[int, list[SpatialTextItem]] = {}
+    for raw_id, page_no, text, x, y in conn.execute(
+        """
+        SELECT id, page_no, item_text, x, y
+        FROM psp_raw_text_item
+        WHERE report_document_id = ?
+          AND extraction_method = 'liteparse'
+          AND page_no IN (6, 7, 8, 9)
+          AND x IS NOT NULL
+          AND y IS NOT NULL
+        ORDER BY page_no, item_no
+        """,
+        (report_id,),
+    ):
+        items_by_page.setdefault(int(page_no), []).append(
+            SpatialTextItem(int(raw_id), int(page_no), str(text), float(x), float(y))
+        )
+
+    validation_failures = 0
+    for page_no, items in items_by_page.items():
+        rows = reconstruct_generation_rows(
+            items,
+            column_centers=_NRLDC_CONTINUATION_COLUMN_CENTERS,
+        )
+        for row in rows:
+            values = _spatial_generation_values(row.values)
+            capacity = values["InstalledCapacityMW"]
+            entity_name = _clean_continuation_entity_name(row.label)
+            if (
+                capacity is None
+                or _is_header_or_unit(entity_name)
+                or not _is_complete_continuation_entity_name(entity_name)
+            ):
+                continue
+            is_total = _is_total_row(entity_name)
+            source_id = _generation_source_id(conn, entity_name)
+            try:
+                identity = resolve_generation_identity(
+                    conn,
+                    "nrldc",
+                    entity_name,
+                    None,
+                    region_id,
+                    source_id,
+                    float(capacity),
+                    is_total,
+                )
+            except DimensionResolutionError as error:
+                record_resolution_issue(
+                    conn,
+                    report_id,
+                    "nrldc",
+                    "continuation_generation_entity",
+                    entity_name,
+                    str(error),
+                )
+                continue
+            entity_id = _get_or_create_grid_entity(
+                conn,
+                entity_name,
+                "generation_aggregate" if is_total else "generating_entity",
+                None,
+                region_id,
+                source_id,
+                float(capacity),
+                is_total,
+                identity,
+            )
+            section_name = f"continuation_spatial_p{page_no}"
+            names = list(values)
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO FactNRLDCGenerationDaily(
+                    ReportDocumentID, DateID, EntityID, StateID, GenerationSourceID,
+                    StationID, GeneratingUnitID, AggregateID, IsTotalRow,
+                    GenerationGrain, SectionName, {', '.join(names)}
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?,
+                    {', '.join('?' for _ in names)})
+                """,
+                (
+                    report_id,
+                    date_id,
+                    entity_id,
+                    source_id,
+                    identity.station_id,
+                    identity.generating_unit_id,
+                    identity.aggregate_id,
+                    int(is_total),
+                    identity.entity_type,
+                    section_name,
+                    *(values[name] for name in names),
+                ),
+            )
+            key = (
+                f"report={report_id};date={date_id};entity={entity_id};"
+                f"section={section_name}"
+            )
+            _write_spatial_lineage(
+                conn,
+                report_id,
+                "FactNRLDCGenerationDaily",
+                key,
+                row.label_item_ids,
+                row.value_item_ids,
+            )
+            net_energy = values["NetEnergyMU"]
+            average_mw = values["AverageMW"]
+            if net_energy is not None and average_mw is not None:
+                expected_average = float(net_energy) * 1000.0 / 24.0
+                tolerance = max(5.0, abs(expected_average) * 0.01)
+                if abs(float(average_mw) - expected_average) > tolerance:
+                    validation_failures += 1
+    return validation_failures
+
+
+_NRLDC_CONTINUATION_COLUMN_CENTERS = {
+    "InstalledCapacityMW": 121.0,
+    "DeclaredCapacityMW": 165.0,
+    "EveningPeakMW": 207.0,
+    "OffPeakMW": 246.0,
+    "DayPeakMW": 286.0,
+    "DayPeakTime": 329.0,
+    "MinimumGenerationMW": 380.0,
+    "MinimumGenerationTime": 420.0,
+    "ScheduledEnergyMU": 459.0,
+    "GrossEnergyMU": 502.0,
+    "NetEnergyMU": 542.0,
+    "AverageMW": 582.0,
+    "UIMU": 620.0,
+}
+
+
+def _spatial_generation_values(
+    raw_values: dict[str, str] | Mapping[str, str],
+) -> dict[str, float | str | None]:
+    """Normalize values reconstructed from the approved spatial column centers."""
+
+    values: dict[str, float | str | None] = {}
+    for field_name in _NRLDC_CONTINUATION_COLUMN_CENTERS:
+        raw = raw_values.get(field_name)
+        if field_name in {"DayPeakTime", "MinimumGenerationTime"}:
+            values[field_name] = _normalize_time(raw)
+        else:
+            values[field_name] = _to_float(raw)
+    return values
+
+
+def _clean_continuation_entity_name(label: str) -> str:
+    """Remove a detached source heading from a reconstructed station label."""
+
+    if re.search(r"sub[-\s]*total|^total$", label, re.IGNORECASE):
+        return "Sub-Total" if "sub" in label.lower() else "Total"
+    return re.sub(
+        r"^(?:IPP|SOLAR\s+IPP|HYBRID\s+IPP|STORAGE|BESS)\s+",
+        "",
+        label,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _is_complete_continuation_entity_name(label: str) -> bool:
+    """Reject spatial labels visibly truncated by a page-row boundary."""
+
+    if _is_total_row(label):
+        return True
+    if not re.match(r"[A-Za-z]", label):
+        return False
+    return bool(
+        re.search(
+            r"(?:\)|\b(?:limited|ltd\.?|hps|hep|tps|stps|gps)|_?bess)$",
+            label,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _promote_frequency_daily(
@@ -752,6 +1102,128 @@ def _promote_physical_exchanges(
         )
 
 
+def _promote_schedule_exchanges(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote Section 4(B) regional schedule, actual, and deviation energy.
+
+    The printed row position changes as the preceding line-level exchange table
+    grows.  Section headings, rather than fixed page coordinates, define the
+    extraction boundary.  Rows collapsed by PDF extraction are deliberately
+    left as raw cells instead of being reconstructed heuristically.
+    """
+
+    in_section = False
+    columns = {
+        "ISGSAndGNAScheduleMU": 2,
+        "BilateralScheduleMU": 6,
+        "GDAMScheduleMU": 8,
+        "DAMScheduleMU": 11,
+        "RTMScheduleMU": 13,
+        "TotalScheduleMU": 16,
+        "ActualMU": 20,
+        "DeviationMU": 23,
+    }
+    for _, row in _rows_on_pages(conn, report_id, (9, 10, 11)):
+        label_cell = row.get(1)
+        label = _clean_label(label_cell[1]) if label_cell else ""
+        normalized = re.sub(r"\s+", "", label.lower())
+        if normalized.startswith("4(b)interregionalschedule"):
+            in_section = True
+            continue
+        if in_section and normalized.startswith("5.internationalexchange"):
+            break
+        if not in_section:
+            continue
+
+        counterparty = _schedule_counterparty(label)
+        if counterparty is None:
+            continue
+        values, sources = _mapped_values(row, columns)
+        if not any(value is not None for value in values.values()):
+            continue
+        is_total = int(counterparty == "TOTAL")
+        names = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCInterRegionalScheduleExchange(
+                ReportDocumentID, DateID, CounterpartyRegion, IsTotalRow,
+                {', '.join(names)}
+            ) VALUES (?, ?, ?, ?, {', '.join('?' for _ in names)})
+            """,
+            (report_id, date_id, counterparty, is_total, *(values[name] for name in names)),
+        )
+        if label_cell:
+            mapped_cells.add(label_cell[0])
+        _write_lineage(
+            conn,
+            report_id,
+            "FactNRLDCInterRegionalScheduleExchange",
+            f"report={report_id};date={date_id};region={counterparty}",
+            sources,
+            mapped_cells,
+        )
+
+
+def _promote_nepal_exchanges(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote Section 5 linkwise cross-border exchange with Nepal."""
+
+    in_section = False
+    columns = {
+        "EveningPeakMW": 5,
+        "OffPeakMW": 8,
+        "MaximumImportMW": 10,
+        "MaximumExportMW": 14,
+        "ImportEnergyMU": 17,
+        "ExportEnergyMU": 20,
+        "NetEnergyMU": 21,
+        "ScheduleEnergyMU": 25,
+    }
+    for _, row in _rows_on_pages(conn, report_id, (9, 10, 11)):
+        label_cell = row.get(1)
+        label = _clean_label(label_cell[1]) if label_cell else ""
+        normalized = re.sub(r"\s+", "", label.lower())
+        if normalized.startswith("5.internationalexchangewithnepal"):
+            in_section = True
+            continue
+        if in_section and normalized.startswith("5.frequencyprofile"):
+            break
+        if not in_section or not _is_transmission_element(label):
+            continue
+        values, sources = _mapped_values(row, columns)
+        if not any(value is not None for value in values.values()):
+            continue
+        element_id = _get_or_create_transmission_element(conn, label)
+        names = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCInternationalExchange(
+                ReportDocumentID, DateID, ElementID, CounterpartyCountry,
+                {', '.join(names)}
+            ) VALUES (?, ?, ?, 'Nepal', {', '.join('?' for _ in names)})
+            """,
+            (report_id, date_id, element_id, *(values[name] for name in names)),
+        )
+        if label_cell:
+            mapped_cells.add(label_cell[0])
+        _write_lineage(
+            conn,
+            report_id,
+            "FactNRLDCInternationalExchange",
+            f"report={report_id};date={date_id};element={element_id};country=Nepal",
+            sources,
+            mapped_cells,
+        )
+
+
 def _mapped_values(
     row: dict[int, tuple[int, str]],
     columns: dict[str, int],
@@ -942,6 +1414,17 @@ def _table_rows(
     return [rows[row_no] for row_no in sorted(rows)]
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    """Return whether a raw support table exists in a legacy SQLite database."""
+
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+    )
+
+
 def _rows_on_pages(
     conn: sqlite3.Connection,
     report_id: int,
@@ -1015,6 +1498,38 @@ def _write_lineage(
         mapped_cells.add(raw_cell_id)
 
 
+def _write_spatial_lineage(
+    conn: sqlite3.Connection,
+    report_id: int,
+    table_name: str,
+    destination_key: str,
+    label_item_ids: tuple[int, ...],
+    value_item_ids: Mapping[str, int],
+) -> None:
+    """Write forensic lineage for a fact reconstructed from LiteParse geometry."""
+
+    now = datetime.now(timezone.utc).isoformat()
+    entries = [("EntityID", item_id) for item_id in label_item_ids]
+    entries.extend(value_item_ids.items())
+    for column, raw_text_item_id in entries:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO curated_field_lineage(
+                ReportDocumentID, DestinationTable, DestinationKey, DestinationColumn,
+                RawCellID, RawTextItemID, ExtractionMethod, Confidence, CreatedAt
+            ) VALUES (?, ?, ?, ?, NULL, ?, 'liteparse', 1.0, ?)
+            """,
+            (
+                report_id,
+                table_name,
+                destination_key,
+                column,
+                raw_text_item_id,
+                now,
+            ),
+        )
+
+
 def _cell_float(row: dict[int, tuple[int, str]], col_no: int) -> float | None:
     raw = row.get(col_no)
     return _to_float(raw[1]) if raw else None
@@ -1025,6 +1540,29 @@ def _cell_time(row: dict[int, tuple[int, str]], col_no: int) -> str | None:
 
     raw = row.get(col_no)
     return _normalize_time(raw[1]) if raw else None
+
+
+def _schedule_counterparty(label: str) -> str | None:
+    """Return a clean Section 4(B) counterparty label when a row is usable."""
+
+    compact = re.sub(r"\s+", "", label.upper())
+    if compact == "TOTAL":
+        return "TOTAL"
+    match = re.fullmatch(r"NR-(ER|WR|NORTH_EASTREGION|NER)", compact)
+    if not match:
+        return None
+    return {
+        "ER": "EAST REGION",
+        "WR": "WEST REGION",
+        "NORTH_EASTREGION": "NORTH EAST REGION",
+        "NER": "NORTH EAST REGION",
+    }[match.group(1)]
+
+
+def _is_transmission_element(label: str) -> bool:
+    """Return whether a row label is a line or HVDC element name."""
+
+    return bool(re.search(r"(?:\d{2,4}\s*KV|HVDC)", label, re.IGNORECASE))
 
 
 def _get_or_create_transmission_element(

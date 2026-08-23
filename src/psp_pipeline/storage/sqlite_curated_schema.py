@@ -1073,6 +1073,7 @@ def _ensure_nrldc_curated_tables(conn: sqlite3.Connection) -> None:
             GeneratingUnitID INTEGER,
             AggregateID INTEGER,
             InstalledCapacityMW REAL,
+            DeclaredCapacityMW REAL,
             EveningPeakMW REAL,
             OffPeakMW REAL,
             DayPeakMW REAL,
@@ -1081,7 +1082,10 @@ def _ensure_nrldc_curated_tables(conn: sqlite3.Connection) -> None:
             MinimumGenerationTime TEXT,
             GrossEnergyMU REAL,
             NetEnergyMU REAL,
+            ScheduledEnergyMU REAL,
+            AGCEnergyMU REAL,
             AverageMW REAL,
+            UIMU REAL,
             IsTotalRow INTEGER NOT NULL DEFAULT 0,
             GenerationGrain TEXT NOT NULL DEFAULT 'power_station',
             SectionName TEXT NOT NULL,
@@ -1169,8 +1173,43 @@ def _ensure_nrldc_curated_tables(conn: sqlite3.Connection) -> None:
             DeviationMU REAL,
             PRIMARY KEY(ReportDocumentID, DateID, CounterpartyRegion)
         );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCInternationalExchange (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            ElementID INTEGER NOT NULL,
+            CounterpartyCountry TEXT NOT NULL,
+            EveningPeakMW REAL,
+            OffPeakMW REAL,
+            MaximumImportMW REAL,
+            MaximumExportMW REAL,
+            ImportEnergyMU REAL,
+            ExportEnergyMU REAL,
+            NetEnergyMU REAL,
+            ScheduleEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ElementID, CounterpartyCountry)
+        );
         """
     )
+    _ensure_nrldc_generation_columns(conn)
+
+
+def _ensure_nrldc_generation_columns(conn: sqlite3.Connection) -> None:
+    """Add later NRLDC regional-generation measures to an existing local DB."""
+
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(FactNRLDCGenerationDaily)")
+    }
+    for column_name in (
+        "DeclaredCapacityMW",
+        "ScheduledEnergyMU",
+        "AGCEnergyMU",
+        "UIMU",
+    ):
+        if column_name not in existing:
+            conn.execute(
+                f"ALTER TABLE FactNRLDCGenerationDaily ADD COLUMN {column_name} REAL"
+            )
 
 
 def _backfill_srldc_dimension_locations(conn: sqlite3.Connection) -> None:

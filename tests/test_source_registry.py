@@ -35,3 +35,27 @@ def test_load_sources_reads_yaml_when_present():
     sources = load_sources(cfg)
     assert len(sources) > 0
     assert any(x.source_id == "wbes_national" for x in sources)
+
+
+def test_sources_yaml_contains_all_five_rldcs_public():
+    cfg = Path(__file__).resolve().parents[1] / "config" / "sources.yaml"
+    sources = load_sources(cfg)
+    rldc_regions = {s.region for s in sources if s.domain == "RLDC" and s.access_mode == "public"}
+    expected_regions = {"SR", "NR", "WR", "ER", "NER"}
+    assert expected_regions.issubset(rldc_regions)
+
+
+def test_rldc_report_sources_yaml_contains_all_five_public_rldcs():
+    import yaml
+
+    cfg = Path(__file__).resolve().parents[1] / "config" / "rldc_report_sources.yaml"
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    rldc_sources = data.get("rldc_sources", {})
+
+    expected_rldcs = {"SRLDC", "NRLDC", "WRLDC", "ERLDC", "NERLDC"}
+    assert set(rldc_sources.keys()) == expected_rldcs
+
+    for name, config in rldc_sources.items():
+        assert config.get("access_mode") == "public", f"{name} must have access_mode: public"
+        assert "listing_url" in config, f"{name} must define listing_url"
+        assert "allow_domains" in config, f"{name} must define allow_domains"

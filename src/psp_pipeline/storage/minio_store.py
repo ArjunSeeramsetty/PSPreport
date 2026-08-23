@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from minio import Minio
+try:
+    from minio import Minio
+except ImportError:
+    Minio = None  # type: ignore[assignment,misc]
 
 
 class MinioRawStore:
@@ -14,6 +17,11 @@ class MinioRawStore:
         secret_key: str,
         secure: bool,
     ):
+        if Minio is None:
+            raise RuntimeError(
+                "The 'minio' package is required to use MinioRawStore. "
+                "Install it with `pip install minio`."
+            )
         self.client = Minio(
             endpoint=endpoint,
             access_key=access_key,

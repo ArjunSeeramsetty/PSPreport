@@ -17,6 +17,11 @@ _DIMENSION_COLUMNS = {
     "DateID",
     "RegionID",
     "StateID",
+    "EntityID",
+    "GenerationSourceID",
+    "StationID",
+    "GeneratingUnitID",
+    "AggregateID",
     "ElementID",
     "VoltageNodeID",
     "ReservoirID",
@@ -100,6 +105,13 @@ def export_nrldc_daily_observations(
         ),
         *_export_table(
             conn,
+            table_name="FactNRLDCGenerationDaily",
+            entity_expression="'NR:generation:' || entity.EntityName",
+            joins="JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+            **common,
+        ),
+        *_export_table(
+            conn,
             table_name="FactNRLDCFrequencyDaily",
             entity_expression="'NR:region:' || region.RegionName",
             joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
@@ -123,6 +135,25 @@ def export_nrldc_daily_observations(
             conn,
             table_name="FactNRLDCInterRegionalExchange",
             entity_expression="'NR:line:' || element.ElementName",
+            joins=(
+                "JOIN DimTransmissionElements AS element "
+                "ON element.ElementID = fact.ElementID"
+            ),
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNRLDCInterRegionalScheduleExchange",
+            entity_expression=(
+                "'NR:interregional-schedule:' || fact.CounterpartyRegion"
+            ),
+            joins="",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNRLDCInternationalExchange",
+            entity_expression="'NR:international-line:' || element.ElementName",
             joins=(
                 "JOIN DimTransmissionElements AS element "
                 "ON element.ElementID = fact.ElementID"

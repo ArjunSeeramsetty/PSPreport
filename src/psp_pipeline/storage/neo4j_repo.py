@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping, Optional
 
-from neo4j import GraphDatabase
+try:
+    from neo4j import GraphDatabase
+except ImportError:
+    GraphDatabase = None  # type: ignore[assignment]
 
 
 class Neo4jRepository:
     def __init__(self, uri: str, user: str, password: str):
+        if GraphDatabase is None:
+            raise RuntimeError(
+                "The 'neo4j' package is required to use Neo4jRepository. "
+                "Install it with `pip install neo4j`."
+            )
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
     def close(self) -> None:

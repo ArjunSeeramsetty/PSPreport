@@ -336,6 +336,39 @@ def test_liteparse_fallback_requires_native_extraction_failure() -> None:
     assert _should_try_liteparse(True, None, {"field": 1.0}, "x" * 1200, [])
 
 
+def test_liteparse_accepts_current_snake_case_spatial_items(monkeypatch) -> None:
+    """LiteParse 2.x spatial JSON remains consumable by the local parser."""
+
+    def fake_run(*_args, **_kwargs):
+        return {
+            "pages": [
+                {
+                    "page": 6,
+                    "text": "IPP/JV",
+                    "text_items": [
+                        {
+                            "text": "TEST STATION",
+                            "x": 15.0,
+                            "y": 42.0,
+                            "width": 40.0,
+                            "height": 8.0,
+                            "confidence": 1.0,
+                        }
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr("psp_pipeline.pipelines.rldc_daily_psp._run_liteparse", fake_run)
+    text, items = _extract_liteparse_content(Path("fixture.pdf"))
+
+    assert text == "IPP/JV"
+    assert len(items) == 1
+    assert items[0].text == "TEST STATION"
+    assert items[0].page_no == 6
+    assert items[0].x == 15.0
+
+
 def test_liteparse_extracts_spatial_items_for_rect_heavy_srldc_fixture() -> None:
     """Verify the local LiteParse fallback on the known rect-heavy SRLDC report.
 

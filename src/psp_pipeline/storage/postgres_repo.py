@@ -3,13 +3,21 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Iterable, Optional
 
-import psycopg
+try:
+    import psycopg
+except ImportError:
+    psycopg = None  # type: ignore[assignment]
 
 from psp_pipeline.models.contracts import FactObservation, LineageRecord, ReconciliationResult
 
 
 class PostgresRepository:
     def __init__(self, dsn: str):
+        if psycopg is None:
+            raise RuntimeError(
+                "The 'psycopg' package is required to use PostgresRepository. "
+                "Install it with `pip install psycopg[binary]`."
+            )
         self.dsn = dsn
 
     def insert_lineage(self, records: Iterable[LineageRecord]) -> None:

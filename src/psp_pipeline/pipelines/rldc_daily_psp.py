@@ -19,13 +19,29 @@ import httpx
 import pdfplumber
 import yaml
 
-from psp_pipeline.acquisition.adapters import BaseRLDCAdapter, DiscoveredLink, NRLDCAdapter, SRLDCAdapter
+from psp_pipeline.acquisition.adapters import (
+    BaseRLDCAdapter,
+    DiscoveredLink,
+    ERLDCAdapter,
+    NERLDCAdapter,
+    NRLDCAdapter,
+    SRLDCAdapter,
+    WRLDCAdapter,
+)
 from psp_pipeline.parsing.rldc.pdf_tables import extract_page_tables
 from psp_pipeline.parsing.rldc.templates import TemplateMatch, inspect_report_structure, match_report_template
 from psp_pipeline.storage.sqlite_curated_promoter import promote_report_to_curated
 from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
 
 logger = logging.getLogger(__name__)
+
+_NRLDC_SPATIAL_TEMPLATE_IDS = frozenset(
+    {
+        "nrldc_daily_psp_v2025_standard_11_column_generation",
+        "nrldc_daily_psp_v2026_standard_11_column_storage",
+    }
+)
+_NRLDC_CONTINUATION_PAGES = (6, 7, 8, 9)
 
 
 @dataclass(frozen=True)
@@ -147,10 +163,17 @@ def load_rldc_sources(config_path: Path) -> list[RldcSource]:
 
 
 def _get_adapter(source_key: str) -> BaseRLDCAdapter | None:
-    if source_key == "srldc":
+    source = source_key.lower()
+    if source == "srldc":
         return SRLDCAdapter()
-    if source_key == "nrldc":
+    if source == "nrldc":
         return NRLDCAdapter()
+    if source == "wrldc":
+        return WRLDCAdapter()
+    if source == "erldc":
+        return ERLDCAdapter()
+    if source == "nerldc":
+        return NERLDCAdapter()
     return None
 
 
@@ -215,14 +238,14 @@ def _extract_pdfplumber_raw(pdf_path: Path) -> tuple[str, list[RawLine], list[Ra
 
 
 def _liteparse_available() -> bool:
-    """Return true when the local LiteParse CLI can be invoked through npx."""
+    """Return whether a local LiteParse CLI can be invoked."""
 
-    npx = _npx_command()
-    if not npx:
+    command = _liteparse_command()
+    if not command:
         return False
     try:
         completed = subprocess.run(
-            [npx, "-y", "@llamaindex/liteparse", "--version"],
+            [*command, "--version"],
             check=False,
             capture_output=True,
             text=True,
@@ -231,6 +254,20 @@ def _liteparse_available() -> bool:
     except (FileNotFoundError, subprocess.SubprocessError):
         return False
     return completed.returncode == 0
+
+
+def _liteparse_command() -> list[str] | None:
+    """Return the installed LiteParse CLI, falling back to an npx invocation."""
+
+    for candidate in (
+        Path(r"C:\Users\arjun\AppData\Roaming\npm\lit.cmd"),
+        Path(shutil.which("lit.cmd") or ""),
+        Path(shutil.which("lit") or ""),
+    ):
+        if candidate.is_file():
+            return [str(candidate)]
+    npx = _npx_command()
+    return [npx, "-y", "@llamaindex/liteparse"] if npx else None
 
 
 def _npx_command() -> str | None:
@@ -257,17 +294,15 @@ def _run_liteparse(
     supply a smaller budget to make command availability failures explicit.
     """
 
-    npx = _npx_command()
-    if not npx:
-        logger.warning("liteparse_unavailable reason=npx_not_found")
+    launcher = _liteparse_command()
+    if not launcher:
+        logger.warning("liteparse_unavailable reason=cli_not_found")
         return None
 
     with tempfile.TemporaryDirectory(prefix="psp_liteparse_") as tmp_dir:
         output_path = Path(tmp_dir) / "liteparse.json"
         command = [
-            npx,
-            "-y",
-            "@llamaindex/liteparse",
+            *launcher,
             "parse",
             str(pdf_path),
             "--format",
@@ -339,7 +374,9 @@ def _extract_liteparse_content(
         text = str(page.get("text") or "")
         if text:
             chunks.append(text)
-        text_items = page.get("textItems", [])
+        # LiteParse 0.x used camelCase while the current 2.x CLI emits
+        # snake_case keys.  Accept both to keep historical diagnostics replayable.
+        text_items = page.get("text_items", page.get("textItems", []))
         if not isinstance(text_items, list):
             continue
         for item_idx, item in enumerate(text_items, start=1):
@@ -541,6 +578,18 @@ def _should_try_liteparse(
     )
 
 
+def _needs_nrldc_continuation_spatial_items(raw_cells: list[RawCell]) -> bool:
+    """Return whether NRLDC continuation rows collapsed into left-column cells."""
+
+    for cell in raw_cells:
+        if cell.page_no not in {6, 7, 8, 9} or cell.col_no != 1:
+            continue
+        numeric_values = re.findall(r"(?<![A-Za-z])[-−]?\d+(?:\.\d+)?", cell.cell_text)
+        if len(numeric_values) >= 6:
+            return True
+    return False
+
+
 def extract_psp_content(
     pdf_path: Path,
     rldc: str,
@@ -565,8 +614,14 @@ def extract_psp_content(
         text,
         raw_cells,
     )
-    if should_try_liteparse and _liteparse_available():
-        liteparse_text, raw_text_items = _extract_liteparse_content(pdf_path)
+    continuation_spatial_fallback = (
+        rldc == "nrldc" and _needs_nrldc_continuation_spatial_items(raw_cells)
+    )
+    if (should_try_liteparse or continuation_spatial_fallback) and _liteparse_available():
+        liteparse_text, raw_text_items = _extract_liteparse_content(
+            pdf_path,
+            target_pages="6-9" if continuation_spatial_fallback else None,
+        )
         if liteparse_text:
             methods.append("liteparse")
             liteparse_fields = _extract_numeric_fields(liteparse_text)
@@ -822,7 +877,115 @@ def persist_report(
                 now,
             ),
         )
-    for item in raw_text_items or []:
+    _upsert_raw_text_items(cursor, report_id, raw_text_items or [], now)
+    promote_report_to_curated(conn, report_id)
+    conn.commit()
+
+
+def backfill_nrldc_continuation_spatial_items(
+    sqlite_db_path: Path,
+) -> dict[str, int]:
+    """Add missing LiteParse coordinates for NRLDC 2025/26 continuation pages.
+
+    Existing raw PDF cells and observations are not changed. This enrichment only
+    refreshes LiteParse items for pages 6--9 when the full four-page coordinate
+    set is absent, then replays curated promotion from the raw persistence layer.
+    """
+
+    result = {
+        "reports_seen": 0,
+        "reports_enriched": 0,
+        "reports_already_complete": 0,
+        "reports_missing_local_file": 0,
+        "reports_without_spatial_items": 0,
+        "liteparse_unavailable": 0,
+    }
+    if not sqlite_db_path.exists():
+        return result
+    if not _liteparse_available():
+        logger.warning("nrldc_spatial_backfill_skipped reason=liteparse_unavailable")
+        result["liteparse_unavailable"] = 1
+        return result
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        ensure_sqlite_schema(conn)
+        placeholders = ", ".join("?" for _ in _NRLDC_SPATIAL_TEMPLATE_IDS)
+        reports = conn.execute(
+            f"""
+            SELECT id, local_path
+            FROM psp_report_document
+            WHERE rldc = 'nrldc' AND template_id IN ({placeholders})
+            ORDER BY report_date, id
+            """,
+            tuple(sorted(_NRLDC_SPATIAL_TEMPLATE_IDS)),
+        ).fetchall()
+        result["reports_seen"] = len(reports)
+        for report_id, raw_path in reports:
+            pages = {
+                int(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT page_no
+                    FROM psp_raw_text_item
+                    WHERE report_document_id = ?
+                      AND extraction_method = 'liteparse'
+                      AND page_no IN (6, 7, 8, 9)
+                    """,
+                    (report_id,),
+                )
+            }
+            if pages == set(_NRLDC_CONTINUATION_PAGES):
+                result["reports_already_complete"] += 1
+                continue
+            pdf_path = Path(str(raw_path))
+            if not pdf_path.exists():
+                logger.warning(
+                    "nrldc_spatial_backfill_missing_file report_id=%s path=%s",
+                    report_id,
+                    pdf_path,
+                )
+                result["reports_missing_local_file"] += 1
+                continue
+            _, items = _extract_liteparse_content(pdf_path, target_pages="6-9")
+            items = [item for item in items if item.page_no in _NRLDC_CONTINUATION_PAGES]
+            if not items:
+                logger.warning(
+                    "nrldc_spatial_backfill_empty report_id=%s path=%s",
+                    report_id,
+                    pdf_path,
+                )
+                result["reports_without_spatial_items"] += 1
+                continue
+            conn.execute(
+                """
+                DELETE FROM psp_raw_text_item
+                WHERE report_document_id = ?
+                  AND extraction_method = 'liteparse'
+                  AND page_no IN (6, 7, 8, 9)
+                """,
+                (report_id,),
+            )
+            _upsert_raw_text_items(
+                conn.cursor(),
+                int(report_id),
+                items,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            promote_report_to_curated(conn, int(report_id))
+            conn.commit()
+            result["reports_enriched"] += 1
+    return result
+
+
+def _upsert_raw_text_items(
+    cursor: sqlite3.Cursor,
+    report_id: int,
+    items: Iterable[RawTextItem],
+    extracted_at: str,
+) -> None:
+    """Persist spatial items with idempotent per-page item identities."""
+
+    for item in items:
         cursor.execute(
             """
             INSERT INTO psp_raw_text_item(
@@ -851,11 +1014,9 @@ def persist_report(
                 item.height,
                 item.confidence,
                 item.extraction_method,
-                now,
+                extracted_at,
             ),
         )
-    promote_report_to_curated(conn, report_id)
-    conn.commit()
 
 
 def _download_report(client: httpx.Client, link: DiscoveredLink, out_dir: Path) -> DownloadedReport | None:

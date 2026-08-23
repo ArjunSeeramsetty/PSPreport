@@ -1,6 +1,7 @@
 rldc_sources:
   SRLDC:
     mode: "adapter"
+    access_mode: "public"
     listing_url: "https://www.srldc.in/Daily-Reports"
     pdf_link_regex: "(?i)psp.*\\.pdf$|\\.pdf$"
     include_keywords: ["psp", "power supply position"]
@@ -8,6 +9,7 @@ rldc_sources:
       - "srldc.in"
   NRLDC:
     mode: "adapter"
+    access_mode: "public"
     listing_url: "https://www.nrldc.in/daily/daily-psp-report"
     document_api_url: "https://www.nrldc.in/get-documents-list/111"
     pdf_link_regex: "(?i)psp.*\\.pdf$|daily.*report.*\\.pdf$|\\.pdf$"
@@ -16,6 +18,7 @@ rldc_sources:
       - "nrldc.in"
   WRLDC:
     mode: "generic"
+    access_mode: "public"
     listing_url: "https://www.wrldc.in/"
     pdf_link_regex: "(?i)psp.*\\.pdf$|daily.*report.*\\.pdf$|\\.pdf$"
     include_keywords: ["psp", "power supply position", "daily"]
@@ -23,6 +26,7 @@ rldc_sources:
       - "wrldc.in"
   ERLDC:
     mode: "generic"
+    access_mode: "public"
     listing_url: "https://erldc.in/"
     pdf_link_regex: "(?i)psp.*\\.pdf$|daily.*report.*\\.pdf$|\\.pdf$"
     include_keywords: ["psp", "power supply position", "daily"]
@@ -30,6 +34,7 @@ rldc_sources:
       - "erldc.in"
   NERLDC:
     mode: "generic"
+    access_mode: "public"
     listing_url: "https://www.nerldc.in/power-supply-position-psp-report/"
     pdf_link_regex: "(?i)psp.*\\.pdf$|\\.pdf$"
     include_keywords: ["psp", "power supply position", "daily"]
