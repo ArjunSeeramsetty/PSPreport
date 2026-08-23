@@ -403,6 +403,7 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_schema_design_tables(conn)
     _ensure_srldc_curated_tables(conn)
+    _ensure_nrldc_curated_tables(conn)
     _seed_curated_dimensions(conn)
     seed_srldc_schema_registry(conn)
     conn.commit()
@@ -1020,6 +1021,77 @@ def _ensure_srldc_fact_columns(conn: sqlite3.Connection) -> None:
     _migrate_srldc_market_table(conn)
 
 
+def _ensure_nrldc_curated_tables(conn: sqlite3.Connection) -> None:
+    """Create NRLDC fact tables at regional, state, and generation grains."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS FactNRLDCRegionalDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            EveningPeakDemandMetMW REAL,
+            EveningPeakShortageMW REAL,
+            EveningPeakRequirementMW REAL,
+            EveningPeakFrequencyHz REAL,
+            OffPeakDemandMetMW REAL,
+            OffPeakShortageMW REAL,
+            OffPeakRequirementMW REAL,
+            OffPeakFrequencyHz REAL,
+            DayEnergyMetMU REAL,
+            DayEnergyShortageMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCStateDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            StateID INTEGER NOT NULL,
+            ThermalGenerationMU REAL,
+            HydroGenerationMU REAL,
+            GasNapthaDieselGenerationMU REAL,
+            SolarGenerationMU REAL,
+            WindGenerationMU REAL,
+            OtherGenerationMU REAL,
+            TotalGenerationMU REAL,
+            ScheduledDrawalMU REAL,
+            ActualDrawalMU REAL,
+            UIMU REAL,
+            RequirementMU REAL,
+            EnergyShortageMU REAL,
+            ConsumptionMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, StateID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCGenerationDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            StateID INTEGER,
+            GenerationSourceID INTEGER,
+            StationID INTEGER,
+            GeneratingUnitID INTEGER,
+            AggregateID INTEGER,
+            InstalledCapacityMW REAL,
+            EveningPeakMW REAL,
+            OffPeakMW REAL,
+            DayPeakMW REAL,
+            DayPeakTime TEXT,
+            MinimumGenerationMW REAL,
+            MinimumGenerationTime TEXT,
+            GrossEnergyMU REAL,
+            NetEnergyMU REAL,
+            AverageMW REAL,
+            IsTotalRow INTEGER NOT NULL DEFAULT 0,
+            GenerationGrain TEXT NOT NULL DEFAULT 'power_station',
+            SectionName TEXT NOT NULL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID, SectionName),
+            CHECK(AggregateID IS NOT NULL OR StationID IS NOT NULL)
+        );
+        """
+    )
+
+
 def _backfill_srldc_dimension_locations(conn: sqlite3.Connection) -> None:
     """Backfill deterministic SRLDC location metadata on existing dimensions."""
 
@@ -1211,6 +1283,38 @@ def _seed_curated_dimensions(conn: sqlite3.Connection) -> None:
                     SourceID, RawName, NormalizedName, StateID,
                     ApprovalStatus, MatchConfidence
                 ) VALUES ('srldc', ?, ?, ?, 'approved', 1.0)
+                """,
+                (alias, normalized, state_row[0]),
+            )
+    nrldc_state_aliases = {
+        "Punjab": ("Punjab",),
+        "Haryana": ("Haryana",),
+        "Rajasthan": ("Rajasthan",),
+        "Delhi": ("Delhi",),
+        "UP": ("UP", "Uttar Pradesh", "UttarPradesh"),
+        "Uttarakhand": ("Uttarakhand",),
+        "HP": ("HP", "Himachal Pradesh", "HimachalPradesh"),
+        "J&K(UT) & Ladakh(UT)": (
+            "J&K(UT)&Ladakh(UT)",
+            "Jammu and Kashmir and Ladakh",
+        ),
+        "Chandigarh": ("Chandigarh",),
+        "Railways_NR ISTS": ("Railways", "Railways NR ISTS"),
+    }
+    for state_name, aliases in nrldc_state_aliases.items():
+        state_row = conn.execute(
+            "SELECT StateID FROM DimStates WHERE StateName = ?", (state_name,)
+        ).fetchone()
+        if not state_row:
+            continue
+        for alias in aliases:
+            normalized = re.sub(r"[^a-z0-9]", "", alias.lower())
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO DimStateAliases(
+                    SourceID, RawName, NormalizedName, StateID,
+                    ApprovalStatus, MatchConfidence
+                ) VALUES ('nrldc', ?, ?, ?, 'approved', 1.0)
                 """,
                 (alias, normalized, state_row[0]),
             )

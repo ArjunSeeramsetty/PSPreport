@@ -64,6 +64,7 @@ class TemplateMatch:
 SRLDC_SPLIT_FAMILY_ID = "srldc_daily_psp_split_sections"
 SRLDC_FLAT_FAMILY_ID = "srldc_daily_psp_flattened_pages"
 SRLDC_FLAT_COMPACT_FAMILY_ID = "srldc_daily_psp_flattened_compact"
+NRLDC_STANDARD_FAMILY_ID = "nrldc_daily_psp_standard_pages"
 UNCLASSIFIED_FAMILY_ID = "unclassified"
 
 
@@ -207,6 +208,65 @@ FLAT_6_2024_SRLDCP_TEMPLATE = ReportTemplate(
     ),
 )
 
+NRLDC_2024_TEMPLATE = ReportTemplate(
+    template_id="nrldc_daily_psp_v2024_standard_09_column_generation",
+    version="2024.standard09",
+    rldc="nrldc",
+    min_pages=12,
+    max_pages=12,
+    min_tables=13,
+    max_tables=13,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 50, 58, 35, 42, "regional_and_state_position"),
+        TableShape(2, 1, 55, 70, 9, 9, "state_generation"),
+        TableShape(5, 1, 50, 70, 13, 13, "regional_generation"),
+        TableShape(9, 1, 50, 75, 20, 28, "interregional_exchange"),
+        TableShape(11, 1, 60, 75, 30, 36, "market_operations"),
+        TableShape(12, 1, 20, 30, 14, 18, "reliability_indices"),
+    ),
+)
+
+NRLDC_2025_TEMPLATE = ReportTemplate(
+    template_id="nrldc_daily_psp_v2025_standard_11_column_generation",
+    version="2025.standard11",
+    rldc="nrldc",
+    min_pages=12,
+    max_pages=12,
+    min_tables=16,
+    max_tables=16,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 50, 58, 38, 42, "regional_and_state_position"),
+        TableShape(2, 1, 55, 72, 11, 11, "state_generation"),
+        TableShape(5, 1, 50, 70, 15, 15, "regional_generation"),
+        TableShape(9, 1, 55, 75, 20, 26, "renewable_generation"),
+        TableShape(10, 1, 50, 70, 22, 28, "interregional_exchange"),
+        TableShape(11, 1, 60, 75, 30, 36, "market_operations"),
+        TableShape(12, 5, 15, 25, 14, 18, "reliability_indices"),
+    ),
+)
+
+NRLDC_2026_TEMPLATE = ReportTemplate(
+    template_id="nrldc_daily_psp_v2026_standard_11_column_storage",
+    version="2026.standard11.storage",
+    rldc="nrldc",
+    min_pages=13,
+    max_pages=13,
+    min_tables=17,
+    max_tables=17,
+    required_headings=("3(a) state entitiesgeneration", "3(b) regionalentitiesgeneration"),
+    table_shapes=(
+        TableShape(1, 1, 50, 58, 38, 42, "regional_and_state_position"),
+        TableShape(2, 1, 55, 72, 11, 11, "state_generation"),
+        TableShape(5, 1, 50, 70, 15, 15, "regional_generation"),
+        TableShape(9, 1, 60, 78, 20, 26, "renewable_and_storage_generation"),
+        TableShape(10, 1, 50, 70, 22, 28, "interregional_exchange"),
+        TableShape(12, 1, 55, 72, 30, 38, "market_operations"),
+        TableShape(13, 4, 18, 28, 14, 18, "reliability_indices"),
+    ),
+)
+
 TEMPLATES: tuple[ReportTemplate, ...] = (
     DEFAULT_SRLDCP_TEMPLATE,
     COMPACT_SRLDCP_TEMPLATE,
@@ -215,6 +275,9 @@ TEMPLATES: tuple[ReportTemplate, ...] = (
     FLAT_6_2023_SRLDCP_TEMPLATE,
     FLAT_7_2023_SRLDCP_TEMPLATE,
     FLAT_6_2024_SRLDCP_TEMPLATE,
+    NRLDC_2024_TEMPLATE,
+    NRLDC_2025_TEMPLATE,
+    NRLDC_2026_TEMPLATE,
 )
 
 
@@ -257,6 +320,11 @@ def inspect_report_structure(pdf_path: Path) -> ReportStructure:
 
 def infer_structural_family(rldc: str, structure: ReportStructure) -> str:
     """Classify a report into a semantic layout family before exact template matching."""
+
+    if rldc.lower() == "nrldc":
+        if structure.page_count in {12, 13} and structure.table_count >= 13:
+            return NRLDC_STANDARD_FAMILY_ID
+        return UNCLASSIFIED_FAMILY_ID
 
     if rldc.lower() != "srldc":
         return UNCLASSIFIED_FAMILY_ID

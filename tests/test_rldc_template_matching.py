@@ -18,6 +18,10 @@ from psp_pipeline.parsing.rldc.templates import (
     FLAT_6_2023_SRLDCP_TEMPLATE,
     FLAT_6_2024_SRLDCP_TEMPLATE,
     FLAT_7_2023_SRLDCP_TEMPLATE,
+    NRLDC_2024_TEMPLATE,
+    NRLDC_2025_TEMPLATE,
+    NRLDC_2026_TEMPLATE,
+    NRLDC_STANDARD_FAMILY_ID,
     ReportStructure,
     SRLDC_FLAT_FAMILY_ID,
     SRLDC_SPLIT_FAMILY_ID,
@@ -246,6 +250,75 @@ def test_srldc_flat_6_2024_template_matches_wide_operations_layout() -> None:
     assert result.template_id == FLAT_6_2024_SRLDCP_TEMPLATE.template_id
     assert result.semantic_pass_required is False
     assert result.confidence == 1.0
+
+
+def test_nrldc_2024_template_matches_nine_column_state_generation() -> None:
+    """Keep the verified 2024 NRLDC state-generation layout deterministic."""
+    structure = ReportStructure(
+        page_count=12,
+        table_count=13,
+        headings=NRLDC_2024_TEMPLATE.required_headings,
+        table_shapes=(
+            TableShape(1, 1, 54, 54, 38, 38, "observed"),
+            TableShape(2, 1, 63, 63, 9, 9, "observed"),
+            TableShape(5, 1, 60, 60, 13, 13, "observed"),
+            TableShape(9, 1, 62, 62, 25, 25, "observed"),
+            TableShape(11, 1, 69, 69, 33, 33, "observed"),
+            TableShape(12, 1, 25, 25, 16, 16, "observed"),
+        ),
+    )
+
+    result = match_report_template("nrldc", structure)
+
+    assert result.template_id == NRLDC_2024_TEMPLATE.template_id
+    assert result.semantic_pass_required is False
+    assert infer_structural_family("nrldc", structure) == NRLDC_STANDARD_FAMILY_ID
+
+
+def test_nrldc_2025_and_2026_templates_preserve_known_expansions() -> None:
+    """Recognize the 11-column and storage-page NRLDC report families."""
+    cases = (
+        (
+            NRLDC_2025_TEMPLATE,
+            12,
+            16,
+            (
+                TableShape(1, 1, 54, 54, 40, 40, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(5, 1, 61, 61, 15, 15, "observed"),
+                TableShape(9, 1, 67, 67, 23, 23, "observed"),
+                TableShape(10, 1, 61, 61, 25, 25, "observed"),
+                TableShape(11, 1, 69, 69, 33, 33, "observed"),
+                TableShape(12, 5, 19, 19, 16, 16, "observed"),
+            ),
+        ),
+        (
+            NRLDC_2026_TEMPLATE,
+            13,
+            17,
+            (
+                TableShape(1, 1, 54, 54, 40, 40, "observed"),
+                TableShape(2, 1, 65, 65, 11, 11, "observed"),
+                TableShape(5, 1, 62, 62, 15, 15, "observed"),
+                TableShape(9, 1, 70, 70, 23, 23, "observed"),
+                TableShape(10, 1, 59, 59, 25, 25, "observed"),
+                TableShape(12, 1, 64, 64, 34, 34, "observed"),
+                TableShape(13, 4, 22, 22, 16, 16, "observed"),
+            ),
+        ),
+    )
+    for template, page_count, table_count, shapes in cases:
+        structure = ReportStructure(
+            page_count=page_count,
+            table_count=table_count,
+            headings=template.required_headings,
+            table_shapes=shapes,
+        )
+
+        result = match_report_template("nrldc", structure)
+
+        assert result.template_id == template.template_id
+        assert result.semantic_pass_required is False
 
 
 @pytest.mark.integration

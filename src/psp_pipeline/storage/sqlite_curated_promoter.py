@@ -624,10 +624,19 @@ SRLDC_PROMOTER_LAYOUTS = {
 
 
 def promote_report_to_curated(conn: sqlite3.Connection, report_document_id: int) -> None:
-    """Promote one approved SRLDC report and persist coverage evidence."""
+    """Promote one approved source-specific report with coverage evidence."""
 
     report = _fetch_report(conn, report_document_id)
-    if not report or report["rldc"] != "srldc":
+    if not report:
+        return
+    if report["rldc"] == "nrldc":
+        from psp_pipeline.storage.sqlite_nrldc_promoter import (
+            promote_nrldc_report_to_curated,
+        )
+
+        promote_nrldc_report_to_curated(conn, report_document_id)
+        return
+    if report["rldc"] != "srldc":
         return
     layout = _layout_for_report(report)
     if report["semantic_pass_required"] or layout is None:
@@ -725,7 +734,13 @@ def _fetch_report(conn: sqlite3.Connection, report_document_id: int) -> dict[str
 
     row = conn.execute(
         """
-        SELECT rldc, local_path, report_date, template_id, semantic_pass_required
+        SELECT
+            rldc,
+            local_path,
+            report_date,
+            template_id,
+            semantic_pass_required,
+            structure_deviation_reason
         FROM psp_report_document WHERE id = ?
         """,
         (report_document_id,),
@@ -738,6 +753,7 @@ def _fetch_report(conn: sqlite3.Connection, report_document_id: int) -> dict[str
         "report_date": row[2],
         "template_id": row[3],
         "semantic_pass_required": bool(row[4]),
+        "structure_deviation_reason": row[5],
     }
 
 

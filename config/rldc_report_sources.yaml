@@ -8,7 +8,8 @@ rldc_sources:
       - "srldc.in"
   NRLDC:
     mode: "adapter"
-    listing_url: "https://www.nrldc.in/"
+    listing_url: "https://www.nrldc.in/daily/daily-psp-report"
+    document_api_url: "https://www.nrldc.in/get-documents-list/111"
     pdf_link_regex: "(?i)psp.*\\.pdf$|daily.*report.*\\.pdf$|\\.pdf$"
     include_keywords: ["psp", "power supply position", "daily"]
     allow_domains:

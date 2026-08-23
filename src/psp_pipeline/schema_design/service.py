@@ -190,12 +190,15 @@ def summarize_template_inventory(
     }
 
 
-def select_monthly_anchor_paths(pdf_paths: list[Path]) -> list[MonthlyAnchorSample]:
-    """Pick first, fifteenth, and last available report from each month."""
+def select_monthly_anchor_paths(
+    pdf_paths: list[Path],
+    source_id: str = "srldc",
+) -> list[MonthlyAnchorSample]:
+    """Pick first, fifteenth, and last available report from each source month."""
 
     grouped: dict[str, list[tuple[str, Path]]] = {}
     for pdf_path in sorted(pdf_paths):
-        report_date = _infer_report_date(pdf_path)
+        report_date = _infer_report_date(pdf_path, source_id)
         if not report_date:
             continue
         month_key = report_date[:7]
@@ -232,14 +235,38 @@ def _select_representatives(paths: list[Path], limit: int) -> tuple[Path, ...]:
     return tuple(paths[index] for index in sorted(indexes)[:limit])
 
 
-def _infer_report_date(pdf_path: Path) -> str | None:
-    """Infer a report date from the standard SRLDC filename convention."""
+def _infer_report_date(pdf_path: Path, source_id: str = "srldc") -> str | None:
+    """Infer a report date from an approved source-specific filename pattern."""
 
-    match = re.fullmatch(r"(\d{2})-(\d{2})-(\d{4})-psp\.pdf", pdf_path.name.lower())
-    if not match:
+    filename = pdf_path.name.lower()
+    source = source_id.lower()
+    if source == "srldc":
+        match = re.fullmatch(r"(\d{2})-(\d{2})-(\d{4})-psp\.pdf", filename)
+        if not match:
+            return None
+        day, month, year = match.groups()
+        return _to_iso_date(day, month, year)
+
+    if source == "nrldc":
+        match = re.search(r"daily(\d{6}|\d{8})\.pdf$", filename)
+        if not match:
+            return None
+        digits = match.group(1)
+        if len(digits) == 6:
+            day, month, short_year = digits[:2], digits[2:4], digits[4:]
+            return _to_iso_date(day, month, f"20{short_year}")
+        day, month, year = digits[:2], digits[2:4], digits[4:]
+        return _to_iso_date(day, month, year)
+    return None
+
+
+def _to_iso_date(day: str, month: str, year: str) -> str | None:
+    """Validate separated filename components and return an ISO calendar date."""
+
+    try:
+        return datetime(int(year), int(month), int(day)).date().isoformat()
+    except ValueError:
         return None
-    day, month, year = match.groups()
-    return f"{year}-{month}-{day}"
 
 
 def _pick_midmonth_anchor(entries: list[tuple[str, Path]]) -> tuple[str, Path, bool]:
