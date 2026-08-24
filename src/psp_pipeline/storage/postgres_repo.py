@@ -30,30 +30,32 @@ class PostgresRepository:
                 self._insert_lineage(cur, records)
             conn.commit()
 
-    def upsert_fact_observations(self, records: Iterable[FactObservation]) -> None:
+    def upsert_fact_observations(self, records: Iterable[FactObservation]) -> int:
         """
         Non-atomic helper for one-off tooling.
         Production pipeline should prefer run_in_transaction().
         """
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
-                self._upsert_facts(cur, records)
+                inserted = self._upsert_facts(cur, records)
             conn.commit()
+        return inserted
 
     def run_in_transaction(
         self,
         lineage: Iterable[LineageRecord],
         facts: Iterable[FactObservation],
         reconciliation: Iterable[ReconciliationResult] | None = None,
-    ) -> None:
+    ) -> int:
         """Insert lineage and facts in a single atomic transaction."""
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
                 self._insert_lineage(cur, lineage)
-                self._upsert_facts(cur, facts)
+                inserted = self._upsert_facts(cur, facts)
                 if reconciliation is not None:
                     self._upsert_reconciliation(cur, reconciliation)
             conn.commit()
+        return inserted
 
     def fetch_existing_hash(self, source_id: str) -> Optional[str]:
         with psycopg.connect(self.dsn) as conn:
@@ -106,9 +108,63 @@ class PostgresRepository:
             )
 
     @staticmethod
-    def _upsert_facts(cur, records: Iterable[FactObservation]) -> None:
+    def _upsert_facts(cur, records: Iterable[FactObservation]) -> int:
+        """Insert idempotent observations and assign revisions per valid-time grain."""
+
+        inserted = 0
         for item in records:
             payload = asdict(item)
+            grain_key = "|".join(
+                (
+                    item.entity_key,
+                    item.metric_name,
+                    item.time_block or "",
+                    item.report_type,
+                    item.source_region,
+                    item.valid_from.isoformat(),
+                    item.valid_to.isoformat() if item.valid_to else "",
+                )
+            )
+            # Lock one logical observation grain so concurrent loaders cannot
+            # assign the same correction version.
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (grain_key,),
+            )
+            cur.execute(
+                """
+                INSERT INTO fact_observation_dedup (
+                    timeseries_uuid, entity_key, metric_name, time_block,
+                    report_type, source_region, valid_from, valid_to,
+                    first_ingested_at
+                ) VALUES (
+                    %(timeseries_uuid)s, %(entity_key)s, %(metric_name)s,
+                    %(time_block)s, %(report_type)s, %(source_region)s,
+                    %(valid_from)s, %(valid_to)s, %(ingested_at)s
+                )
+                ON CONFLICT (timeseries_uuid) DO NOTHING
+                RETURNING timeseries_uuid
+                """,
+                payload,
+            )
+            if cur.fetchone() is None:
+                continue
+            cur.execute(
+                """
+                SELECT COALESCE(MAX(version_no), 0) + 1
+                FROM fact_observation
+                WHERE entity_key = %(entity_key)s
+                  AND metric_name = %(metric_name)s
+                  AND time_block IS NOT DISTINCT FROM %(time_block)s
+                  AND report_type = %(report_type)s
+                  AND source_region = %(source_region)s
+                  AND valid_from = %(valid_from)s
+                  AND valid_to IS NOT DISTINCT FROM %(valid_to)s
+                """,
+                payload,
+            )
+            version_row = cur.fetchone()
+            payload["version_no"] = int(version_row[0]) if version_row else 1
             cur.execute(
                 """
                 INSERT INTO fact_observation (
@@ -120,10 +176,11 @@ class PostgresRepository:
                     %(variance_pct)s, %(report_type)s, %(source_region)s, %(valid_from)s, %(valid_to)s,
                     %(version_no)s, %(ingested_at)s, %(timeseries_uuid)s
                 )
-                ON CONFLICT DO NOTHING
                 """,
                 payload,
             )
+            inserted += 1
+        return inserted
 
     @staticmethod
     def _upsert_reconciliation(cur, records: Iterable[ReconciliationResult]) -> None:

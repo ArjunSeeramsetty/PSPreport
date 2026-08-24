@@ -13,6 +13,12 @@ from psp_pipeline.pipelines.rldc_daily_psp import (
 from psp_pipeline.parsing.rldc.templates import (
     COMPACT_SRLDCP_TEMPLATE,
     DEFAULT_SRLDCP_TEMPLATE,
+    ERLDC_2023_TEMPLATE,
+    ERLDC_2024_FLAT_TEMPLATE,
+    ERLDC_2024_SPLIT_TEMPLATE,
+    ERLDC_2025_FLAT_TEMPLATE,
+    ERLDC_2025_SPLIT_TEMPLATE,
+    ERLDC_STANDARD_FAMILY_ID,
     FLAT_8_SRLDCP_TEMPLATE,
     FLAT_8_2025_SRLDCP_TEMPLATE,
     FLAT_6_2023_SRLDCP_TEMPLATE,
@@ -22,6 +28,7 @@ from psp_pipeline.parsing.rldc.templates import (
     NRLDC_2025_TEMPLATE,
     NRLDC_2026_TEMPLATE,
     NRLDC_STANDARD_FAMILY_ID,
+    NERLDC_STANDARD_FAMILY_ID,
     ReportStructure,
     SRLDC_FLAT_FAMILY_ID,
     SRLDC_SPLIT_FAMILY_ID,
@@ -37,6 +44,7 @@ from psp_pipeline.parsing.rldc.templates import (
     WRLDC_2026_EARLY_TEMPLATE,
     WRLDC_STANDARD_FAMILY_ID,
     infer_structural_family,
+    inspect_report_structure,
     match_report_template,
 )
 
@@ -95,7 +103,7 @@ def test_srldc_compact_template_match_accepts_expected_structure() -> None:
 def test_template_match_requires_semantic_pass_for_unknown_rldc() -> None:
     structure = ReportStructure(page_count=10, table_count=41, headings=(), table_shapes=())
 
-    result = match_report_template("erldc", structure)
+    result = match_report_template("unknown-rldc", structure)
 
     assert result.template_id is None
     assert result.semantic_pass_required is True
@@ -493,6 +501,139 @@ def test_wrldc_templates_preserve_observed_2023_to_2026_layouts() -> None:
         assert result.confidence == 1.0
         assert result.semantic_pass_required is False
         assert infer_structural_family("wrldc", structure) == WRLDC_STANDARD_FAMILY_ID
+
+
+def test_erldc_templates_preserve_observed_flat_and_split_geometries() -> None:
+    """Recognize local ERLDC report layouts without relying on report dates."""
+
+    cases = (
+        (
+            ERLDC_2023_TEMPLATE,
+            6,
+            10,
+            (
+                TableShape(1, 1, 49, 49, 15, 15, "observed"),
+                TableShape(1, 2, 9, 9, 5, 5, "observed"),
+                TableShape(2, 1, 65, 65, 9, 9, "observed"),
+                TableShape(3, 1, 72, 72, 13, 13, "observed"),
+                TableShape(4, 1, 67, 67, 12, 12, "observed"),
+                TableShape(5, 1, 56, 56, 17, 17, "observed"),
+                TableShape(6, 1, 23, 23, 11, 11, "observed"),
+            ),
+        ),
+        (
+            ERLDC_2024_FLAT_TEMPLATE,
+            7,
+            10,
+            (
+                TableShape(1, 1, 61, 61, 18, 18, "observed"),
+                TableShape(2, 1, 73, 73, 9, 9, "observed"),
+                TableShape(3, 1, 71, 71, 13, 13, "observed"),
+                TableShape(4, 1, 63, 63, 16, 16, "observed"),
+                TableShape(5, 1, 49, 49, 27, 27, "observed"),
+                TableShape(6, 1, 57, 57, 40, 40, "observed"),
+                TableShape(7, 1, 11, 11, 11, 11, "observed"),
+            ),
+        ),
+        (
+            ERLDC_2024_SPLIT_TEMPLATE,
+            11,
+            40,
+            (
+                TableShape(1, 1, 3, 3, 10, 10, "observed"),
+                TableShape(1, 2, 10, 10, 15, 15, "observed"),
+                TableShape(2, 2, 11, 11, 11, 11, "observed"),
+                TableShape(3, 2, 24, 24, 11, 11, "observed"),
+                TableShape(5, 1, 39, 39, 12, 12, "observed"),
+                TableShape(6, 3, 20, 20, 9, 9, "observed"),
+                TableShape(8, 5, 17, 17, 8, 8, "observed"),
+                TableShape(9, 2, 10, 10, 14, 14, "observed"),
+                TableShape(11, 2, 9, 9, 11, 11, "observed"),
+            ),
+        ),
+        (
+            ERLDC_2025_SPLIT_TEMPLATE,
+            7,
+            33,
+            (
+                TableShape(1, 1, 3, 3, 10, 10, "observed"),
+                TableShape(1, 2, 10, 10, 15, 15, "observed"),
+                TableShape(1, 4, 10, 10, 7, 7, "observed"),
+                TableShape(2, 2, 16, 16, 11, 11, "observed"),
+                TableShape(3, 2, 63, 63, 12, 12, "observed"),
+                TableShape(4, 3, 46, 46, 9, 9, "observed"),
+                TableShape(5, 5, 17, 17, 8, 8, "observed"),
+                TableShape(6, 2, 10, 10, 9, 9, "observed"),
+            ),
+        ),
+        (
+            ERLDC_2025_FLAT_TEMPLATE,
+            7,
+            10,
+            (
+                TableShape(1, 1, 61, 61, 23, 23, "observed"),
+                TableShape(2, 1, 72, 72, 11, 11, "observed"),
+                TableShape(3, 1, 71, 71, 21, 21, "observed"),
+                TableShape(4, 1, 70, 70, 25, 25, "observed"),
+                TableShape(5, 1, 51, 51, 32, 32, "observed"),
+                TableShape(6, 1, 57, 57, 40, 40, "observed"),
+                TableShape(7, 1, 11, 11, 11, 11, "observed"),
+            ),
+        ),
+    )
+
+    for template, page_count, table_count, shapes in cases:
+        structure = ReportStructure(
+            page_count=page_count,
+            table_count=table_count,
+            headings=template.required_headings,
+            table_shapes=shapes,
+        )
+
+        result = match_report_template("erldc", structure)
+
+        assert result.template_id == template.template_id
+        assert result.confidence == 1.0
+        assert result.semantic_pass_required is False
+        assert infer_structural_family("erldc", structure) == ERLDC_STANDARD_FAMILY_ID
+
+
+def test_erldc_unknown_geometry_remains_gated_for_semantic_review() -> None:
+    """Avoid assigning a near-match template to an unverified ERLDC layout."""
+
+    structure = ReportStructure(page_count=10, table_count=41, headings=(), table_shapes=())
+
+    result = match_report_template("erldc", structure)
+
+    assert result.template_id is None
+    assert result.semantic_pass_required is True
+    assert result.reasons == ("no_template_match",)
+
+
+@pytest.mark.parametrize(
+    ("filename", "template_id"),
+    (
+        ("NER-PSP-REPORT-DATED-01-04-2023.pdf", "nerldc_daily_psp_v2023_standard_09_column_generation"),
+        ("NER-PSP-REPORT-DATED-01-01-2024.pdf", "nerldc_daily_psp_v2024_standard_09_column_generation"),
+        ("NER-PSP-REPORT-DATED-01-01-2025.pdf", "nerldc_daily_psp_v2025_standard_10_column_generation"),
+        ("NER-PSP-REPORT-DATED-01-01-2026.pdf", "nerldc_daily_psp_v2026_standard_09_column_generation"),
+    ),
+)
+def test_nerldc_local_fixtures_match_yearly_template_contracts(
+    filename: str,
+    template_id: str,
+) -> None:
+    """Known NERLDC fixtures select their conservative discovery template."""
+    fixture = Path("downloads/NERLDC_PSP") / filename
+    if not fixture.exists():
+        pytest.skip(f"local NERLDC fixture missing: {fixture}")
+
+    structure = inspect_report_structure(fixture)
+    result = match_report_template("nerldc", structure)
+
+    assert result.template_id == template_id
+    assert result.semantic_pass_required is False
+    assert infer_structural_family("nerldc", structure) == NERLDC_STANDARD_FAMILY_ID
 
 
 @pytest.mark.integration

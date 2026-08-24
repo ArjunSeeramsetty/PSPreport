@@ -25,7 +25,6 @@ services:
       - "7687:7687"
     volumes:
       - neo4j_data:/data
-      - ./sql/neo4j_constraints.cypher:/var/lib/neo4j/import/neo4j_constraints.cypher:ro
 
   minio:
     image: minio/minio:latest

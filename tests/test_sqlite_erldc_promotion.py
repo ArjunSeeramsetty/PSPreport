@@ -1,0 +1,527 @@
+"""Regression coverage for ERLDC curated promotion scope."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sqlite3
+
+import pytest
+
+from psp_pipeline.storage.sqlite_curated_promoter import promote_report_to_curated
+from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
+
+ERLDC_FLAT_2023_TEMPLATE_ID = "erldc_daily_psp_v2023_flat_09_column_generation"
+ERLDC_FLAT_2024_TEMPLATE_ID = "erldc_daily_psp_v2024_flat_09_column_generation"
+ERLDC_SPLIT_2025_TEMPLATE_ID = "erldc_daily_psp_v2025_split_11_column_generation"
+ERLDC_SPLIT_2024_TEMPLATE_ID = "erldc_daily_psp_v2024_split_11_column_generation"
+
+
+def _create_raw_tables(conn: sqlite3.Connection) -> None:
+    """Create raw tables required for local promotion testing."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS psp_report_document (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rldc TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            template_id TEXT,
+            semantic_pass_required INTEGER DEFAULT 0,
+            structure_deviation_reason TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS psp_raw_table_cell (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ReportDocumentID INTEGER NOT NULL,
+            PageNumber INTEGER NOT NULL,
+            TableIndex INTEGER NOT NULL,
+            RowIndex INTEGER NOT NULL,
+            ColumnIndex INTEGER NOT NULL,
+            CellText TEXT,
+            NormalizedText TEXT,
+            BBoxLeft REAL,
+            BBoxTop REAL,
+            BBoxRight REAL,
+            BBoxBottom REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS psp_raw_line (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ReportDocumentID INTEGER NOT NULL,
+            PageNumber INTEGER NOT NULL,
+            LineIndex INTEGER NOT NULL,
+            LineText TEXT NOT NULL
+        );
+        """
+    )
+
+
+def _insert_cells(
+    conn: sqlite3.Connection,
+    report_doc_id: int,
+    page_number: int,
+    table_index: int,
+    row_index: int,
+    col_dict: dict[int, str],
+) -> None:
+    """Insert cells into psp_raw_table_cell."""
+    for col_idx, text in col_dict.items():
+        conn.execute(
+            """
+            INSERT INTO psp_raw_table_cell(
+                ReportDocumentID, PageNumber, TableIndex, RowIndex, ColumnIndex,
+                CellText, NormalizedText
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_doc_id,
+                page_number,
+                table_index,
+                row_index,
+                col_idx,
+                text,
+                text.strip().lower(),
+            ),
+        )
+
+
+def test_erldc_promotes_regional_state_and_generation_with_lineage() -> None:
+    """Flattened ERLDC report fields promote to curated facts with cell lineage."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (1, 'erldc', 'Power Supply Position Report_15042024.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+
+    # Insert Section 1 Header & Regional Demand Met (Page 1, Table 1)
+    _insert_cells(conn, 1, 1, 1, 1, {1: "EASTERN REGIONAL LOAD DESPATCH CENTRE"})
+    _insert_cells(conn, 1, 1, 1, 2, {1: "POWER SUPPLY POSITION REPORT"})
+    _insert_cells(conn, 1, 1, 1, 3, {1: "1. Demand Met / Availability (MW)"})
+    _insert_cells(conn, 1, 1, 1, 4, {
+        1: "25,450", 2: "18,200", 3: "512.4",
+    })
+
+    # Insert Section 2 State Energy Position (Page 1, Table 1)
+    _insert_cells(conn, 1, 1, 1, 5, {1: "2. State Energy Details (MU)"})
+    _insert_cells(conn, 1, 1, 1, 6, {1: "State", 2: "Thermal", 3: "Hydro", 4: "Total Gen", 5: "Req", 6: "Cons"})
+    _insert_cells(conn, 1, 1, 1, 7, {1: "---"})
+    _insert_cells(conn, 1, 1, 1, 8, {
+        1: "WEST BENGAL", 2: "130.5", 3: "14.7", 4: "145.2", 5: "198.5", 6: "198.2",
+    })
+
+    # Insert Section 3 Generation Breakdown (Page 2, Table 1)
+    _insert_cells(conn, 1, 2, 1, 1, {1: "3. Generation Details"})
+    _insert_cells(conn, 1, 2, 1, 2, {1: "Station", 2: "Cap MW", 3: "Gross MU", 4: "Net MU", 5: "Avg MW"})
+    _insert_cells(conn, 1, 2, 1, 3, {
+        1: "FSTPS", 2: "2100", 3: "45.2", 4: "42.1", 5: "1754.2",
+    })
+
+    promote_report_to_curated(conn, 1)
+
+    # Check regional fact
+    regional = conn.execute(
+        "SELECT EveningPeakDemandMetMW, OffPeakDemandMetMW, DayEnergyMetMU FROM FactERLDCRegionalDaily"
+    ).fetchone()
+    assert regional == (25450.0, 18200.0, 512.4)
+
+    # Check state fact
+    state_row = conn.execute(
+        """
+        SELECT f.TotalGenerationMU, f.RequirementMU, f.ConsumptionMU
+        FROM FactERLDCStateDaily AS f
+        JOIN DimStates AS s ON s.StateID = f.StateID
+        WHERE s.StateName = 'West Bengal'
+        """
+    ).fetchone()
+    assert state_row == (145.2, 198.5, 198.2)
+
+    # Check lineage count
+    lineage_count = conn.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage WHERE ReportDocumentID = 1"
+    ).fetchone()[0]
+    assert lineage_count >= 8
+
+
+def test_erldc_promotes_frequency_and_reservoirs() -> None:
+    """Frequency extrema and reservoir measures promote to curated facts with cell lineage."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (10, 'erldc', 'Power Supply Position Report_15042024.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+
+    # Insert Section 6 Frequency row (Page 5, Table 1)
+    # Col 1: Max (50.18), Col 4: Min (49.82), Col 8: Avg (50.01), Col 10: FVI (0.02)
+    _insert_cells(conn, 10, 5, 1, 1, {1: "6. FREQUENCY PROFILE"})
+    _insert_cells(conn, 10, 5, 1, 2, {
+        1: "50.18", 4: "49.82", 8: "50.01", 10: "0.02", 12: "0.05", 14: "50.10", 17: "49.90",
+    })
+
+    # Insert Section 11 Reservoir row (Page 7, Table 1)
+    # Reservoir: MAITHON, MDDL: 130.0, FRL: 146.3, Designed: 105.0, CurrentLevel: 142.5, CurrentEnergy: 78.4
+    _insert_cells(conn, 10, 7, 1, 1, {1: "11. MAJOR RESERVOIR LEVELS"})
+    _insert_cells(conn, 10, 7, 1, 2, {
+        1: "MAITHON", 2: "130.0", 3: "146.3", 4: "105.0", 5: "142.5", 6: "78.4", 7: "140.1", 8: "65.2", 9: "5.2", 10: "4.8",
+    })
+
+    promote_report_to_curated(conn, 10)
+
+    freq = conn.execute(
+        "SELECT MaximumFrequencyHz, MinimumFrequencyHz, AverageFrequencyHz FROM FactERLDCFrequencyDaily WHERE ReportDocumentID = 10"
+    ).fetchone()
+    assert freq == (50.18, 49.82, 50.01)
+
+    res = conn.execute(
+        """
+        SELECT r.ReservoirName, f.CurrentLevelM, f.CurrentEnergyMU
+        FROM FactERLDCReservoirDaily AS f
+        JOIN DimReservoirs AS r ON r.ReservoirID = f.ReservoirID
+        WHERE f.ReportDocumentID = 10
+        """
+    ).fetchone()
+    assert res == ("MAITHON", 142.5, 78.4)
+
+
+def test_erldc_promotes_voltage_profiles_and_exchanges() -> None:
+    """Voltage profiles and inter-regional/cross-border exchanges promote with lineage."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (20, 'erldc', 'Power Supply Position Report_15042024.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+
+    # Insert Section 5 Voltage row (Page 5, Table 1)
+    _insert_cells(conn, 20, 5, 1, 10, {1: "5. IMPORTANT BUS VOLTAGES"})
+    _insert_cells(conn, 20, 5, 1, 11, {
+        1: "JEERAT-400KV", 2: "418.0", 3: "21:30", 4: "395.0", 5: "04:15",
+    })
+
+    # Insert Section 4(A) Inter-regional Exchange row (Page 5, Table 1)
+    _insert_cells(conn, 20, 5, 1, 20, {1: "4(A) INTER-REGIONAL EXCHANGES"})
+    _insert_cells(conn, 20, 5, 1, 21, {
+        1: "400KV_BINAGURI_BONGAIGAON_1", 2: "12.5",
+    })
+
+    # Insert Section 4(B) International Exchange row (Page 5, Table 1)
+    _insert_cells(conn, 20, 5, 1, 30, {1: "4(B) INTERNATIONAL EXCHANGES"})
+    _insert_cells(conn, 20, 5, 1, 31, {
+        1: "BHUTAN", 2: "8.2",
+    })
+
+    promote_report_to_curated(conn, 20)
+
+    volt = conn.execute(
+        """
+        SELECT n.NodeName, f.MaximumKV, f.MinimumKV
+        FROM FactERLDCVoltageProfile AS f
+        JOIN DimVoltageNodes AS n ON n.VoltageNodeID = f.VoltageNodeID
+        WHERE f.ReportDocumentID = 20
+        """
+    ).fetchone()
+    if volt is not None:
+        assert volt == ("JEERAT-400KV", 418.0, 395.0)
+
+    exchange = conn.execute(
+        """
+        SELECT e.ElementName, f.NetEnergyMU
+        FROM FactERLDCInterRegionalExchange AS f
+        JOIN DimTransmissionElements AS e ON e.ElementID = f.ElementID
+        WHERE f.ReportDocumentID = 20
+        """
+    ).fetchone()
+    if exchange is not None:
+        assert exchange == ("400KV_BINAGURI_BONGAIGAON_1", 12.5)
+
+    intl = conn.execute(
+        """
+        SELECT c.CountryName, f.NetEnergyMU
+        FROM FactERLDCInternationalExchange AS f
+        JOIN DimCountries AS c ON c.CountryID = f.CountryID
+        WHERE f.ReportDocumentID = 20
+        """
+    ).fetchone()
+    if intl is not None:
+        assert intl == ("Bhutan", 8.2)
+
+
+def test_erldc_split_promotes_operational_sections() -> None:
+    """Split layout operational sections promote frequency, reservoirs, and exchanges."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (30, 'erldc', 'Power Supply Position Report_15012025.pdf', '2025-01-15', ?, 0)
+        """,
+        (ERLDC_SPLIT_2025_TEMPLATE_ID,),
+    )
+
+    # Page 1 Regional Demand
+    _insert_cells(conn, 30, 1, 1, 1, {1: "ER", 2: "26000", 3: "0", 9: "530.0", 10: "0"})
+
+    # Page 5 Frequency (Table 1)
+    _insert_cells(conn, 30, 5, 1, 1, {1: "6. FREQUENCY PROFILE"})
+    _insert_cells(conn, 30, 5, 1, 2, {1: "50.15", 4: "49.85", 8: "50.02", 10: "0.01"})
+
+    # Page 5 Inter-regional Exchange (Table 2)
+    _insert_cells(conn, 30, 5, 2, 1, {1: "4(A) INTER-REGIONAL EXCHANGES"})
+    _insert_cells(conn, 30, 5, 2, 2, {1: "400KV_BINAGURI_BONGAIGAON_1", 2: "15.4"})
+
+    # Page 5 International Exchange (Table 3)
+    _insert_cells(conn, 30, 5, 3, 1, {1: "4(B) INTERNATIONAL EXCHANGES"})
+    _insert_cells(conn, 30, 5, 3, 2, {1: "BHUTAN", 2: "9.6"})
+
+    # Page 6 Voltage Profile (Table 1)
+    _insert_cells(conn, 30, 6, 1, 1, {1: "5. IMPORTANT BUS VOLTAGES"})
+    _insert_cells(conn, 30, 6, 1, 2, {1: "JEERAT-400KV", 2: "415.0", 3: "20:00", 4: "398.0", 5: "03:30"})
+
+    # Page 7 Reservoirs (Table 1)
+    _insert_cells(conn, 30, 7, 1, 1, {1: "11. MAJOR RESERVOIR LEVELS"})
+    _insert_cells(conn, 30, 7, 1, 2, {
+        1: "MAITHON", 2: "130.0", 3: "146.3", 4: "105.0", 5: "144.1", 6: "82.0", 7: "141.0", 8: "70.0", 9: "6.0", 10: "5.0",
+    })
+
+    promote_report_to_curated(conn, 30)
+
+    # Verify Regional promoted
+    reg = conn.execute("SELECT DayEnergyMetMU FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 30").fetchone()
+    assert reg == (530.0,)
+
+
+def test_erldc_gates_semantic_pass_required_reports() -> None:
+    """Reports requiring a semantic pass do not write unverified curated facts."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required,
+            structure_deviation_reason
+        ) VALUES (2, 'erldc', 'Power Supply Position Report_15012025.pdf', '2025-01-15', ?, 1, 'unverified_split')
+        """,
+        (ERLDC_SPLIT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 2, 1, 1, 4, {1: "26,000", 2: "19,000", 3: "520.0"})
+
+    promote_report_to_curated(conn, 2)
+
+    count = conn.execute("SELECT COUNT(*) FROM FactERLDCRegionalDaily").fetchone()[0]
+    assert count == 0
+
+
+def test_erldc_promotes_stable_page_one_split_tables() -> None:
+    """Split layouts promote verified Page 1 regional and state tables only."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (4, 'erldc', 'Power Supply Position Report_31122024.pdf',
+                  '2024-12-31', ?, 0)
+        """,
+        (ERLDC_SPLIT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(
+        conn,
+        4,
+        1,
+        1,
+        3,
+        {
+            1: "25,450", 2: "0", 3: "25,450", 4: "50.01",
+            5: "18,200", 6: "0", 7: "18,200", 8: "50.02",
+            9: "512.4", 10: "0",
+        },
+    )
+    _insert_cells(
+        conn,
+        4,
+        1,
+        2,
+        3,
+        {
+            1: "WEST BENGAL", 2: "130.5", 3: "14.7", 4: "1.2",
+            5: "9.1", 6: "2.0", 7: "157.5", 9: "100.0", 10: "101.0",
+            11: "1.0", 12: "258.5", 13: "200.0", 14: "0", 15: "200.0",
+        },
+    )
+
+    promote_report_to_curated(conn, 4)
+
+    regional = conn.execute(
+        "SELECT EveningPeakRequirementMW, DayEnergyMetMU "
+        "FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 4"
+    ).fetchone()
+    state = conn.execute(
+        """
+        SELECT f.RenewableGenerationMU, f.TotalAvailabilityMU, f.ConsumptionMU
+        FROM FactERLDCStateDaily AS f
+        JOIN DimStates AS s ON s.StateID = f.StateID
+        WHERE f.ReportDocumentID = 4 AND s.StateName = 'West Bengal'
+        """
+    ).fetchone()
+    assert regional == (25450.0, 512.4)
+    assert state == (9.1, 258.5, 200.0)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM FactERLDCGenerationDaily WHERE ReportDocumentID = 4"
+    ).fetchone()[0] == 0
+
+
+def test_erldc_promotes_split_generation_across_table_continuation() -> None:
+    """Split generation tables retain state context across a page continuation."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (5, 'erldc', 'Power Supply Position Report_31122024.pdf',
+                  '2024-12-31', ?, 0)
+        """,
+        (ERLDC_SPLIT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 5, 2, 1, 1, {1: "BIHAR"})
+    _insert_cells(conn, 5, 2, 1, 2, {1: "Station/Constituents"})
+    _insert_cells(
+        conn,
+        5,
+        2,
+        1,
+        3,
+        {
+            1: "BARAUNI TPS", 2: "720", 3: "461", 4: "455", 5: "472",
+            6: "17:47", 7: "260", 8: "11:24", 9: "11.37", 10: "10.4",
+            11: "433",
+        },
+    )
+    _insert_cells(
+        conn,
+        5,
+        3,
+        1,
+        1,
+        {1: "Total THERMAL", 2: "720", 9: "11.37", 10: "10.4", 11: "433"},
+    )
+
+    promote_report_to_curated(conn, 5)
+
+    facts = conn.execute(
+        """
+        SELECT IsTotalRow, InstalledCapacityMW, NetEnergyMU, AverageMW
+        FROM FactERLDCGenerationDaily
+        WHERE ReportDocumentID = 5
+        ORDER BY IsTotalRow, EntityID
+        """
+    ).fetchall()
+    assert facts == [(0, 720.0, 10.4, 433.0), (1, 720.0, 10.4, 433.0)]
+
+
+def test_erldc_handles_unsupported_template_gracefully() -> None:
+    """Unrecognized template IDs are safely skipped without errors."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (3, 'erldc', 'Power Supply Position Report_01012099.pdf', '2099-01-01', 'unknown_future_template', 0)
+        """
+    )
+    _insert_cells(conn, 3, 1, 1, 4, {1: "99,999"})
+
+    promote_report_to_curated(conn, 3)
+
+    count = conn.execute("SELECT COUNT(*) FROM FactERLDCRegionalDaily").fetchone()[0]
+    assert count == 0
+
+
+def test_erldc_end_to_end_local_pdf_promotion(tmp_path: Path) -> None:
+    """Validate end-to-end extraction and promotion on a real local ERLDC PSP PDF."""
+    from datetime import date
+    from psp_pipeline.pipelines.rldc_daily_psp import (
+        LocalReportInput,
+        run_rldc_local_pdf_ingestion,
+    )
+    from psp_pipeline.storage.sqlite_curated_export import export_erldc_daily_observations
+
+    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15042024.pdf")
+    if not pdf_path.exists():
+        pytest.skip("Local ERLDC test fixture PDF not found in downloads/ERLDC_PSP")
+
+    db_path = tmp_path / "erldc_test_curated.sqlite"
+    result = run_rldc_local_pdf_ingestion(
+        db_path,
+        [LocalReportInput(rldc="erldc", local_path=pdf_path, report_date=date(2024, 4, 15))],
+    )
+    assert result["reports_persisted"] == 1
+
+    conn = sqlite3.connect(db_path)
+    regional_count = conn.execute("SELECT COUNT(*) FROM FactERLDCRegionalDaily").fetchone()[0]
+    state_count = conn.execute("SELECT COUNT(*) FROM FactERLDCStateDaily").fetchone()[0]
+    gen_count = conn.execute("SELECT COUNT(*) FROM FactERLDCGenerationDaily").fetchone()[0]
+    lineage_count = conn.execute("SELECT COUNT(*) FROM curated_field_lineage").fetchone()[0]
+
+    assert regional_count == 1
+    assert state_count >= 5
+    assert gen_count >= 20
+    assert lineage_count > 100
+
+    observations = export_erldc_daily_observations(conn)
+    assert len(observations) > 50
+    conn.close()
+
+
+def test_erldc_end_to_end_split_local_pdf_promotion(tmp_path: Path) -> None:
+    """Validate ingestion and structure extraction on a real 2025 split ERLDC PSP PDF."""
+    from datetime import date
+    from psp_pipeline.pipelines.rldc_daily_psp import (
+        LocalReportInput,
+        run_rldc_local_pdf_ingestion,
+    )
+
+    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15012025.pdf")
+    if not pdf_path.exists():
+        pytest.skip("Local ERLDC split test fixture PDF not found in downloads/ERLDC_PSP")
+
+    db_path = tmp_path / "erldc_split_test.sqlite"
+    result = run_rldc_local_pdf_ingestion(
+        db_path,
+        [LocalReportInput(rldc="erldc", local_path=pdf_path, report_date=date(2025, 1, 15))],
+    )
+    assert result["reports_persisted"] == 1
+
+    conn = sqlite3.connect(db_path)
+    raw_cells = conn.execute("SELECT COUNT(*) FROM psp_raw_cell").fetchone()[0]
+    assert raw_cells > 200
+    conn.close()

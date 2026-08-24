@@ -25,6 +25,7 @@ _DIMENSION_COLUMNS = {
     "ElementID",
     "VoltageNodeID",
     "ReservoirID",
+    "CountryID",
     "IsTotalRow",
 }
 
@@ -234,6 +235,226 @@ def export_wrldc_daily_observations(
             **common,
         ),
     ]
+
+
+def export_erldc_daily_observations(
+    conn: sqlite3.Connection,
+    report_document_id: int | None = None,
+    *,
+    ingested_at: datetime | None = None,
+) -> list[FactObservation]:
+    """Return curated ERLDC facts as portable bitemporal observations."""
+
+    recorded_at = ingested_at or datetime.now(timezone.utc)
+    common = {
+        "report_document_id": report_document_id,
+        "ingested_at": recorded_at,
+        "source_id": "erldc",
+        "metric_prefix": "erldc",
+        "report_type": "erldc_daily_psp",
+        "source_region": "ER",
+    }
+    return [
+        *_export_table(
+            conn,
+            table_name="FactERLDCRegionalDaily",
+            entity_expression="'ER:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactERLDCStateDaily",
+            entity_expression="'ER:state:' || state.StateCode",
+            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactERLDCGenerationDaily",
+            entity_expression="'ER:generation:' || entity.EntityName",
+            joins="JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactERLDCFrequencyDaily",
+            entity_expression="'ER:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactERLDCVoltageProfile",
+            entity_expression="'ER:voltage:' || node.NodeName",
+            joins="JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactERLDCReservoirDaily",
+            entity_expression="'ER:reservoir:' || reservoir.ReservoirName",
+            joins="JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactERLDCInterRegionalExchange",
+            entity_expression="'ER:line:' || element.ElementName",
+            joins=(
+                "JOIN DimTransmissionElements AS element "
+                "ON element.ElementID = fact.ElementID"
+            ),
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactERLDCInternationalExchange",
+            entity_expression="'ER:country:' || country.CountryName",
+            joins="JOIN DimCountries AS country ON country.CountryID = fact.CountryID",
+            **common,
+        ),
+    ]
+
+
+def export_nerldc_daily_observations(
+    conn: sqlite3.Connection,
+    report_document_id: int | None = None,
+    *,
+    ingested_at: datetime | None = None,
+) -> list[FactObservation]:
+    """Return curated NERLDC facts as portable bitemporal observations."""
+
+    recorded_at = ingested_at or datetime.now(timezone.utc)
+    common = {
+        "report_document_id": report_document_id,
+        "ingested_at": recorded_at,
+        "source_id": "nerldc",
+        "metric_prefix": "nerldc",
+        "report_type": "nerldc_daily_psp",
+        "source_region": "NER",
+    }
+    return [
+        *_export_table(
+            conn,
+            table_name="FactNERLDCRegionalDaily",
+            entity_expression="'NER:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNERLDCStateDaily",
+            entity_expression="'NER:state:' || state.StateCode",
+            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNERLDCGenerationDaily",
+            entity_expression="'NER:generation:' || entity.EntityName",
+            joins="JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNERLDCFrequencyDaily",
+            entity_expression="'NER:region:' || region.RegionName",
+            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNERLDCVoltageProfile",
+            entity_expression="'NER:voltage:' || node.NodeName",
+            joins=(
+                "JOIN DimVoltageNodes AS node "
+                "ON node.VoltageNodeID = fact.VoltageNodeID"
+            ),
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNERLDCInterRegionalExchange",
+            entity_expression="'NER:line:' || element.ElementName",
+            joins=(
+                "JOIN DimTransmissionElements AS element "
+                "ON element.ElementID = fact.ElementID"
+            ),
+            **common,
+        ),
+        *_export_table(
+            conn,
+            table_name="FactNERLDCInternationalExchange",
+            entity_expression="'NER:country:' || country.CountryName",
+            joins="JOIN DimCountries AS country ON country.CountryID = fact.CountryID",
+            **common,
+        ),
+    ]
+
+
+RLDC_EXPORTERS = {
+    "srldc": export_srldc_daily_observations,
+    "nrldc": export_nrldc_daily_observations,
+    "wrldc": export_wrldc_daily_observations,
+    "erldc": export_erldc_daily_observations,
+    "nerldc": export_nerldc_daily_observations,
+}
+
+
+def export_all_daily_observations(
+    conn: sqlite3.Connection,
+    rldcs: Iterable[str] | None = None,
+    report_document_id: int | None = None,
+    *,
+    ingested_at: datetime | None = None,
+) -> list[FactObservation]:
+    """Export curated facts across specified or all supported RLDCs.
+
+    Args:
+        conn: SQLite connection with curated facts.
+        rldcs: Optional collection of RLDC identifiers (e.g. ['srldc', 'erldc']).
+            If None, exports across all 5 RLDCs present in the database.
+        report_document_id: Optional specific report document ID filter.
+        ingested_at: Optional timestamp override for system-time versioning.
+
+    Returns:
+        Consolidated list of FactObservation instances.
+    """
+    target_rldcs = (
+        [r.lower() for r in rldcs] if rldcs is not None else list(RLDC_EXPORTERS.keys())
+    )
+
+    if rldcs is None:
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'psp_report_document'"
+        ).fetchone()
+        if table_exists:
+            present_rldcs = {
+                row[0].lower()
+                for row in conn.execute(
+                    "SELECT DISTINCT rldc FROM psp_report_document WHERE rldc IS NOT NULL"
+                ).fetchall()
+            }
+            filtered = [r for r in RLDC_EXPORTERS if r in present_rldcs]
+            if filtered:
+                target_rldcs = filtered
+
+    all_observations: list[FactObservation] = []
+    for rldc in target_rldcs:
+        exporter = RLDC_EXPORTERS.get(rldc)
+        if exporter is None:
+            continue
+        try:
+            obs = exporter(
+                conn,
+                report_document_id=report_document_id,
+                ingested_at=ingested_at,
+            )
+            all_observations.extend(obs)
+        except Exception:
+            continue
+    return all_observations
 
 
 def _export_table(

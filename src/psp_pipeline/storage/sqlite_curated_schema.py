@@ -15,6 +15,16 @@ from psp_pipeline.storage.sqlite_wrldc_enrichment import (
     transmission_location as wrldc_transmission_location,
     voltage_node_location as wrldc_voltage_node_location,
 )
+from psp_pipeline.storage.sqlite_erldc_enrichment import (
+    generation_entity_state_name as erldc_generation_entity_state_name,
+    reservoir_location as erldc_reservoir_location,
+    transmission_location as erldc_transmission_location,
+    voltage_node_location as erldc_voltage_node_location,
+)
+from psp_pipeline.storage.sqlite_nerldc_enrichment import (
+    transmission_location as nerldc_transmission_location,
+    voltage_node_location as nerldc_voltage_node_location,
+)
 
 
 UNIT_ROWS = (
@@ -409,9 +419,14 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_srldc_curated_tables(conn)
     _ensure_nrldc_curated_tables(conn)
     _ensure_wrldc_curated_tables(conn)
+    _ensure_erldc_curated_tables(conn)
+    _ensure_nerldc_curated_tables(conn)
+    _ensure_transmission_country_columns(conn)
     _migrate_curated_lineage_for_raw_lines(conn)
     _seed_curated_dimensions(conn)
     _backfill_wrldc_dimension_locations(conn)
+    _backfill_erldc_dimension_locations(conn)
+    _backfill_nerldc_dimension_locations(conn)
     seed_srldc_schema_registry(conn)
     conn.commit()
 
@@ -726,7 +741,9 @@ def _ensure_srldc_curated_tables(conn: sqlite3.Connection) -> None:
             FromRegionID INTEGER,
             ToRegionID INTEGER,
             FromStateID INTEGER,
-            ToStateID INTEGER
+            ToStateID INTEGER,
+            FromCountryID INTEGER,
+            ToCountryID INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS DimVoltageNodes (
@@ -1269,6 +1286,144 @@ def _ensure_nrldc_generation_columns(conn: sqlite3.Connection) -> None:
             )
 
 
+def _ensure_erldc_curated_tables(conn: sqlite3.Connection) -> None:
+    """Create ERLDC facts at regional, state, asset, and exchange grains."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS FactERLDCRegionalDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, RegionID INTEGER NOT NULL,
+            EveningPeakDemandMetMW REAL, EveningPeakShortageMW REAL, EveningPeakRequirementMW REAL,
+            EveningPeakFrequencyHz REAL, OffPeakDemandMetMW REAL, OffPeakShortageMW REAL,
+            OffPeakRequirementMW REAL, OffPeakFrequencyHz REAL, DayEnergyMetMU REAL,
+            DayEnergyShortageMU REAL, PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCStateDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, StateID INTEGER NOT NULL,
+            ThermalGenerationMU REAL, HydroGenerationMU REAL, GasNapthaDieselGenerationMU REAL,
+            RenewableGenerationMU REAL, OtherGenerationMU REAL, TotalGenerationMU REAL,
+            ScheduledDrawalMU REAL, ActualDrawalMU REAL, UIMU REAL, TotalAvailabilityMU REAL,
+            RequirementMU REAL, EnergyShortageMU REAL, ConsumptionMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, StateID)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCGenerationDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, EntityID INTEGER NOT NULL,
+            StateID INTEGER, GenerationSourceID INTEGER, StationID INTEGER, GeneratingUnitID INTEGER,
+            AggregateID INTEGER, InstalledCapacityMW REAL, EveningPeakMW REAL, OffPeakMW REAL,
+            DayPeakMW REAL, DayPeakTime TEXT, MinimumGenerationMW REAL, MinimumGenerationTime TEXT,
+            GrossEnergyMU REAL, NetEnergyMU REAL, AverageMW REAL, IsTotalRow INTEGER NOT NULL DEFAULT 0,
+            GenerationGrain TEXT NOT NULL DEFAULT 'power_station', SectionName TEXT NOT NULL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID, SectionName),
+            CHECK(AggregateID IS NOT NULL OR StationID IS NOT NULL)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCFrequencyDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, RegionID INTEGER NOT NULL,
+            MaximumFrequencyHz REAL, MaximumFrequencyTime TEXT, MinimumFrequencyHz REAL,
+            MinimumFrequencyTime TEXT, AverageFrequencyHz REAL, FrequencyVariationIndex REAL,
+            StandardDeviationHz REAL, Maximum15MinuteBlockFrequencyHz REAL,
+            Minimum15MinuteBlockFrequencyHz REAL, PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCVoltageProfile (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, VoltageNodeID INTEGER NOT NULL,
+            NominalVoltageKV REAL NOT NULL, MaximumKV REAL, MaximumTime TEXT, MinimumKV REAL,
+            MinimumTime TEXT, LowCriticalPct REAL, IEGCBandPct REAL, HighCriticalPct REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, VoltageNodeID)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCReservoirDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, ReservoirID INTEGER NOT NULL,
+            MinimumDrawdownLevelM REAL, FullReservoirLevelM REAL, DesignedEnergyMU REAL,
+            CurrentLevelM REAL, CurrentEnergyMU REAL, PreviousYearLevelM REAL,
+            PreviousYearEnergyMU REAL, InflowMU REAL, UsageMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ReservoirID)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCInterRegionalExchange (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, ElementID INTEGER NOT NULL,
+            CounterpartyRegion TEXT NOT NULL, EveningPeakMW REAL, OffPeakMW REAL,
+            MaximumImportMW REAL, MaximumExportMW REAL, ImportEnergyMU REAL,
+            ExportEnergyMU REAL, NetEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ElementID, CounterpartyRegion)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCInternationalExchange (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, CountryID INTEGER NOT NULL,
+            CounterpartyCountry TEXT NOT NULL, ScheduledEnergyMU REAL, ActualEnergyMU REAL,
+            DayPeakMW REAL, DayMinimumMW REAL, AverageMW REAL, NetEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, CountryID, CounterpartyCountry)
+        );
+        """
+    )
+
+
+def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
+    """Create NERLDC facts at region, state, entity, and exchange grains."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS FactNERLDCRegionalDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, RegionID INTEGER NOT NULL,
+            EveningPeakDemandMetMW REAL, EveningPeakShortageMW REAL, EveningPeakRequirementMW REAL,
+            EveningPeakFrequencyHz REAL, OffPeakDemandMetMW REAL, OffPeakShortageMW REAL,
+            OffPeakRequirementMW REAL, OffPeakFrequencyHz REAL, DayEnergyMetMU REAL,
+            DayEnergyShortageMU REAL, PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+        CREATE TABLE IF NOT EXISTS FactNERLDCStateDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, StateID INTEGER NOT NULL,
+            ThermalGenerationMU REAL, HydroGenerationMU REAL, GasNapthaDieselGenerationMU REAL,
+            WindGenerationMU REAL, SolarGenerationMU REAL, OtherGenerationMU REAL,
+            TotalGenerationMU REAL, ScheduledDrawalMU REAL, ActualDrawalMU REAL, UIMU REAL,
+            TotalAvailabilityMU REAL, DemandMetMU REAL, EnergyShortageMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, StateID)
+        );
+        CREATE TABLE IF NOT EXISTS FactNERLDCGenerationDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, EntityID INTEGER NOT NULL,
+            StateID INTEGER, StationID INTEGER, GeneratingUnitID INTEGER, AggregateID INTEGER,
+            InstalledCapacityMW REAL, EveningPeakMW REAL, OffPeakMW REAL, DayPeakMW REAL,
+            DayPeakTime TEXT, MinimumGenerationMW REAL, MinimumGenerationTime TEXT,
+            NetEnergyMU REAL, AverageMW REAL, IsTotalRow INTEGER NOT NULL DEFAULT 0,
+            GenerationGrain TEXT NOT NULL DEFAULT 'power_station', SectionName TEXT NOT NULL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID, SectionName),
+            CHECK(AggregateID IS NOT NULL OR StationID IS NOT NULL)
+        );
+        CREATE TABLE IF NOT EXISTS FactNERLDCFrequencyDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, RegionID INTEGER NOT NULL,
+            MaximumFrequencyHz REAL, MaximumFrequencyTime TEXT, MinimumFrequencyHz REAL,
+            MinimumFrequencyTime TEXT, AverageFrequencyHz REAL, FrequencyVariationIndex REAL,
+            StandardDeviationHz REAL, Maximum15MinuteBlockFrequencyHz REAL,
+            Minimum15MinuteBlockFrequencyHz REAL, PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+        );
+        CREATE TABLE IF NOT EXISTS FactNERLDCVoltageProfile (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, VoltageNodeID INTEGER NOT NULL,
+            NominalVoltageKV REAL NOT NULL, MaximumKV REAL, MaximumTime TEXT, MinimumKV REAL,
+            MinimumTime TEXT, LowCriticalPct REAL, IEGCBandPct REAL, HighCriticalPct REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, VoltageNodeID)
+        );
+        CREATE TABLE IF NOT EXISTS FactNERLDCInterRegionalExchange (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, ElementID INTEGER NOT NULL,
+            CounterpartyRegion TEXT NOT NULL, EveningPeakMW REAL, OffPeakMW REAL,
+            MaximumImportMW REAL, MaximumExportMW REAL, ImportEnergyMU REAL,
+            ExportEnergyMU REAL, NetEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ElementID, CounterpartyRegion)
+        );
+        CREATE TABLE IF NOT EXISTS FactNERLDCInternationalExchange (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, CountryID INTEGER NOT NULL,
+            CounterpartyCountry TEXT NOT NULL, ScheduledEnergyMU REAL, ActualEnergyMU REAL,
+            DayPeakMW REAL, DayMinimumMW REAL, AverageMW REAL, NetEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, CountryID, CounterpartyCountry)
+        );
+        """
+    )
+
+
+def _ensure_transmission_country_columns(conn: sqlite3.Connection) -> None:
+    """Ensure DimTransmissionElements has FromCountryID and ToCountryID columns."""
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(DimTransmissionElements)").fetchall()
+    }
+    if "FromCountryID" not in columns:
+        conn.execute("ALTER TABLE DimTransmissionElements ADD COLUMN FromCountryID INTEGER")
+    if "ToCountryID" not in columns:
+        conn.execute("ALTER TABLE DimTransmissionElements ADD COLUMN ToCountryID INTEGER")
+
+
 def _ensure_wrldc_curated_tables(conn: sqlite3.Connection) -> None:
     """Create WRLDC facts at regional, state, and generating-entity grains."""
 
@@ -1478,6 +1633,90 @@ def _backfill_srldc_dimension_locations(conn: sqlite3.Connection) -> None:
                 _region_id(conn, metadata.to_location.region_name),
                 _state_id(conn, metadata.from_location.state_name),
                 _state_id(conn, metadata.to_location.state_name),
+                element_id,
+            ),
+        )
+
+
+def _backfill_erldc_dimension_locations(conn: sqlite3.Connection) -> None:
+    """Fill missing ERLDC dimension locations from exact verified registry entries."""
+
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'psp_report_document'").fetchone() is None:
+        return
+    for node_id, name in conn.execute("SELECT DISTINCT n.VoltageNodeID, n.NodeName FROM DimVoltageNodes n JOIN FactERLDCVoltageProfile f ON f.VoltageNodeID = n.VoltageNodeID JOIN psp_report_document d ON d.id = f.ReportDocumentID WHERE d.rldc = 'erldc'"):
+        location = erldc_voltage_node_location(str(name))
+        if location.evidence == "unverified": continue
+        conn.execute("UPDATE DimVoltageNodes SET StateID = COALESCE(StateID, ?), RegionID = COALESCE(RegionID, ?) WHERE VoltageNodeID = ?", (_state_id(conn, location.state_name), _region_id(conn, location.region_name), node_id))
+    for reservoir_id, name in conn.execute("SELECT DISTINCT r.ReservoirID, r.ReservoirName FROM DimReservoirs r JOIN FactERLDCReservoirDaily f ON f.ReservoirID = r.ReservoirID JOIN psp_report_document d ON d.id = f.ReportDocumentID WHERE d.rldc = 'erldc'"):
+        location = erldc_reservoir_location(str(name))
+        if location.evidence == "unverified": continue
+        conn.execute("UPDATE DimReservoirs SET StateID = COALESCE(StateID, ?), RegionID = COALESCE(RegionID, ?) WHERE ReservoirID = ?", (_state_id(conn, location.state_name), _region_id(conn, location.region_name), reservoir_id))
+    for entity_id, name in conn.execute("SELECT DISTINCT e.EntityID, e.EntityName FROM DimGridEntities e JOIN FactERLDCGenerationDaily f ON f.EntityID = e.EntityID JOIN psp_report_document d ON d.id = f.ReportDocumentID WHERE d.rldc = 'erldc'"):
+        state_name = erldc_generation_entity_state_name(str(name))
+        if state_name:
+            conn.execute("UPDATE DimGridEntities SET StateID = COALESCE(StateID, ?), RegionID = COALESCE(RegionID, ?) WHERE EntityID = ?", (_state_id(conn, state_name), _region_id(conn, "Eastern Region"), entity_id))
+    for element_id, name in conn.execute("SELECT DISTINCT e.ElementID, e.ElementName FROM DimTransmissionElements e JOIN FactERLDCInterRegionalExchange f ON f.ElementID = e.ElementID JOIN psp_report_document d ON d.id = f.ReportDocumentID WHERE d.rldc = 'erldc'"):
+        meta = erldc_transmission_location(str(name))
+        if meta.evidence == "unverified": continue
+        conn.execute("UPDATE DimTransmissionElements SET ElementType = COALESCE(ElementType, ?), NominalVoltageKV = COALESCE(NominalVoltageKV, ?), FromRegionID = COALESCE(FromRegionID, ?), ToRegionID = COALESCE(ToRegionID, ?), FromStateID = COALESCE(FromStateID, ?), ToStateID = COALESCE(ToStateID, ?) WHERE ElementID = ?", (meta.element_type, meta.nominal_voltage_kv, _region_id(conn, meta.from_location.region_name), _region_id(conn, meta.to_location.region_name), _state_id(conn, meta.from_location.state_name), _state_id(conn, meta.to_location.state_name), element_id))
+
+
+def _backfill_nerldc_dimension_locations(conn: sqlite3.Connection) -> None:
+    """Enrich only NERLDC-referenced topology from the controlled registry."""
+
+    document_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'psp_report_document'"
+    ).fetchone()
+    if document_table is None:
+        return
+
+    nodes = conn.execute(
+        "SELECT DISTINCT n.VoltageNodeID, n.NodeName "
+        "FROM DimVoltageNodes AS n "
+        "JOIN FactNERLDCVoltageProfile AS f ON f.VoltageNodeID = n.VoltageNodeID "
+        "JOIN psp_report_document AS d ON d.id = f.ReportDocumentID "
+        "WHERE d.rldc = 'nerldc'"
+    ).fetchall()
+    for node_id, name in nodes:
+        location = nerldc_voltage_node_location(str(name))
+        if location.evidence == "unverified":
+            continue
+        conn.execute(
+            "UPDATE DimVoltageNodes SET StateID = COALESCE(StateID, ?), "
+            "RegionID = COALESCE(RegionID, ?) WHERE VoltageNodeID = ?",
+            (_state_id(conn, location.state_name), _region_id(conn, location.region_name), node_id),
+        )
+
+    elements = conn.execute(
+        "SELECT DISTINCT e.ElementID, e.ElementName "
+        "FROM DimTransmissionElements AS e "
+        "JOIN FactNERLDCInterRegionalExchange AS f ON f.ElementID = e.ElementID "
+        "JOIN psp_report_document AS d ON d.id = f.ReportDocumentID "
+        "WHERE d.rldc = 'nerldc'"
+    ).fetchall()
+    for element_id, name in elements:
+        metadata = nerldc_transmission_location(str(name))
+        if metadata.evidence == "unverified":
+            continue
+        conn.execute(
+            "UPDATE DimTransmissionElements SET ElementType = COALESCE(ElementType, ?), "
+            "NominalVoltageKV = COALESCE(NominalVoltageKV, ?), "
+            "FromRegionID = COALESCE(FromRegionID, ?), "
+            "ToRegionID = COALESCE(ToRegionID, ?), "
+            "FromStateID = COALESCE(FromStateID, ?), "
+            "ToStateID = COALESCE(ToStateID, ?), "
+            "FromCountryID = COALESCE(FromCountryID, ?), "
+            "ToCountryID = COALESCE(ToCountryID, ?) WHERE ElementID = ?",
+            (
+                metadata.element_type,
+                metadata.nominal_voltage_kv,
+                _region_id(conn, metadata.from_location.region_name),
+                _region_id(conn, metadata.to_location.region_name),
+                _state_id(conn, metadata.from_location.state_name),
+                _state_id(conn, metadata.to_location.state_name),
+                _country_id(conn, metadata.from_location.country_name),
+                _country_id(conn, metadata.to_location.country_name),
                 element_id,
             ),
         )
@@ -1776,6 +2015,22 @@ def _state_id(conn: sqlite3.Connection, state_name: str | None) -> int | None:
         return None
     row = conn.execute(
         "SELECT StateID FROM DimStates WHERE StateName = ?", (state_name,)
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _country_id(conn: sqlite3.Connection, country_name: str | None) -> int | None:
+    """Return a seeded country identifier without synthesizing geography."""
+
+    if not country_name:
+        return None
+    conn.execute(
+        "INSERT OR IGNORE INTO DimCountries(CountryName) VALUES (?)",
+        (country_name,),
+    )
+    row = conn.execute(
+        "SELECT CountryID FROM DimCountries WHERE CountryName = ?",
+        (country_name,),
     ).fetchone()
     return int(row[0]) if row else None
 

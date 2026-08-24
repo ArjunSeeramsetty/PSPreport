@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-SUPPORTED_RLDCS = frozenset({"wrldc"})
+SUPPORTED_RLDCS = frozenset({"wrldc", "erldc", "nerldc"})
 DEFAULT_ANCHOR_TIMEOUT_SECONDS = 120
 
 
@@ -39,8 +39,8 @@ def scan_rldc_monthly_anchors(
 ) -> dict[str, Any]:
     """Ingest local monthly anchors with source-scoped resume and fail-soft rules.
 
-    Only WRLDC is supported currently. Existing source documents are completed
-    checkpoints; a failure for one local PDF does not stop later anchors.
+    Existing source documents are completed checkpoints; a failure for one
+    local PDF does not stop later anchors.
     """
 
     source_id = rldc.lower()
@@ -97,6 +97,38 @@ def scan_wrldc_monthly_anchors(
         input_dir,
         sqlite_db_path,
         rldc="wrldc",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def scan_erldc_monthly_anchors(
+    input_dir: Path,
+    sqlite_db_path: Path,
+    *,
+    timeout_seconds: int = DEFAULT_ANCHOR_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Scan local ERLDC PSP monthly anchors into ``sqlite_db_path``."""
+
+    return scan_rldc_monthly_anchors(
+        input_dir,
+        sqlite_db_path,
+        rldc="erldc",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def scan_nerldc_monthly_anchors(
+    input_dir: Path,
+    sqlite_db_path: Path,
+    *,
+    timeout_seconds: int = DEFAULT_ANCHOR_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Scan local NERLDC PSP monthly anchors into ``sqlite_db_path``."""
+
+    return scan_rldc_monthly_anchors(
+        input_dir,
+        sqlite_db_path,
+        rldc="nerldc",
         timeout_seconds=timeout_seconds,
     )
 

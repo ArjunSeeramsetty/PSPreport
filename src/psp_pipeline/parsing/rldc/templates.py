@@ -66,6 +66,8 @@ SRLDC_FLAT_FAMILY_ID = "srldc_daily_psp_flattened_pages"
 SRLDC_FLAT_COMPACT_FAMILY_ID = "srldc_daily_psp_flattened_compact"
 NRLDC_STANDARD_FAMILY_ID = "nrldc_daily_psp_standard_pages"
 WRLDC_STANDARD_FAMILY_ID = "wrldc_daily_psp_standard_pages"
+ERLDC_STANDARD_FAMILY_ID = "erldc_daily_psp_standard_pages"
+NERLDC_STANDARD_FAMILY_ID = "nerldc_daily_psp_standard_pages"
 UNCLASSIFIED_FAMILY_ID = "unclassified"
 
 
@@ -466,6 +468,197 @@ WRLDC_2026_EARLY_TEMPLATE = ReportTemplate(
     ),
 )
 
+
+# ERLDC has published the same operational report through both flattened and
+# split-table PDF producers. These contracts classify the extracted geometry;
+# the date is intentionally not used as a proxy for a particular layout.
+ERLDC_2023_TEMPLATE = ReportTemplate(
+    template_id="erldc_daily_psp_v2023_flat_09_column_generation",
+    version="2023.flat09",
+    rldc="erldc",
+    min_pages=6,
+    max_pages=6,
+    min_tables=10,
+    max_tables=10,
+    required_headings=(),
+    table_shapes=(
+        TableShape(1, 1, 48, 52, 15, 15, "regional_and_state_position"),
+        TableShape(1, 2, 9, 11, 5, 5, "state_peak_position"),
+        TableShape(2, 1, 63, 70, 9, 9, "state_generation"),
+        TableShape(3, 1, 65, 75, 13, 13, "regional_generation"),
+        TableShape(4, 1, 60, 70, 12, 12, "generation_continuation"),
+        TableShape(5, 1, 54, 62, 17, 17, "interregional_exchange"),
+        TableShape(6, 1, 20, 30, 11, 11, "market_operations"),
+    ),
+)
+
+ERLDC_2024_FLAT_TEMPLATE = ReportTemplate(
+    template_id="erldc_daily_psp_v2024_flat_09_column_generation",
+    version="2024.flat09",
+    rldc="erldc",
+    min_pages=7,
+    max_pages=7,
+    min_tables=10,
+    max_tables=10,
+    required_headings=(),
+    table_shapes=(
+        TableShape(1, 1, 58, 63, 18, 18, "regional_and_state_position"),
+        TableShape(2, 1, 68, 77, 9, 9, "state_generation"),
+        TableShape(3, 1, 68, 75, 13, 13, "regional_generation"),
+        TableShape(4, 1, 60, 67, 16, 16, "generation_continuation"),
+        TableShape(5, 1, 43, 55, 27, 27, "interregional_exchange"),
+        TableShape(6, 1, 53, 60, 40, 40, "market_operations"),
+        TableShape(7, 1, 8, 25, 11, 11, "reservoirs_and_annotations"),
+    ),
+)
+
+ERLDC_2024_SPLIT_TEMPLATE = ReportTemplate(
+    template_id="erldc_daily_psp_v2024_split_11_column_generation",
+    version="2024.split11",
+    rldc="erldc",
+    min_pages=11,
+    max_pages=11,
+    min_tables=40,
+    max_tables=40,
+    required_headings=(
+        "1. regional availability/demand:",
+        "3(a) state entities generation:",
+        "4(a) inter-regional exchanges (import=(+ve) /export =(-ve))",
+    ),
+    table_shapes=(
+        TableShape(1, 1, 3, 3, 10, 10, "regional_availability"),
+        TableShape(1, 2, 10, 10, 15, 15, "state_energy_position"),
+        TableShape(2, 2, 11, 11, 11, 11, "state_generation"),
+        TableShape(3, 2, 24, 24, 11, 11, "generation_continuation"),
+        TableShape(5, 1, 39, 39, 12, 12, "regional_generation"),
+        TableShape(6, 3, 20, 20, 9, 9, "interregional_exchange"),
+        TableShape(8, 5, 17, 17, 8, 8, "frequency_and_voltage"),
+        TableShape(9, 2, 10, 10, 14, 14, "market_operations"),
+        TableShape(11, 2, 9, 9, 11, 11, "reservoirs"),
+    ),
+)
+
+ERLDC_2025_SPLIT_TEMPLATE = ReportTemplate(
+    template_id="erldc_daily_psp_v2025_split_11_column_generation",
+    version="2025.split11",
+    rldc="erldc",
+    min_pages=7,
+    max_pages=7,
+    min_tables=33,
+    max_tables=34,
+    required_headings=(
+        "1. regional availability/demand:",
+        "3(a) state entities generation:",
+        "4(a) inter-regional exchanges (import=(+ve) /export =(-ve))",
+    ),
+    table_shapes=(
+        TableShape(1, 1, 3, 3, 10, 10, "regional_availability"),
+        TableShape(1, 2, 10, 10, 15, 15, "state_energy_position"),
+        TableShape(1, 4, 10, 10, 7, 7, "state_peak_position"),
+    ),
+)
+
+ERLDC_2025_FLAT_TEMPLATE = ReportTemplate(
+    template_id="erldc_daily_psp_v2025_flat_11_column_generation",
+    version="2025.flat11",
+    rldc="erldc",
+    min_pages=7,
+    max_pages=7,
+    min_tables=10,
+    max_tables=10,
+    required_headings=(),
+    table_shapes=(
+        TableShape(1, 1, 60, 63, 23, 24, "regional_and_state_position"),
+        TableShape(2, 1, 70, 74, 11, 11, "state_generation"),
+        TableShape(3, 1, 68, 74, 21, 21, "regional_generation"),
+        TableShape(4, 1, 60, 72, 19, 25, "generation_continuation"),
+        TableShape(5, 1, 45, 55, 27, 32, "interregional_exchange"),
+        TableShape(6, 1, 55, 60, 40, 40, "market_operations"),
+        TableShape(7, 1, 10, 12, 11, 11, "reservoirs_and_annotations"),
+    ),
+)
+
+NERLDC_2023_TEMPLATE = ReportTemplate(
+    template_id="nerldc_daily_psp_v2023_standard_09_column_generation",
+    version="2023.standard09",
+    rldc="nerldc",
+    min_pages=5,
+    max_pages=5,
+    min_tables=23,
+    max_tables=24,
+    required_headings=(
+        "1. regional availability/demand:",
+        "3(a) state entities generation:",
+        "3(b) regional entities generation",
+        "4(a) inter-regional exchanges (import=(+ve) /export =(-ve))",
+    ),
+    table_shapes=(
+        TableShape(1, 1, 3, 3, 10, 10, "regional_availability"),
+        TableShape(1, 2, 10, 10, 14, 14, "state_energy_position"),
+        TableShape(2, 2, 12, 18, 9, 9, "state_generation"),
+        TableShape(3, 1, 20, 35, 12, 12, "regional_generation"),
+        TableShape(4, 3, 10, 12, 9, 9, "interregional_exchange"),
+        TableShape(5, 1, 18, 24, 15, 15, "market_operations"),
+    ),
+)
+
+NERLDC_2024_TEMPLATE = ReportTemplate(
+    template_id="nerldc_daily_psp_v2024_standard_09_column_generation",
+    version="2024.standard09",
+    rldc="nerldc",
+    min_pages=5,
+    max_pages=5,
+    min_tables=23,
+    max_tables=23,
+    required_headings=NERLDC_2023_TEMPLATE.required_headings,
+    table_shapes=(
+        TableShape(1, 1, 3, 3, 9, 9, "regional_availability"),
+        TableShape(1, 2, 10, 10, 14, 14, "state_energy_position"),
+        TableShape(2, 2, 12, 16, 9, 9, "state_generation"),
+        TableShape(3, 1, 28, 34, 20, 20, "regional_generation"),
+        TableShape(4, 3, 10, 12, 9, 9, "interregional_exchange"),
+        TableShape(5, 1, 38, 45, 30, 30, "market_operations"),
+    ),
+)
+
+NERLDC_2025_TEMPLATE = ReportTemplate(
+    template_id="nerldc_daily_psp_v2025_standard_10_column_generation",
+    version="2025.standard10",
+    rldc="nerldc",
+    min_pages=5,
+    max_pages=5,
+    min_tables=25,
+    max_tables=25,
+    required_headings=NERLDC_2023_TEMPLATE.required_headings,
+    table_shapes=(
+        TableShape(1, 1, 3, 3, 10, 10, "regional_availability"),
+        TableShape(1, 2, 10, 10, 14, 14, "state_energy_position"),
+        TableShape(2, 2, 12, 16, 10, 10, "state_generation"),
+        TableShape(3, 1, 28, 34, 19, 19, "regional_generation"),
+        TableShape(4, 3, 9, 11, 9, 9, "interregional_exchange"),
+        TableShape(5, 1, 18, 22, 19, 19, "market_operations"),
+    ),
+)
+
+NERLDC_2026_TEMPLATE = ReportTemplate(
+    template_id="nerldc_daily_psp_v2026_standard_09_column_generation",
+    version="2026.standard09",
+    rldc="nerldc",
+    min_pages=5,
+    max_pages=5,
+    min_tables=27,
+    max_tables=27,
+    required_headings=NERLDC_2023_TEMPLATE.required_headings,
+    table_shapes=(
+        TableShape(1, 1, 3, 3, 10, 10, "regional_availability"),
+        TableShape(1, 2, 10, 10, 14, 14, "state_energy_position"),
+        TableShape(2, 2, 12, 16, 9, 9, "state_generation"),
+        TableShape(3, 1, 22, 26, 12, 12, "regional_generation"),
+        TableShape(4, 3, 10, 12, 9, 9, "interregional_exchange"),
+        TableShape(5, 1, 8, 12, 7, 7, "market_operations"),
+    ),
+)
+
 TEMPLATES: tuple[ReportTemplate, ...] = (
     DEFAULT_SRLDCP_TEMPLATE,
     COMPACT_SRLDCP_TEMPLATE,
@@ -486,6 +679,15 @@ TEMPLATES: tuple[ReportTemplate, ...] = (
     WRLDC_2025_REVISED_TEMPLATE,
     WRLDC_2026_TEMPLATE,
     WRLDC_2026_EARLY_TEMPLATE,
+    ERLDC_2023_TEMPLATE,
+    ERLDC_2024_FLAT_TEMPLATE,
+    ERLDC_2024_SPLIT_TEMPLATE,
+    ERLDC_2025_SPLIT_TEMPLATE,
+    ERLDC_2025_FLAT_TEMPLATE,
+    NERLDC_2023_TEMPLATE,
+    NERLDC_2024_TEMPLATE,
+    NERLDC_2025_TEMPLATE,
+    NERLDC_2026_TEMPLATE,
 )
 
 
@@ -539,6 +741,16 @@ def infer_structural_family(rldc: str, structure: ReportStructure) -> str:
             return WRLDC_STANDARD_FAMILY_ID
         return UNCLASSIFIED_FAMILY_ID
 
+    if rldc.lower() == "erldc":
+        if structure.page_count in {6, 7, 11} and structure.table_count >= 10:
+            return ERLDC_STANDARD_FAMILY_ID
+        return UNCLASSIFIED_FAMILY_ID
+
+    if rldc.lower() == "nerldc":
+        if structure.page_count == 5 and structure.table_count >= 23:
+            return NERLDC_STANDARD_FAMILY_ID
+        return UNCLASSIFIED_FAMILY_ID
+
     if rldc.lower() != "srldc":
         return UNCLASSIFIED_FAMILY_ID
 
@@ -574,7 +786,7 @@ def match_report_template(rldc: str, structure: ReportStructure) -> TemplateMatc
             best_confidence = confidence
             best_reasons = reasons
 
-    if best_template is None:
+    if best_template is None or best_confidence == 0:
         return TemplateMatch(None, None, 0.0, True, ("no_template_match",))
     return TemplateMatch(
         template_id=best_template.template_id,

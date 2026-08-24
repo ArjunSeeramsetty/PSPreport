@@ -22,20 +22,25 @@ from psp_pipeline.pipelines.serde import (
 )
 from psp_pipeline.pipelines.staging import read_stage_payload, write_stage_payload
 from psp_pipeline.pipelines.stages import (
+    audit_national_curated_dimensions,
+    collect_all_rldc_daily_psp,
+    collect_srldc_daily_psp,
     deduplicate_artifacts,
     detect_schema_drift,
-    collect_srldc_daily_psp,
     discover_sources,
     evaluate_dq,
+    export_all_curated_to_timescale,
+    export_srldc_curated_to_timescale,
     fetch_artifacts,
     make_run_id,
     parse_artifacts,
     persist_raw,
     persist_sql,
     reconcile_facts,
+    reconcile_national_daily_balance,
     repromote_srldc_curated,
     summarize_run,
-    export_srldc_curated_to_timescale,
+    sync_all_curated_to_graph,
     sync_graph,
     sync_srldc_curated_to_graph,
 )
@@ -198,6 +203,68 @@ def psp_daily_public_ingestion():
         return sync_srldc_curated_to_graph(settings, database)
 
     @task
+    def collect_all_rldc_task(run_meta: dict) -> dict:
+        """Collect and curate all 5 public RLDC daily PSP sources with isolated failures."""
+        settings = load_settings()
+        return collect_all_rldc_daily_psp(
+            settings,
+            date.fromisoformat(run_meta["target_date"]),
+        )
+
+    @task
+    def national_balance_task(collection: dict, run_meta: dict) -> dict:
+        """Synthesize daily All-India balance and compare against NLDC if available."""
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        return reconcile_national_daily_balance(
+            database,
+            target_date=date.fromisoformat(run_meta["target_date"]),
+        )
+
+    @task
+    def national_dimension_audit_task(collection: dict) -> dict:
+        """Audit national dimension quality across all 5 RLDC fact sets."""
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        return audit_national_curated_dimensions(database)
+
+    @task
+    def all_curated_timescale_task(collection: dict, run_meta: dict) -> int:
+        """Append approved curated observations from all 5 RLDCs to TimescaleDB."""
+        _ = collection
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        return export_all_curated_to_timescale(
+            settings,
+            database,
+            target_date=date.fromisoformat(run_meta["target_date"]),
+        )
+
+    @task
+    def all_curated_graph_task(collection: dict, run_meta: dict) -> int:
+        """Synchronize approved 5-RLDC observations into Neo4j graph topology."""
+        _ = collection
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        return sync_all_curated_to_graph(
+            settings,
+            database,
+            target_date=date.fromisoformat(run_meta["target_date"]),
+        )
+
+    @task
     def dq_task(
         source_payload: list[dict],
         reconcile_reference: dict,
@@ -224,24 +291,33 @@ def psp_daily_public_ingestion():
         )
 
     run_meta = init_run()
-    sources = discover_sources_task(run_meta)
-    fetched = fetch_artifacts_task(sources)
-    deduped = dedup_artifacts_task(fetched)
-    parsed = parse_task(run_meta, deduped)
-    drift = drift_task(fetched)
-    reconciled = reconcile_task(run_meta, parsed)
 
-    raw_done = persist_raw_task(reconciled)
-    sql_done = persist_sql_task(reconciled)
-    graph_done = sync_graph_task(reconciled)
-    summary = dq_task(sources, reconciled, drift, run_meta)
-    srldc_collection = collect_srldc_task(run_meta)
-    curated_promotion = curated_promotion_task(srldc_collection)
-    curated_timescale = curated_timescale_task(curated_promotion)
-    curated_graph = curated_graph_task(curated_timescale)
+    # The unified branch owns daily public RLDC ingestion by default.  The
+    # original generic/SRLDC paths remain available for controlled migration.
+    if os.getenv("ENABLE_LEGACY_PSP_PIPELINES", "false").lower() == "true":
+        sources = discover_sources_task(run_meta)
+        fetched = fetch_artifacts_task(sources)
+        deduped = dedup_artifacts_task(fetched)
+        parsed = parse_task(run_meta, deduped)
+        drift = drift_task(fetched)
+        reconciled = reconcile_task(run_meta, parsed)
+        raw_done = persist_raw_task(reconciled)
+        sql_done = persist_sql_task(reconciled)
+        graph_done = sync_graph_task(reconciled)
+        summary = dq_task(sources, reconciled, drift, run_meta)
+        srldc_collection = collect_srldc_task(run_meta)
+        curated_promotion = curated_promotion_task(srldc_collection)
+        curated_timescale = curated_timescale_task(curated_promotion)
+        curated_graph = curated_graph_task(curated_timescale)
+        raw_done >> sql_done >> graph_done >> summary
+        curated_graph >> summary
 
-    raw_done >> sql_done >> graph_done >> summary
-    curated_graph >> summary
+    all_rldc_collection = collect_all_rldc_task(run_meta)
+    balance = national_balance_task(all_rldc_collection, run_meta)
+    audit = national_dimension_audit_task(all_rldc_collection)
+    all_timescale = all_curated_timescale_task(all_rldc_collection, run_meta)
+    all_graph = all_curated_graph_task(all_rldc_collection, run_meta)
+    all_timescale >> all_graph
 
 
 dag = psp_daily_public_ingestion()

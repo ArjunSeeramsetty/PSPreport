@@ -265,12 +265,31 @@ def _infer_report_date(pdf_path: Path, source_id: str = "srldc") -> str | None:
         day, month, year = match.groups()
         return _to_iso_date(day, month, year)
 
-    if source in {"erldc", "nerldc"}:
+    if source == "erldc":
+        match = re.search(r"_(\d{2})(\d{2})(\d{4})(?:_[r]\d+)?\.pdf$", filename)
+        if match:
+            day, month, year = match.groups()
+            return _to_iso_date(day, month, year)
+        match = re.search(r"erldc[-_]psp[-_](\d{4})-(\d{2})-(\d{2})\.pdf$", filename)
+        if match:
+            year, month, day = match.groups()
+            return _to_iso_date(day, month, year)
         match = re.search(r"psp_(\d{2})-(\d{2})-(\d{4})\.pdf$", filename)
-        if not match:
-            return None
-        day, month, year = match.groups()
-        return _to_iso_date(day, month, year)
+        if match:
+            day, month, year = match.groups()
+            return _to_iso_date(day, month, year)
+        return None
+
+    if source == "nerldc":
+        match = re.search(r"ner[-_]psp[-_]report[-_]dated[-_](\d{2})[-_](\d{2})[-_](\d{4})\.pdf$", filename)
+        if match:
+            day, month, year = match.groups()
+            return _to_iso_date(day, month, year)
+        match = re.search(r"psp[-_](\d{2})[-_](\d{2})[-_](\d{4})\.pdf$", filename)
+        if match:
+            day, month, year = match.groups()
+            return _to_iso_date(day, month, year)
+        return None
 
     return None
 

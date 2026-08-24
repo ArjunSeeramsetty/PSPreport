@@ -38,6 +38,20 @@ CREATE TABLE IF NOT EXISTS fact_observation (
     UNIQUE (entity_key, metric_name, time_block, valid_from, version_no, ingested_at)
 );
 
+-- This ordinary table provides global UUID idempotency. A Timescale hypertable
+-- cannot enforce a unique key unless it includes its partitioning time column.
+CREATE TABLE IF NOT EXISTS fact_observation_dedup (
+    timeseries_uuid UUID PRIMARY KEY,
+    entity_key TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    time_block TEXT NULL,
+    report_type TEXT NOT NULL,
+    source_region TEXT NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_to TIMESTAMPTZ NULL,
+    first_ingested_at TIMESTAMPTZ NOT NULL
+);
+
 SELECT create_hypertable('fact_observation', by_range('ingested_at'), if_not_exists => TRUE);
 
 ALTER TABLE fact_observation
