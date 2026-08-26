@@ -14,6 +14,9 @@ import pytest
 
 from psp_pipeline.storage.sqlite_curated_export import (
     export_all_daily_observations,
+    export_registered_daily_observations,
+    export_srldc_daily_observations,
+    export_nerldc_daily_observations,
 )
 from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
 
@@ -106,6 +109,31 @@ def test_export_all_daily_observations_filters_by_rldc(
     )
     assert all(obs.source_region == "NER" for obs in observations_ner)
     assert len(observations_ner) >= 2
+
+
+@pytest.mark.parametrize(
+    ("rldc", "legacy_exporter"),
+    [
+        ("srldc", export_srldc_daily_observations),
+        ("nerldc", export_nerldc_daily_observations),
+    ],
+)
+def test_registry_exporter_matches_legacy_golden_behavior(
+    multi_rldc_curated_conn: sqlite3.Connection,
+    rldc: str,
+    legacy_exporter,
+) -> None:
+    """The new registry is equivalent before it is allowed to replace wrappers."""
+
+    timestamp = datetime(2026, 8, 25, 2, 0, 0, tzinfo=timezone.utc)
+    legacy = legacy_exporter(multi_rldc_curated_conn, ingested_at=timestamp)
+    registered = export_registered_daily_observations(
+        multi_rldc_curated_conn,
+        rldc,
+        ingested_at=timestamp,
+    )
+
+    assert registered == legacy
 
 
 def test_export_curated_observations_cli(tmp_path: Path, multi_rldc_curated_conn: sqlite3.Connection) -> None:

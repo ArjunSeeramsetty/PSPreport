@@ -1,0 +1,1409 @@
+﻿diff --git a/dags/psp_daily_pipeline.py b/dags/psp_daily_pipeline.py
+index 0157d4e2..5a4a30cc 100644
+--- a/dags/psp_daily_pipeline.py
++++ b/dags/psp_daily_pipeline.py
+@@ -38,6 +38,7 @@ from psp_pipeline.pipelines.stages import (
+     persist_sql,
+     reconcile_facts,
+     reconcile_national_daily_balance,
++    record_pipeline_run,
+     repromote_srldc_curated,
+     summarize_run,
+     sync_all_curated_to_graph,
+@@ -69,6 +70,7 @@ def psp_daily_public_ingestion():
+         return {
+             "run_id": run_id,
+             "target_date": datetime.now(timezone.utc).date().isoformat(),
++            "started_at": datetime.now(timezone.utc).isoformat(),
+         }
+ 
+     @task
+@@ -264,6 +266,24 @@ def psp_daily_public_ingestion():
+             target_date=date.fromisoformat(run_meta["target_date"]),
+         )
+ 
++    @task(trigger_rule="all_done")
++    def pipeline_run_history_task(
++        run_meta: dict,
++        collection: dict,
++        observations_inserted: int,
++        graph_observations: int,
++    ) -> dict:
++        """Persist the run outcome even when an upstream source is partial."""
++
++        return record_pipeline_run(
++            load_settings(),
++            run_id=run_meta["run_id"],
++            started_at=datetime.fromisoformat(run_meta["started_at"]),
++            collection=collection,
++            observations_inserted=observations_inserted,
++            graph_observations=graph_observations,
++        )
++
+     @task
+     def dq_task(
+         source_payload: list[dict],
+@@ -318,6 +338,7 @@ def psp_daily_public_ingestion():
+     all_timescale = all_curated_timescale_task(all_rldc_collection, run_meta)
+     all_graph = all_curated_graph_task(all_rldc_collection, run_meta)
+     all_timescale >> all_graph
++    pipeline_run_history_task(run_meta, all_rldc_collection, all_timescale, all_graph)
+ 
+ 
+ dag = psp_daily_public_ingestion()
+diff --git a/sql/neo4j_constraints.cypher b/sql/neo4j_constraints.cypher
+index abc6c3c4..71b33cf7 100644
+--- a/sql/neo4j_constraints.cypher
++++ b/sql/neo4j_constraints.cypher
+@@ -16,6 +16,9 @@ FOR (m:Metric) REQUIRE m.name IS UNIQUE;
+ CREATE CONSTRAINT timeseries_uuid IF NOT EXISTS
+ FOR (ts:TimeSeries) REQUIRE ts.uuid IS UNIQUE;
+ 
++CREATE CONSTRAINT observation_version_uuid IF NOT EXISTS
++FOR (version:ObservationVersion) REQUIRE version.timeseries_uuid IS UNIQUE;
++
+ CREATE CONSTRAINT observation_key IF NOT EXISTS
+ FOR (o:Observation) REQUIRE o.observation_key IS UNIQUE;
+ 
+@@ -30,3 +33,9 @@ FOR (node:VoltageNode) REQUIRE node.key IS UNIQUE;
+ 
+ CREATE CONSTRAINT transmission_line_key IF NOT EXISTS
+ FOR (line:TransmissionLine) REQUIRE line.key IS UNIQUE;
++
++CREATE CONSTRAINT generating_unit_key IF NOT EXISTS
++FOR (unit:GeneratingUnit) REQUIRE unit.key IS UNIQUE;
++
++CREATE CONSTRAINT power_station_key IF NOT EXISTS
++FOR (station:PowerStation) REQUIRE station.key IS UNIQUE;
+diff --git a/sql/timescale_schema.sql b/sql/timescale_schema.sql
+index c4475044..0fc18ecc 100644
+--- a/sql/timescale_schema.sql
++++ b/sql/timescale_schema.sql
+@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS fact_observation (
+     valid_to TIMESTAMPTZ NULL,
+     version_no INTEGER NOT NULL,
+     ingested_at TIMESTAMPTZ NOT NULL,
++    sys_to TIMESTAMPTZ NOT NULL DEFAULT 'infinity',
++    series_key TEXT NOT NULL,
++    content_hash TEXT NOT NULL,
++    report_document_id BIGINT NULL,
+     timeseries_uuid UUID NOT NULL DEFAULT gen_random_uuid(),
+     PRIMARY KEY (observation_id, ingested_at),
+     UNIQUE (entity_key, metric_name, time_block, valid_from, version_no, ingested_at)
+@@ -42,6 +46,8 @@ CREATE TABLE IF NOT EXISTS fact_observation (
+ -- cannot enforce a unique key unless it includes its partitioning time column.
+ CREATE TABLE IF NOT EXISTS fact_observation_dedup (
+     timeseries_uuid UUID PRIMARY KEY,
++    series_key TEXT NOT NULL,
++    content_hash TEXT NOT NULL,
+     entity_key TEXT NOT NULL,
+     metric_name TEXT NOT NULL,
+     time_block TEXT NULL,
+@@ -52,8 +58,42 @@ CREATE TABLE IF NOT EXISTS fact_observation_dedup (
+     first_ingested_at TIMESTAMPTZ NOT NULL
+ );
+ 
++-- Global current-truth enforcement belongs in an ordinary PostgreSQL table.
++-- A Timescale hypertable cannot enforce a unique key without its partition time.
++CREATE TABLE IF NOT EXISTS fact_observation_current (
++    series_key TEXT PRIMARY KEY,
++    timeseries_uuid UUID NOT NULL,
++    system_from TIMESTAMPTZ NOT NULL
++);
++
++CREATE TABLE IF NOT EXISTS fact_observation_lineage (
++    lineage_key UUID PRIMARY KEY,
++    timeseries_uuid UUID NOT NULL,
++    source_id TEXT NOT NULL,
++    report_document_id BIGINT NOT NULL,
++    content_hash TEXT NOT NULL,
++    destination_table TEXT NOT NULL,
++    destination_key TEXT NOT NULL,
++    destination_column TEXT NOT NULL,
++    raw_kind TEXT NOT NULL CHECK (raw_kind IN ('cell', 'text_item', 'line')),
++    raw_item_id BIGINT NOT NULL,
++    page_no INTEGER NULL,
++    table_no INTEGER NULL,
++    row_no INTEGER NULL,
++    col_no INTEGER NULL,
++    confidence DOUBLE PRECISION NOT NULL,
++    extraction_method TEXT NOT NULL,
++    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++
++CREATE INDEX IF NOT EXISTS fact_observation_lineage_timeseries_idx
++    ON fact_observation_lineage (timeseries_uuid);
++
+ SELECT create_hypertable('fact_observation', by_range('ingested_at'), if_not_exists => TRUE);
+ 
++CREATE INDEX IF NOT EXISTS fact_observation_series_history_idx
++    ON fact_observation (series_key, ingested_at DESC);
++
+ ALTER TABLE fact_observation
+     SET (
+         timescaledb.compress = true,
+@@ -75,3 +115,20 @@ CREATE TABLE IF NOT EXISTS reconciliation_result (
+     computed_at TIMESTAMPTZ NOT NULL,
+     UNIQUE (run_id, entity_key, metric_name, time_block)
+ );
++
++CREATE TABLE IF NOT EXISTS pipeline_run (
++    run_id TEXT PRIMARY KEY,
++    dag_id TEXT NOT NULL,
++    started_at TIMESTAMPTZ NOT NULL,
++    completed_at TIMESTAMPTZ NOT NULL,
++    status TEXT NOT NULL CHECK (status IN ('running', 'success', 'partial', 'failed')),
++    sources_requested INTEGER NOT NULL,
++    sources_completed INTEGER NOT NULL,
++    sources_failed INTEGER NOT NULL,
++    observations_exported INTEGER NOT NULL,
++    observations_inserted INTEGER NOT NULL,
++    observations_deduplicated INTEGER NOT NULL
++);
++
++CREATE INDEX IF NOT EXISTS pipeline_run_completed_at_idx
++    ON pipeline_run (completed_at DESC);
+diff --git a/src/psp_pipeline/agents/graph_sync_agent.py b/src/psp_pipeline/agents/graph_sync_agent.py
+index 931a97a5..ce25d760 100644
+--- a/src/psp_pipeline/agents/graph_sync_agent.py
++++ b/src/psp_pipeline/agents/graph_sync_agent.py
+@@ -20,7 +20,13 @@ class GraphSyncAgent(BaseAgent):
+                 "metric_name": fact.metric_name,
+                 "source_region": fact.source_region,
+                 "timeseries_uuid": fact.timeseries_uuid,
++                "series_key": fact.series_key,
+                 "time_block": fact.time_block,
++                "operational_value": fact.operational_value,
++                "valid_from": fact.valid_from,
++                "valid_to": fact.valid_to,
++                "ingested_at": fact.ingested_at,
++                "version_no": fact.version_no,
+             }
+             for fact in facts
+         ]
+@@ -29,6 +35,9 @@ class GraphSyncAgent(BaseAgent):
+         merge_batch = getattr(self.repo, "merge_observation_topologies", None)
+         if callable(merge_batch):
+             merge_batch(payload)
++            merge_values = getattr(self.repo, "merge_daily_observation_values", None)
++            if callable(merge_values):
++                merge_values(payload)
+             return
+         for item in payload:
+             self.repo.merge_observation_topology(**item)
+diff --git a/src/psp_pipeline/agents/parser_agent.py b/src/psp_pipeline/agents/parser_agent.py
+index 1cbe695f..74ecaeb6 100644
+--- a/src/psp_pipeline/agents/parser_agent.py
++++ b/src/psp_pipeline/agents/parser_agent.py
+@@ -3,10 +3,13 @@ from __future__ import annotations
+ from datetime import datetime, timezone
+ from pathlib import Path
+ from typing import Iterable, List
+-from uuid import uuid4
+ 
+ from psp_pipeline.agents.base import BaseAgent
+ from psp_pipeline.models.contracts import FactObservation, FetchArtifact, LineageRecord
++from psp_pipeline.storage.observation_identity import (
++    build_revision_uuid,
++    build_series_key,
++)
+ 
+ 
+ class ParserAgent(BaseAgent):
+@@ -48,6 +51,15 @@ class ParserAgent(BaseAgent):
+             )
+ 
+             # Minimal placeholder fact enables end-to-end pipeline smoke tests.
++            series_key = build_series_key(
++                entity_key=f"{source_region}:{artifact.source_id}",
++                metric_name="raw_artifact_count",
++                time_block=None,
++                report_type=report_type,
++                source_region=source_region,
++                valid_from=now.isoformat(),
++                valid_to=None,
++            )
+             facts.append(
+                 FactObservation(
+                     entity_key=f"{source_region}:{artifact.source_id}",
+@@ -62,7 +74,9 @@ class ParserAgent(BaseAgent):
+                     valid_to=None,
+                     version_no=1,
+                     ingested_at=now,
+-                    timeseries_uuid=str(uuid4()),
++                    timeseries_uuid=build_revision_uuid(series_key, artifact.content_hash),
++                    series_key=series_key,
++                    content_hash=artifact.content_hash,
+                 )
+             )
+ 
+@@ -97,4 +111,3 @@ def _infer_region_from_source(source_id: str) -> str:
+     if "er" in sid:
+         return "ER"
+     return "NATIONAL"
+-
+diff --git a/src/psp_pipeline/models/contracts.py b/src/psp_pipeline/models/contracts.py
+index 1b673927..dab61d51 100644
+--- a/src/psp_pipeline/models/contracts.py
++++ b/src/psp_pipeline/models/contracts.py
+@@ -62,6 +62,52 @@ class FactObservation:
+     version_no: int
+     ingested_at: datetime
+     timeseries_uuid: str
++    series_key: str | None = None
++    content_hash: str | None = None
++    report_document_id: int | None = None
++    source_id: str | None = None
++    destination_table: str | None = None
++    destination_key: str | None = None
++    destination_column: str | None = None
++
++
++@dataclass(frozen=True)
++class ObservationLineage:
++    """Cell-level provenance for one exported time-series observation."""
++
++    lineage_key: str
++    timeseries_uuid: str
++    source_id: str
++    report_document_id: int
++    content_hash: str
++    destination_table: str
++    destination_key: str
++    destination_column: str
++    raw_kind: str
++    raw_item_id: int
++    page_no: int | None
++    table_no: int | None
++    row_no: int | None
++    col_no: int | None
++    confidence: float
++    extraction_method: str
++
++
++@dataclass(frozen=True)
++class PipelineRun:
++    """Persisted operational outcome for one orchestration execution."""
++
++    run_id: str
++    dag_id: str
++    started_at: datetime
++    completed_at: datetime
++    status: str
++    sources_requested: int
++    sources_completed: int
++    sources_failed: int
++    observations_exported: int
++    observations_inserted: int
++    observations_deduplicated: int
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/src/psp_pipeline/pipelines/stages.py b/src/psp_pipeline/pipelines/stages.py
+index 4be11434..c658b06e 100644
+--- a/src/psp_pipeline/pipelines/stages.py
++++ b/src/psp_pipeline/pipelines/stages.py
+@@ -19,13 +19,17 @@ from psp_pipeline.models.contracts import (
+     FactObservation,
+     FetchArtifact,
+     LineageRecord,
++    PipelineRun,
+     ReconciliationResult,
+     SourceDefinition,
+ )
+ from psp_pipeline.storage.minio_store import MinioRawStore
+ from psp_pipeline.storage.neo4j_repo import Neo4jRepository
+ from psp_pipeline.storage.postgres_repo import PostgresRepository
+-from psp_pipeline.storage.sqlite_curated_export import export_srldc_daily_observations
++from psp_pipeline.storage.sqlite_curated_export import (
++    export_observation_lineage,
++    export_srldc_daily_observations,
++)
+ from psp_pipeline.storage.sqlite_curated_promoter import repromote_srldc_reports
+ from psp_pipeline.storage.sqlite_topology_export import export_curated_topology
+ from psp_pipeline.pipelines.rldc_daily_psp import run_rldc_daily_psp_collection
+@@ -179,7 +183,12 @@ def export_srldc_curated_to_timescale(
+     with sqlite3.connect(sqlite_db_path) as conn:
+         facts = export_srldc_daily_observations(conn)
+     if facts:
+-        PostgresRepository(settings.postgres_dsn).upsert_fact_observations(facts)
++        with sqlite3.connect(sqlite_db_path) as conn:
++            observation_lineage = export_observation_lineage(conn, facts)
++        PostgresRepository(settings.postgres_dsn).upsert_curated_observations(
++            facts,
++            observation_lineage,
++        )
+     return len(facts)
+ 
+ 
+@@ -274,8 +283,12 @@ def export_all_curated_to_timescale(
+ 
+     with sqlite3.connect(sqlite_db_path) as conn:
+         facts = _export_curated_observations_for_date(conn, rldcs, target_date)
++        observation_lineage = export_observation_lineage(conn, facts)
+     if facts:
+-        return persist_sql(settings, [], facts, [])
++        return PostgresRepository(settings.postgres_dsn).upsert_curated_observations(
++            facts,
++            observation_lineage,
++        )
+     return 0
+ 
+ 
+@@ -397,6 +410,44 @@ def audit_national_curated_dimensions(
+     return audit_national_dimensions(sqlite_db_path)
+ 
+ 
++def record_pipeline_run(
++    settings: AppSettings,
++    *,
++    run_id: str,
++    started_at: datetime,
++    collection: Dict[str, Any],
++    observations_inserted: int,
++    graph_observations: int,
++) -> Dict[str, object]:
++    """Persist a fail-soft summary of one unified public PSP orchestration run."""
++
++    aggregate = collection.get("aggregate", {})
++    requested = int(aggregate.get("sources_requested", 0))
++    completed = int(aggregate.get("sources_completed", 0))
++    failed = int(aggregate.get("sources_failed", max(requested - completed, 0)))
++    exported = max(int(graph_observations), int(observations_inserted))
++    status = "success" if failed == 0 else "partial"
++    record = PipelineRun(
++        run_id=run_id,
++        dag_id="psp_daily_public_ingestion",
++        started_at=started_at,
++        completed_at=datetime.now(timezone.utc),
++        status=status,
++        sources_requested=requested,
++        sources_completed=completed,
++        sources_failed=failed,
++        observations_exported=exported,
++        observations_inserted=int(observations_inserted),
++        observations_deduplicated=max(exported - int(observations_inserted), 0),
++    )
++    try:
++        PostgresRepository(settings.postgres_dsn).upsert_pipeline_run(record)
++    except Exception:
++        logger.exception("Pipeline run history persistence failed for run_id=%s", run_id)
++        return {"run_id": run_id, "status": "history_write_failed"}
++    return {"run_id": run_id, "status": status}
++
++
+ def evaluate_dq(
+     sources: List[SourceDefinition],
+     artifacts: List[FetchArtifact],
+diff --git a/src/psp_pipeline/storage/neo4j_repo.py b/src/psp_pipeline/storage/neo4j_repo.py
+index 4cb33dab..6b3a2a13 100644
+--- a/src/psp_pipeline/storage/neo4j_repo.py
++++ b/src/psp_pipeline/storage/neo4j_repo.py
+@@ -29,6 +29,7 @@ class Neo4jRepository:
+         source_region: str,
+         timeseries_uuid: str,
+         time_block: Optional[str],
++        series_key: str | None = None,
+     ) -> None:
+         region_code, source_entity_id = _split_entity_key(entity_key)
+         observation_key = f"{entity_key}|{metric_name}|{time_block or 'NA'}"
+@@ -43,7 +44,7 @@ class Neo4jRepository:
+ 
+                 MERGE (rt:ReportType {name: $report_type})
+                 MERGE (m:Metric {name: $metric_name})
+-                MERGE (ts:TimeSeries {uuid: $timeseries_uuid})
++                MERGE (ts:TimeSeries {uuid: $series_key})
+ 
+                 MERGE (o:Observation {observation_key: $observation_key})
+                 SET o.time_block = $time_block
+@@ -62,7 +63,7 @@ class Neo4jRepository:
+                     "source_entity_id": source_entity_id,
+                     "report_type": report_type,
+                     "metric_name": metric_name,
+-                    "timeseries_uuid": timeseries_uuid,
++                    "series_key": series_key or observation_key,
+                     "observation_key": observation_key,
+                     "time_block": time_block,
+                 },
+@@ -93,7 +94,10 @@ class Neo4jRepository:
+                     "state_code": state_code,
+                     "report_type": str(observation["report_type"]),
+                     "metric_name": metric_name,
+-                    "timeseries_uuid": str(observation["timeseries_uuid"]),
++                    "series_key": str(
++                        observation.get("series_key")
++                        or f"{entity_key}|{metric_name}|{time_block or 'NA'}"
++                    ),
+                     "observation_key": (
+                         f"{entity_key}|{metric_name}|{time_block or 'NA'}"
+                     ),
+@@ -115,7 +119,7 @@ class Neo4jRepository:
+                              e.last_seen_at = datetime()
+                 MERGE (rt:ReportType {name: row.report_type})
+                 MERGE (m:Metric {name: row.metric_name})
+-                MERGE (ts:TimeSeries {uuid: row.timeseries_uuid})
++                MERGE (ts:TimeSeries {uuid: row.series_key})
+                 MERGE (o:Observation {observation_key: row.observation_key})
+                 ON CREATE SET o.time_block = row.time_block,
+                               o.created_at = datetime(),
+@@ -140,6 +144,38 @@ class Neo4jRepository:
+                 {"rows": rows},
+             )
+ 
++    def merge_daily_observation_values(
++        self,
++        observations: Iterable[Mapping[str, object]],
++    ) -> None:
++        """Merge immutable, date-scoped measurement versions under a time series."""
++
++        rows = []
++        for observation in observations:
++            entity_key = str(observation["entity_key"])
++            metric_name = str(observation["metric_name"])
++            time_block = observation.get("time_block")
++            rows.append(
++                {
++                    "series_key": str(
++                        observation.get("series_key")
++                        or f"{entity_key}|{metric_name}|{time_block or 'NA'}"
++                    ),
++                    "timeseries_uuid": str(observation["timeseries_uuid"]),
++                    "operational_value": observation.get("operational_value"),
++                    "valid_from": _iso_datetime(observation["valid_from"]),
++                    "valid_to": _iso_datetime(observation.get("valid_to")),
++                    "ingested_at": _iso_datetime(observation["ingested_at"]),
++                    "version_no": int(observation["version_no"]),
++                    "report_type": str(observation["report_type"]),
++                    "source_region": str(observation["source_region"]),
++                }
++            )
++        if not rows:
++            return
++        with self.driver.session() as session:
++            session.run(_OBSERVATION_VERSION_QUERY, {"rows": rows})
++
+     def merge_grid_topology(self, topology: Mapping[str, list[Mapping[str, Any]]]) -> None:
+         """Idempotently merge curated dimension topology in bounded batches."""
+ 
+@@ -172,6 +208,14 @@ def _split_entity_key(entity_key: str) -> tuple[str, str]:
+     return region or "NATIONAL", entity or entity_key
+ 
+ 
++def _iso_datetime(value: object | None) -> str | None:
++    """Convert supported datetime inputs to the ISO form accepted by Cypher."""
++
++    if value is None:
++        return None
++    return value.isoformat() if hasattr(value, "isoformat") else str(value)
++
++
+ def _run_batches(session: Any, query: str, rows: list[Mapping[str, Any]]) -> None:
+     """Run bounded parameterized batches to limit lock contention."""
+ 
+@@ -298,3 +342,31 @@ FOREACH (_ IN CASE WHEN row.observation_entity_key IS NULL THEN [] ELSE [1] END
+   MERGE (source)-[:DESCRIBES]->(line)
+ )
+ """
++
++_OBSERVATION_VERSION_QUERY = """
++UNWIND $rows AS row
++MERGE (ts:TimeSeries {uuid: row.series_key})
++SET ts.series_key = row.series_key,
++    ts.last_seen_at = datetime()
++WITH row, ts
++OPTIONAL MATCH (ts)-[:HAS_VERSION]->(previous:ObservationVersion)
++WHERE previous.sys_to = 'infinity'
++  AND previous.timeseries_uuid <> row.timeseries_uuid
++  AND previous.ingested_at < datetime(row.ingested_at)
++FOREACH (_ IN CASE WHEN previous IS NULL THEN [] ELSE [1] END |
++  SET previous.sys_to = row.ingested_at
++)
++WITH row, ts
++MERGE (version:ObservationVersion {timeseries_uuid: row.timeseries_uuid})
++ON CREATE SET version.created_at = datetime(),
++              version.operational_value = row.operational_value,
++              version.valid_from = datetime(row.valid_from),
++              version.valid_to = CASE WHEN row.valid_to IS NULL THEN NULL ELSE datetime(row.valid_to) END,
++              version.ingested_at = datetime(row.ingested_at),
++              version.sys_to = 'infinity',
++              version.version_no = row.version_no,
++              version.report_type = row.report_type,
++              version.source_region = row.source_region
++ON MATCH SET version.last_seen_at = datetime()
++MERGE (ts)-[:HAS_VERSION]->(version)
++"""
+diff --git a/src/psp_pipeline/storage/postgres_repo.py b/src/psp_pipeline/storage/postgres_repo.py
+index 04e732b3..0a9a9906 100644
+--- a/src/psp_pipeline/storage/postgres_repo.py
++++ b/src/psp_pipeline/storage/postgres_repo.py
+@@ -8,7 +8,14 @@ try:
+ except ImportError:
+     psycopg = None  # type: ignore[assignment]
+ 
+-from psp_pipeline.models.contracts import FactObservation, LineageRecord, ReconciliationResult
++from psp_pipeline.models.contracts import (
++    FactObservation,
++    LineageRecord,
++    ObservationLineage,
++    PipelineRun,
++    ReconciliationResult,
++)
++from psp_pipeline.storage.observation_identity import build_series_key
+ 
+ 
+ class PostgresRepository:
+@@ -46,17 +53,66 @@ class PostgresRepository:
+         lineage: Iterable[LineageRecord],
+         facts: Iterable[FactObservation],
+         reconciliation: Iterable[ReconciliationResult] | None = None,
++        observation_lineage: Iterable[ObservationLineage] | None = None,
+     ) -> int:
+-        """Insert lineage and facts in a single atomic transaction."""
++        """Insert ingest, fact, reconciliation, and cell lineage atomically."""
+         with psycopg.connect(self.dsn) as conn:
+             with conn.cursor() as cur:
+                 self._insert_lineage(cur, lineage)
+                 inserted = self._upsert_facts(cur, facts)
++                if observation_lineage is not None:
++                    self._insert_observation_lineage(cur, observation_lineage)
+                 if reconciliation is not None:
+                     self._upsert_reconciliation(cur, reconciliation)
+             conn.commit()
+         return inserted
+ 
++    def upsert_curated_observations(
++        self,
++        facts: Iterable[FactObservation],
++        observation_lineage: Iterable[ObservationLineage],
++    ) -> int:
++        """Persist exported curated facts and exact cell lineage atomically."""
++
++        with psycopg.connect(self.dsn) as conn:
++            with conn.cursor() as cur:
++                inserted = self._upsert_facts(cur, facts)
++                self._insert_observation_lineage(cur, observation_lineage)
++            conn.commit()
++        return inserted
++
++    def upsert_pipeline_run(self, record: PipelineRun) -> None:
++        """Persist an idempotent orchestration outcome for freshness and SLA checks."""
++
++        with psycopg.connect(self.dsn) as conn:
++            with conn.cursor() as cur:
++                cur.execute(
++                    """
++                    INSERT INTO pipeline_run (
++                        run_id, dag_id, started_at, completed_at, status,
++                        sources_requested, sources_completed, sources_failed,
++                        observations_exported, observations_inserted,
++                        observations_deduplicated
++                    ) VALUES (
++                        %(run_id)s, %(dag_id)s, %(started_at)s, %(completed_at)s,
++                        %(status)s, %(sources_requested)s, %(sources_completed)s,
++                        %(sources_failed)s, %(observations_exported)s,
++                        %(observations_inserted)s, %(observations_deduplicated)s
++                    )
++                    ON CONFLICT (run_id) DO UPDATE SET
++                        completed_at = EXCLUDED.completed_at,
++                        status = EXCLUDED.status,
++                        sources_requested = EXCLUDED.sources_requested,
++                        sources_completed = EXCLUDED.sources_completed,
++                        sources_failed = EXCLUDED.sources_failed,
++                        observations_exported = EXCLUDED.observations_exported,
++                        observations_inserted = EXCLUDED.observations_inserted,
++                        observations_deduplicated = EXCLUDED.observations_deduplicated
++                    """,
++                    asdict(record),
++                )
++            conn.commit()
++
+     def fetch_existing_hash(self, source_id: str) -> Optional[str]:
+         with psycopg.connect(self.dsn) as conn:
+             with conn.cursor() as cur:
+@@ -114,33 +170,34 @@ class PostgresRepository:
+         inserted = 0
+         for item in records:
+             payload = asdict(item)
+-            grain_key = "|".join(
+-                (
+-                    item.entity_key,
+-                    item.metric_name,
+-                    item.time_block or "",
+-                    item.report_type,
+-                    item.source_region,
+-                    item.valid_from.isoformat(),
+-                    item.valid_to.isoformat() if item.valid_to else "",
+-                )
++            series_key = item.series_key or build_series_key(
++                entity_key=item.entity_key,
++                metric_name=item.metric_name,
++                time_block=item.time_block,
++                report_type=item.report_type,
++                source_region=item.source_region,
++                valid_from=item.valid_from.isoformat(),
++                valid_to=item.valid_to.isoformat() if item.valid_to else None,
+             )
++            payload["series_key"] = series_key
++            payload["content_hash"] = item.content_hash or f"legacy:{item.timeseries_uuid}"
+             # Lock one logical observation grain so concurrent loaders cannot
+             # assign the same correction version.
+             cur.execute(
+                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+-                (grain_key,),
++                (series_key,),
+             )
+             cur.execute(
+                 """
+                 INSERT INTO fact_observation_dedup (
+-                    timeseries_uuid, entity_key, metric_name, time_block,
++                    timeseries_uuid, series_key, content_hash, entity_key, metric_name, time_block,
+                     report_type, source_region, valid_from, valid_to,
+                     first_ingested_at
+                 ) VALUES (
+-                    %(timeseries_uuid)s, %(entity_key)s, %(metric_name)s,
++                    %(timeseries_uuid)s, %(series_key)s, %(content_hash)s,
++                    %(entity_key)s, %(metric_name)s,
+                     %(time_block)s, %(report_type)s, %(source_region)s,
+-                    %(valid_from)s, %(valid_to)s, %(ingested_at)s
++                    %(valid_from)s, %(valid_to)s, CURRENT_TIMESTAMP
+                 )
+                 ON CONFLICT (timeseries_uuid) DO NOTHING
+                 RETURNING timeseries_uuid
+@@ -149,6 +206,15 @@ class PostgresRepository:
+             )
+             if cur.fetchone() is None:
+                 continue
++            cur.execute(
++                """
++                UPDATE fact_observation
++                SET sys_to = CURRENT_TIMESTAMP
++                WHERE series_key = %(series_key)s
++                  AND sys_to = 'infinity'
++                """,
++                payload,
++            )
+             cur.execute(
+                 """
+                 SELECT COALESCE(MAX(version_no), 0) + 1
+@@ -170,18 +236,61 @@ class PostgresRepository:
+                 INSERT INTO fact_observation (
+                     entity_key, metric_name, time_block, operational_value, settlement_value,
+                     variance_pct, report_type, source_region, valid_from, valid_to,
+-                    version_no, ingested_at, timeseries_uuid
++                    version_no, ingested_at, sys_to, series_key, content_hash,
++                    report_document_id, timeseries_uuid
+                 ) VALUES (
+                     %(entity_key)s, %(metric_name)s, %(time_block)s, %(operational_value)s, %(settlement_value)s,
+                     %(variance_pct)s, %(report_type)s, %(source_region)s, %(valid_from)s, %(valid_to)s,
+-                    %(version_no)s, %(ingested_at)s, %(timeseries_uuid)s
++                    %(version_no)s, CURRENT_TIMESTAMP, 'infinity', %(series_key)s, %(content_hash)s,
++                    %(report_document_id)s, %(timeseries_uuid)s
++                )
++                """,
++                payload,
++            )
++            cur.execute(
++                """
++                INSERT INTO fact_observation_current (
++                    series_key, timeseries_uuid, system_from
++                ) VALUES (
++                    %(series_key)s, %(timeseries_uuid)s, CURRENT_TIMESTAMP
+                 )
++                ON CONFLICT (series_key) DO UPDATE SET
++                    timeseries_uuid = EXCLUDED.timeseries_uuid,
++                    system_from = EXCLUDED.system_from
+                 """,
+                 payload,
+             )
+             inserted += 1
+         return inserted
+ 
++    @staticmethod
++    def _insert_observation_lineage(
++        cur,
++        records: Iterable[ObservationLineage],
++    ) -> None:
++        """Insert immutable cell-to-observation bridge records idempotently."""
++
++        for item in records:
++            cur.execute(
++                """
++                INSERT INTO fact_observation_lineage (
++                    lineage_key, timeseries_uuid, source_id, report_document_id,
++                    content_hash, destination_table, destination_key,
++                    destination_column, raw_kind, raw_item_id, page_no, table_no,
++                    row_no, col_no, confidence, extraction_method
++                ) VALUES (
++                    %(lineage_key)s, %(timeseries_uuid)s, %(source_id)s,
++                    %(report_document_id)s, %(content_hash)s,
++                    %(destination_table)s, %(destination_key)s,
++                    %(destination_column)s, %(raw_kind)s, %(raw_item_id)s,
++                    %(page_no)s, %(table_no)s, %(row_no)s, %(col_no)s,
++                    %(confidence)s, %(extraction_method)s
++                )
++                ON CONFLICT (lineage_key) DO NOTHING
++                """,
++                asdict(item),
++            )
++
+     @staticmethod
+     def _upsert_reconciliation(cur, records: Iterable[ReconciliationResult]) -> None:
+         for item in records:
+diff --git a/src/psp_pipeline/storage/sqlite_curated_export.py b/src/psp_pipeline/storage/sqlite_curated_export.py
+index 7c721de2..7d675c67 100644
+--- a/src/psp_pipeline/storage/sqlite_curated_export.py
++++ b/src/psp_pipeline/storage/sqlite_curated_export.py
+@@ -3,11 +3,16 @@
+ from __future__ import annotations
+ 
+ from datetime import datetime, time, timezone
++from dataclasses import dataclass
+ import sqlite3
+ from typing import Iterable
+ from uuid import NAMESPACE_URL, uuid5
+ 
+-from psp_pipeline.models.contracts import FactObservation
++from psp_pipeline.models.contracts import FactObservation, ObservationLineage
++from psp_pipeline.storage.observation_identity import (
++    build_revision_uuid,
++    build_series_key,
++)
+ 
+ 
+ SOURCE_REGION = "SR"
+@@ -30,6 +35,26 @@ _DIMENSION_COLUMNS = {
+ }
+ 
+ 
++@dataclass(frozen=True)
++class TableExportSpec:
++    """Declarative projection of one curated fact table."""
++
++    table_name: str
++    entity_expression: str
++    joins: str = ""
++
++
++@dataclass(frozen=True)
++class RLDCExportConfig:
++    """Source metadata and table projections for one regional PSP family."""
++
++    source_id: str
++    metric_prefix: str
++    report_type: str
++    source_region: str
++    tables: tuple[TableExportSpec, ...]
++
++
+ def export_srldc_daily_observations(
+     conn: sqlite3.Connection,
+     report_document_id: int | None = None,
+@@ -402,6 +427,93 @@ RLDC_EXPORTERS = {
+ }
+ 
+ 
++RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
++    "srldc": RLDCExportConfig(
++        "srldc", "srldc", REPORT_TYPE, "SR", (
++            TableExportSpec("FactSRLDCRegionalDaily", "'SR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactSRLDCStateDaily", "'SR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
++        ),
++    ),
++    "nrldc": RLDCExportConfig(
++        "nrldc", "nrldc", "nrldc_daily_psp", "NR", (
++            TableExportSpec("FactNRLDCRegionalDaily", "'NR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactNRLDCStateDaily", "'NR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
++            TableExportSpec("FactNRLDCGenerationDaily", "'NR:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
++            TableExportSpec("FactNRLDCFrequencyDaily", "'NR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactNRLDCVoltageProfile", "'NR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
++            TableExportSpec("FactNRLDCReservoirDaily", "'NR:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
++            TableExportSpec("FactNRLDCInterRegionalExchange", "'NR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
++            TableExportSpec("FactNRLDCInterRegionalScheduleExchange", "'NR:interregional-schedule:' || fact.CounterpartyRegion"),
++            TableExportSpec("FactNRLDCInternationalExchange", "'NR:international-line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
++        ),
++    ),
++    "wrldc": RLDCExportConfig(
++        "wrldc", "wrldc", "wrldc_daily_psp", "WR", (
++            TableExportSpec("FactWRLDCRegionalDaily", "'WR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactWRLDCStateDaily", "'WR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
++            TableExportSpec("FactWRLDCGenerationDaily", "'WR:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
++            TableExportSpec("FactWRLDCFrequencyDaily", "'WR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactWRLDCVoltageProfile", "'WR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
++            TableExportSpec("FactWRLDCReservoirDaily", "'WR:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
++            TableExportSpec("FactWRLDCInterRegionalExchange", "'WR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
++        ),
++    ),
++    "erldc": RLDCExportConfig(
++        "erldc", "erldc", "erldc_daily_psp", "ER", (
++            TableExportSpec("FactERLDCRegionalDaily", "'ER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactERLDCStateDaily", "'ER:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
++            TableExportSpec("FactERLDCGenerationDaily", "'ER:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
++            TableExportSpec("FactERLDCFrequencyDaily", "'ER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactERLDCVoltageProfile", "'ER:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
++            TableExportSpec("FactERLDCReservoirDaily", "'ER:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
++            TableExportSpec("FactERLDCInterRegionalExchange", "'ER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
++            TableExportSpec("FactERLDCInternationalExchange", "'ER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
++        ),
++    ),
++    "nerldc": RLDCExportConfig(
++        "nerldc", "nerldc", "nerldc_daily_psp", "NER", (
++            TableExportSpec("FactNERLDCRegionalDaily", "'NER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactNERLDCStateDaily", "'NER:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
++            TableExportSpec("FactNERLDCGenerationDaily", "'NER:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
++            TableExportSpec("FactNERLDCFrequencyDaily", "'NER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
++            TableExportSpec("FactNERLDCVoltageProfile", "'NER:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
++            TableExportSpec("FactNERLDCInterRegionalExchange", "'NER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
++            TableExportSpec("FactNERLDCInternationalExchange", "'NER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
++        ),
++    ),
++}
++
++
++def export_registered_daily_observations(
++    conn: sqlite3.Connection,
++    rldc: str,
++    report_document_id: int | None = None,
++    *,
++    ingested_at: datetime | None = None,
++) -> list[FactObservation]:
++    """Export one region through the declarative registry without changing defaults."""
++
++    config = RLDC_EXPORT_CONFIG[rldc.lower()]
++    recorded_at = ingested_at or datetime.now(timezone.utc)
++    observations: list[FactObservation] = []
++    for table in config.tables:
++        observations.extend(
++            _export_table(
++                conn,
++                table_name=table.table_name,
++                entity_expression=table.entity_expression,
++                joins=table.joins,
++                report_document_id=report_document_id,
++                ingested_at=recorded_at,
++                source_id=config.source_id,
++                metric_prefix=config.metric_prefix,
++                report_type=config.report_type,
++                source_region=config.source_region,
++            )
++        )
++    return observations
++
++
+ def export_all_daily_observations(
+     conn: sqlite3.Connection,
+     rldcs: Iterable[str] | None = None,
+@@ -482,7 +594,9 @@ def _export_table(
+         parameters.append(report_document_id)
+     rows = conn.execute(
+         f"""
+-        SELECT fact.ReportDocumentID, date.ActualDate, {entity_expression},
++        SELECT fact.ReportDocumentID, {_report_content_hash_expression(conn)},
++               date.ActualDate, {entity_expression},
++               {', '.join(f'fact.{column}' for column in _present_dimension_columns(conn, table_name))},
+                {', '.join(f'fact.{column}' for column in numeric_columns)}
+         FROM {table_name} AS fact
+         JOIN DimDates AS date ON date.DateID = fact.DateID
+@@ -494,8 +608,12 @@ def _export_table(
+         parameters,
+     ).fetchall()
+     observations: list[FactObservation] = []
++    dimension_columns = _present_dimension_columns(conn, table_name)
+     for row in rows:
+-        report_id, actual_date, entity_key, *values = row
++        report_id, content_hash, actual_date, entity_key, *remaining = row
++        dimension_values = remaining[: len(dimension_columns)]
++        values = remaining[len(dimension_columns) :]
++        destination_dimensions = dict(zip(dimension_columns, dimension_values, strict=True))
+         valid_from = datetime.combine(
+             datetime.fromisoformat(str(actual_date)).date(),
+             time.min,
+@@ -505,6 +623,15 @@ def _export_table(
+             if value is None:
+                 continue
+             metric_name = f"{metric_prefix}.{table_name}.{column}"
++            series_key = build_series_key(
++                entity_key=str(entity_key),
++                metric_name=metric_name,
++                time_block=None,
++                report_type=report_type,
++                source_region=source_region,
++                valid_from=valid_from.isoformat(),
++                valid_to=None,
++            )
+             observations.append(
+                 FactObservation(
+                     entity_key=str(entity_key),
+@@ -519,17 +646,257 @@ def _export_table(
+                     valid_to=None,
+                     version_no=1,
+                     ingested_at=ingested_at,
+-                    timeseries_uuid=str(
+-                        uuid5(
+-                            NAMESPACE_URL,
+-                            f"{entity_key}|{metric_name}|{valid_from.isoformat()}|{report_id}",
+-                        )
++                    timeseries_uuid=build_revision_uuid(series_key, str(content_hash)),
++                    series_key=series_key,
++                    content_hash=str(content_hash),
++                    report_document_id=int(report_id),
++                    source_id=source_id,
++                    destination_table=table_name,
++                    destination_key=_resolve_destination_key(
++                        conn,
++                        report_document_id=int(report_id),
++                        destination_table=table_name,
++                        destination_column=column,
++                        dimensions=destination_dimensions,
+                     ),
++                    destination_column=column,
+                 )
+             )
+     return observations
+ 
+ 
++def _report_content_hash_expression(conn: sqlite3.Connection) -> str:
++    """Return a backwards-compatible artifact hash expression for SQLite exports."""
++
++    columns = {
++        str(row[1]) for row in conn.execute("PRAGMA table_info(psp_report_document)")
++    }
++    if "content_hash" in columns:
++        return "COALESCE(document.content_hash, 'legacy:' || fact.ReportDocumentID)"
++    return "'legacy:' || fact.ReportDocumentID"
++
++
++def _present_dimension_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
++    """Return fact dimension columns that identify a promoted-row grain."""
++
++    return [
++        str(name)
++        for _, name, _, _, _, _ in conn.execute(f"PRAGMA table_info({table_name})")
++        if str(name) in _DIMENSION_COLUMNS and str(name) != "ReportDocumentID"
++    ]
++
++
++def _resolve_destination_key(
++    conn: sqlite3.Connection,
++    *,
++    report_document_id: int,
++    destination_table: str,
++    destination_column: str,
++    dimensions: dict[str, object],
++) -> str | None:
++    """Resolve one lineage key only when its fact dimensions identify it exactly."""
++
++    candidates = conn.execute(
++        """
++        SELECT DISTINCT DestinationKey
++        FROM curated_field_lineage
++        WHERE ReportDocumentID = ?
++          AND DestinationTable = ?
++          AND DestinationColumn = ?
++        """,
++        (report_document_id, destination_table, destination_column),
++    ).fetchall()
++    matching = []
++    for (candidate,) in candidates:
++        tokens = _destination_key_tokens(str(candidate))
++        if all(
++            _destination_dimension_matches(tokens, key, value)
++            for key, value in dimensions.items()
++            if value is not None
++        ):
++            matching.append(str(candidate))
++    return matching[0] if len(matching) == 1 else None
++
++
++def _destination_key_tokens(destination_key: str) -> dict[str, str]:
++    """Parse the stable semicolon-delimited keys emitted by curated promoters."""
++
++    return {
++        key.strip().lower(): value.strip()
++        for part in destination_key.split(";")
++        if "=" in part
++        for key, value in [part.split("=", 1)]
++    }
++
++
++def _destination_dimension_matches(
++    tokens: dict[str, str],
++    column: str,
++    value: object,
++) -> bool:
++    """Match dimensions to their established promoter-key spellings.
++
++    Some dimensions such as generation source refine a fact grain but are not
++    encoded in historical destination keys.  They are intentionally ignored;
++    the caller still requires exactly one matching key before exporting lineage.
++    """
++
++    key_names = {
++        "DateID": ("date",),
++        "RegionID": ("region",),
++        "StateID": ("state",),
++        "EntityID": ("entity",),
++        "StationID": ("station",),
++        "GeneratingUnitID": ("unit",),
++        "AggregateID": ("aggregate",),
++        "ElementID": ("element",),
++        "VoltageNodeID": ("node", "voltage_node"),
++        "ReservoirID": ("reservoir",),
++        "CountryID": ("country",),
++    }.get(column)
++    if not key_names:
++        return True
++    return any(tokens.get(key_name) == str(value) for key_name in key_names)
++
++
++def export_observation_lineage(
++    conn: sqlite3.Connection,
++    observations: Iterable[FactObservation],
++) -> list[ObservationLineage]:
++    """Project exact curated-cell lineage for exported observations.
++
++    Facts with an unresolved destination key are deliberately omitted: assigning
++    one raw cell to several similarly shaped fact rows would corrupt provenance.
++    """
++
++    if not _raw_lineage_tables_exist(conn):
++        return []
++    lineage: list[ObservationLineage] = []
++    for observation in observations:
++        if not all(
++            (
++                observation.report_document_id is not None,
++                observation.destination_table,
++                observation.destination_key,
++                observation.destination_column,
++                observation.source_id,
++                observation.content_hash,
++            )
++        ):
++            continue
++        rows = conn.execute(
++            """
++            SELECT lineage.RawCellID, lineage.RawTextItemID, lineage.RawLineID,
++                   lineage.Confidence, lineage.ExtractionMethod,
++                   cell.page_no, cell.table_no, cell.row_no, cell.col_no,
++                   text_item.page_no, raw_line.page_no
++            FROM curated_field_lineage AS lineage
++            LEFT JOIN psp_raw_cell AS cell ON cell.id = lineage.RawCellID
++            LEFT JOIN psp_raw_text_item AS text_item ON text_item.id = lineage.RawTextItemID
++            LEFT JOIN psp_raw_line AS raw_line ON raw_line.id = lineage.RawLineID
++            WHERE lineage.ReportDocumentID = ?
++              AND lineage.DestinationTable = ?
++              AND lineage.DestinationKey = ?
++              AND lineage.DestinationColumn = ?
++            """,
++            (
++                observation.report_document_id,
++                observation.destination_table,
++                observation.destination_key,
++                observation.destination_column,
++            ),
++        ).fetchall()
++        for row in rows:
++            raw_kind, raw_item_id, page_no, table_no, row_no, col_no = _raw_lineage_details(row)
++            lineage_key = str(
++                uuid5(
++                    NAMESPACE_URL,
++                    "|".join(
++                        (
++                            observation.timeseries_uuid,
++                            raw_kind,
++                            str(raw_item_id),
++                            observation.destination_table,
++                            observation.destination_key,
++                            observation.destination_column,
++                        )
++                    ),
++                )
++            )
++            lineage.append(
++                ObservationLineage(
++                    lineage_key=lineage_key,
++                    timeseries_uuid=observation.timeseries_uuid,
++                    source_id=observation.source_id,
++                    report_document_id=observation.report_document_id,
++                    content_hash=observation.content_hash,
++                    destination_table=observation.destination_table,
++                    destination_key=observation.destination_key,
++                    destination_column=observation.destination_column,
++                    raw_kind=raw_kind,
++                    raw_item_id=raw_item_id,
++                    page_no=page_no,
++                    table_no=table_no,
++                    row_no=row_no,
++                    col_no=col_no,
++                    confidence=float(row[3]),
++                    extraction_method=str(row[4]),
++                )
++            )
++    return lineage
++
++
++def _raw_lineage_tables_exist(conn: sqlite3.Connection) -> bool:
++    """Return whether raw source tables required by the bridge are available."""
++
++    names = {
++        str(row[0])
++        for row in conn.execute(
++            "SELECT name FROM sqlite_master WHERE type = 'table'"
++        )
++    }
++    return {
++        "curated_field_lineage",
++        "psp_raw_cell",
++        "psp_raw_text_item",
++        "psp_raw_line",
++    }.issubset(names)
++
++
++def _raw_lineage_details(
++    row: tuple[object, ...],
++) -> tuple[str, int, int | None, int | None, int | None, int | None]:
++    """Return one raw-item identity and optional spatial coordinates."""
++
++    raw_cell_id, raw_text_item_id, raw_line_id = row[:3]
++    if raw_cell_id is not None:
++        return (
++            "cell",
++            int(raw_cell_id),
++            int(row[5]) if row[5] is not None else None,
++            int(row[6]) if row[6] is not None else None,
++            int(row[7]) if row[7] is not None else None,
++            int(row[8]) if row[8] is not None else None,
++        )
++    if raw_text_item_id is not None:
++        return (
++            "text_item",
++            int(raw_text_item_id),
++            int(row[9]) if row[9] is not None else None,
++            None,
++            None,
++            None,
++        )
++    return (
++        "line",
++        int(raw_line_id),
++        int(row[10]) if row[10] is not None else None,
++        None,
++        None,
++        None,
++    )
++
++
+ def _numeric_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+     """Return numeric measure columns, excluding physical keys and dimensions."""
+ 
+diff --git a/src/psp_pipeline/storage/timescale_loader.py b/src/psp_pipeline/storage/timescale_loader.py
+index 7c95ff07..6a8b2461 100644
+--- a/src/psp_pipeline/storage/timescale_loader.py
++++ b/src/psp_pipeline/storage/timescale_loader.py
+@@ -7,12 +7,16 @@ from pathlib import Path
+ import sqlite3
+ from typing import Callable, Iterable
+ 
+-from psp_pipeline.models.contracts import FactObservation
++from psp_pipeline.models.contracts import FactObservation, ObservationLineage
+ from psp_pipeline.storage.postgres_repo import PostgresRepository
+-from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
++from psp_pipeline.storage.sqlite_curated_export import (
++    export_all_daily_observations,
++    export_observation_lineage,
++)
+ 
+ 
+ ObservationExporter = Callable[..., list[FactObservation]]
++ObservationLineageExporter = Callable[[sqlite3.Connection, Iterable[FactObservation]], list[ObservationLineage]]
+ RepositoryFactory = Callable[[str], PostgresRepository]
+ 
+ 
+@@ -24,6 +28,7 @@ def load_curated_observations_to_timescale(
+     report_document_id: int | None = None,
+     ingested_at: datetime | None = None,
+     observation_exporter: ObservationExporter = export_all_daily_observations,
++    observation_lineage_exporter: ObservationLineageExporter = export_observation_lineage,
+     repository_factory: RepositoryFactory = PostgresRepository,
+ ) -> dict[str, int]:
+     """Export curated SQLite facts and load idempotent Timescale versions.
+@@ -41,9 +46,16 @@ def load_curated_observations_to_timescale(
+             report_document_id=report_document_id,
+             ingested_at=ingested_at,
+         )
+-    inserted = repository_factory(postgres_dsn).upsert_fact_observations(observations)
++        observation_lineage = observation_lineage_exporter(connection, observations)
++    repository = repository_factory(postgres_dsn)
++    if hasattr(repository, "upsert_curated_observations"):
++        inserted = repository.upsert_curated_observations(observations, observation_lineage)
++    else:
++        # Compatibility for constrained test doubles and legacy tooling.
++        inserted = repository.upsert_fact_observations(observations)
+     return {
+         "observations_exported": len(observations),
+         "observations_inserted": inserted,
+         "observations_deduplicated": len(observations) - inserted,
++        "observation_lineage_exported": len(observation_lineage),
+     }
+diff --git a/tests/test_graph_topology_mapping.py b/tests/test_graph_topology_mapping.py
+index 8ce008a1..0a24f18b 100644
+--- a/tests/test_graph_topology_mapping.py
++++ b/tests/test_graph_topology_mapping.py
+@@ -71,18 +71,30 @@ def test_graph_sync_agent_prefers_batch_topology_merge():
+     class FakeRepo:
+         def __init__(self):
+             self.payload = []
++            self.value_payload = []
+ 
+         def merge_observation_topologies(self, payload):
+             self.payload = payload
+ 
++        def merge_daily_observation_values(self, payload):
++            self.value_payload = payload
++
+     repo = FakeRepo()
+     GraphSyncAgent(repo).run([fact])
+ 
+-    assert repo.payload == [{
+-        "entity_key": "SR:state:IN-AP",
+-        "report_type": "srldc_daily_psp",
+-        "metric_name": "state_demand_met_mw",
+-        "source_region": "SR",
+-        "timeseries_uuid": "uuid-1",
+-        "time_block": None,
+-    }]
++    assert repo.payload[0]["entity_key"] == "SR:state:IN-AP"
++    assert repo.payload[0]["timeseries_uuid"] == "uuid-1"
++    assert repo.payload[0]["operational_value"] == 1.0
++    assert repo.payload[0]["valid_from"] == now
++    assert repo.value_payload == repo.payload
++
++
++def test_observation_version_query_preserves_revision_history() -> None:
++    """Graph value nodes are UUID-scoped and only close older open versions."""
++
++    from psp_pipeline.storage.neo4j_repo import _OBSERVATION_VERSION_QUERY
++
++    assert "ObservationVersion {timeseries_uuid: row.timeseries_uuid}" in _OBSERVATION_VERSION_QUERY
++    assert "previous.sys_to = 'infinity'" in _OBSERVATION_VERSION_QUERY
++    assert "previous.ingested_at < datetime(row.ingested_at)" in _OBSERVATION_VERSION_QUERY
++    assert "MERGE (ts)-[:HAS_VERSION]->(version)" in _OBSERVATION_VERSION_QUERY
+diff --git a/tests/test_timescale_loader.py b/tests/test_timescale_loader.py
+index b5f65123..75a7cb20 100644
+--- a/tests/test_timescale_loader.py
++++ b/tests/test_timescale_loader.py
+@@ -62,9 +62,68 @@ def test_timescale_loader_reports_export_insert_and_dedup_counts(tmp_path: Path)
+         "observations_exported": 2,
+         "observations_inserted": 1,
+         "observations_deduplicated": 1,
++        "observation_lineage_exported": 0,
+     }
+ 
+ 
++def test_timescale_loader_persists_observations_and_lineage_atomically(
++    tmp_path: Path,
++) -> None:
++    """The curated path passes one exact lineage payload to the repository."""
++
++    sqlite_path = tmp_path / "curated.sqlite"
++    sqlite3.connect(sqlite_path).close()
++    observation = _observation()
++
++    class FakeRepository:
++        def __init__(self, dsn: str) -> None:
++            assert dsn == "postgresql://test"
++
++        def upsert_curated_observations(self, facts, observation_lineage) -> int:
++            assert facts == [observation]
++            assert len(observation_lineage) == 1
++            assert observation_lineage[0].raw_kind == "cell"
++            return 1
++
++    def exporter(*args: object, **kwargs: object) -> list[FactObservation]:
++        return [observation]
++
++    def lineage_exporter(*args: object, **kwargs: object):
++        from psp_pipeline.models.contracts import ObservationLineage
++
++        return [
++            ObservationLineage(
++                lineage_key="00000000-0000-0000-0000-000000000002",
++                timeseries_uuid=observation.timeseries_uuid,
++                source_id="srldc",
++                report_document_id=1,
++                content_hash="source-hash",
++                destination_table="FactSRLDCRegionalDaily",
++                destination_key="report=1;date=1;region=1",
++                destination_column="DayEnergyMetMU",
++                raw_kind="cell",
++                raw_item_id=44,
++                page_no=1,
++                table_no=1,
++                row_no=2,
++                col_no=3,
++                confidence=1.0,
++                extraction_method="pdfplumber",
++            )
++        ]
++
++    result = load_curated_observations_to_timescale(
++        sqlite_path,
++        "postgresql://test",
++        observation_exporter=exporter,
++        observation_lineage_exporter=lineage_exporter,
++        repository_factory=FakeRepository,
++    )
++
++    assert result["observations_inserted"] == 1
++    assert result["observation_lineage_exported"] == 1
++
++
+ def test_timescale_loader_rejects_missing_sqlite_database(tmp_path: Path) -> None:
+     """A missing local curated database is an explicit configuration error."""
+ 
+diff --git a/tests/test_unified_curated_export.py b/tests/test_unified_curated_export.py
+index 79a782fe..d2517dea 100644
+--- a/tests/test_unified_curated_export.py
++++ b/tests/test_unified_curated_export.py
+@@ -14,6 +14,9 @@ import pytest
+ 
+ from psp_pipeline.storage.sqlite_curated_export import (
+     export_all_daily_observations,
++    export_registered_daily_observations,
++    export_srldc_daily_observations,
++    export_nerldc_daily_observations,
+ )
+ from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
+ 
+@@ -108,6 +111,31 @@ def test_export_all_daily_observations_filters_by_rldc(
+     assert len(observations_ner) >= 2
+ 
+ 
++@pytest.mark.parametrize(
++    ("rldc", "legacy_exporter"),
++    [
++        ("srldc", export_srldc_daily_observations),
++        ("nerldc", export_nerldc_daily_observations),
++    ],
++)
++def test_registry_exporter_matches_legacy_golden_behavior(
++    multi_rldc_curated_conn: sqlite3.Connection,
++    rldc: str,
++    legacy_exporter,
++) -> None:
++    """The new registry is equivalent before it is allowed to replace wrappers."""
++
++    timestamp = datetime(2026, 8, 25, 2, 0, 0, tzinfo=timezone.utc)
++    legacy = legacy_exporter(multi_rldc_curated_conn, ingested_at=timestamp)
++    registered = export_registered_daily_observations(
++        multi_rldc_curated_conn,
++        rldc,
++        ingested_at=timestamp,
++    )
++
++    assert registered == legacy
++
++
+ def test_export_curated_observations_cli(tmp_path: Path, multi_rldc_curated_conn: sqlite3.Connection) -> None:
+     db_file = tmp_path / "multi_rldc.sqlite"
+     out_file = tmp_path / "exported_observations.jsonl"

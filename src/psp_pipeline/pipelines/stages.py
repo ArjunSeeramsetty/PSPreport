@@ -19,13 +19,17 @@ from psp_pipeline.models.contracts import (
     FactObservation,
     FetchArtifact,
     LineageRecord,
+    PipelineRun,
     ReconciliationResult,
     SourceDefinition,
 )
 from psp_pipeline.storage.minio_store import MinioRawStore
 from psp_pipeline.storage.neo4j_repo import Neo4jRepository
 from psp_pipeline.storage.postgres_repo import PostgresRepository
-from psp_pipeline.storage.sqlite_curated_export import export_srldc_daily_observations
+from psp_pipeline.storage.sqlite_curated_export import (
+    export_observation_lineage,
+    export_srldc_daily_observations,
+)
 from psp_pipeline.storage.sqlite_curated_promoter import repromote_srldc_reports
 from psp_pipeline.storage.sqlite_topology_export import export_curated_topology
 from psp_pipeline.pipelines.rldc_daily_psp import run_rldc_daily_psp_collection
@@ -179,7 +183,14 @@ def export_srldc_curated_to_timescale(
     with sqlite3.connect(sqlite_db_path) as conn:
         facts = export_srldc_daily_observations(conn)
     if facts:
-        PostgresRepository(settings.postgres_dsn).upsert_fact_observations(facts)
+        with sqlite3.connect(sqlite_db_path) as conn:
+            observation_lineage = export_observation_lineage(conn, facts)
+        repository = PostgresRepository(settings.postgres_dsn)
+        repository.upsert_curated_observations(
+            facts,
+            observation_lineage,
+        )
+        repository.refresh_current_truth_views()
     return len(facts)
 
 
@@ -274,8 +285,15 @@ def export_all_curated_to_timescale(
 
     with sqlite3.connect(sqlite_db_path) as conn:
         facts = _export_curated_observations_for_date(conn, rldcs, target_date)
+        observation_lineage = export_observation_lineage(conn, facts)
     if facts:
-        return persist_sql(settings, [], facts, [])
+        repository = PostgresRepository(settings.postgres_dsn)
+        inserted = repository.upsert_curated_observations(
+            facts,
+            observation_lineage,
+        )
+        repository.refresh_current_truth_views()
+        return inserted
     return 0
 
 
@@ -395,6 +413,44 @@ def audit_national_curated_dimensions(
     from psp_pipeline.quality.national_dimension_audit import audit_national_dimensions
 
     return audit_national_dimensions(sqlite_db_path)
+
+
+def record_pipeline_run(
+    settings: AppSettings,
+    *,
+    run_id: str,
+    started_at: datetime,
+    collection: Dict[str, Any],
+    observations_inserted: int,
+    graph_observations: int,
+) -> Dict[str, object]:
+    """Persist a fail-soft summary of one unified public PSP orchestration run."""
+
+    aggregate = collection.get("aggregate", {})
+    requested = int(aggregate.get("sources_requested", 0))
+    completed = int(aggregate.get("sources_completed", 0))
+    failed = int(aggregate.get("sources_failed", max(requested - completed, 0)))
+    exported = max(int(graph_observations), int(observations_inserted))
+    status = "success" if failed == 0 else "partial"
+    record = PipelineRun(
+        run_id=run_id,
+        dag_id="psp_daily_public_ingestion",
+        started_at=started_at,
+        completed_at=datetime.now(timezone.utc),
+        status=status,
+        sources_requested=requested,
+        sources_completed=completed,
+        sources_failed=failed,
+        observations_exported=exported,
+        observations_inserted=int(observations_inserted),
+        observations_deduplicated=max(exported - int(observations_inserted), 0),
+    )
+    try:
+        PostgresRepository(settings.postgres_dsn).upsert_pipeline_run(record)
+    except Exception:
+        logger.exception("Pipeline run history persistence failed for run_id=%s", run_id)
+        return {"run_id": run_id, "status": "history_write_failed"}
+    return {"run_id": run_id, "status": status}
 
 
 def evaluate_dq(

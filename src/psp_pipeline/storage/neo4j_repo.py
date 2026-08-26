@@ -29,6 +29,7 @@ class Neo4jRepository:
         source_region: str,
         timeseries_uuid: str,
         time_block: Optional[str],
+        series_key: str | None = None,
     ) -> None:
         region_code, source_entity_id = _split_entity_key(entity_key)
         observation_key = f"{entity_key}|{metric_name}|{time_block or 'NA'}"
@@ -43,7 +44,7 @@ class Neo4jRepository:
 
                 MERGE (rt:ReportType {name: $report_type})
                 MERGE (m:Metric {name: $metric_name})
-                MERGE (ts:TimeSeries {uuid: $timeseries_uuid})
+                MERGE (ts:TimeSeries {uuid: $series_key})
 
                 MERGE (o:Observation {observation_key: $observation_key})
                 SET o.time_block = $time_block
@@ -62,7 +63,7 @@ class Neo4jRepository:
                     "source_entity_id": source_entity_id,
                     "report_type": report_type,
                     "metric_name": metric_name,
-                    "timeseries_uuid": timeseries_uuid,
+                    "series_key": series_key or observation_key,
                     "observation_key": observation_key,
                     "time_block": time_block,
                 },
@@ -93,7 +94,10 @@ class Neo4jRepository:
                     "state_code": state_code,
                     "report_type": str(observation["report_type"]),
                     "metric_name": metric_name,
-                    "timeseries_uuid": str(observation["timeseries_uuid"]),
+                    "series_key": str(
+                        observation.get("series_key")
+                        or f"{entity_key}|{metric_name}|{time_block or 'NA'}"
+                    ),
                     "observation_key": (
                         f"{entity_key}|{metric_name}|{time_block or 'NA'}"
                     ),
@@ -115,7 +119,7 @@ class Neo4jRepository:
                              e.last_seen_at = datetime()
                 MERGE (rt:ReportType {name: row.report_type})
                 MERGE (m:Metric {name: row.metric_name})
-                MERGE (ts:TimeSeries {uuid: row.timeseries_uuid})
+                MERGE (ts:TimeSeries {uuid: row.series_key})
                 MERGE (o:Observation {observation_key: row.observation_key})
                 ON CREATE SET o.time_block = row.time_block,
                               o.created_at = datetime(),
@@ -139,6 +143,38 @@ class Neo4jRepository:
                 """,
                 {"rows": rows},
             )
+
+    def merge_daily_observation_values(
+        self,
+        observations: Iterable[Mapping[str, object]],
+    ) -> None:
+        """Merge immutable, date-scoped measurement versions under a time series."""
+
+        rows = []
+        for observation in observations:
+            entity_key = str(observation["entity_key"])
+            metric_name = str(observation["metric_name"])
+            time_block = observation.get("time_block")
+            rows.append(
+                {
+                    "series_key": str(
+                        observation.get("series_key")
+                        or f"{entity_key}|{metric_name}|{time_block or 'NA'}"
+                    ),
+                    "timeseries_uuid": str(observation["timeseries_uuid"]),
+                    "operational_value": observation.get("operational_value"),
+                    "valid_from": _iso_datetime(observation["valid_from"]),
+                    "valid_to": _iso_datetime(observation.get("valid_to")),
+                    "ingested_at": _iso_datetime(observation["ingested_at"]),
+                    "version_no": int(observation["version_no"]),
+                    "report_type": str(observation["report_type"]),
+                    "source_region": str(observation["source_region"]),
+                }
+            )
+        if not rows:
+            return
+        with self.driver.session() as session:
+            session.run(_OBSERVATION_VERSION_QUERY, {"rows": rows})
 
     def merge_grid_topology(self, topology: Mapping[str, list[Mapping[str, Any]]]) -> None:
         """Idempotently merge curated dimension topology in bounded batches."""
@@ -170,6 +206,14 @@ def _split_entity_key(entity_key: str) -> tuple[str, str]:
         return "NATIONAL", entity_key
     region, entity = entity_key.split(":", 1)
     return region or "NATIONAL", entity or entity_key
+
+
+def _iso_datetime(value: object | None) -> str | None:
+    """Convert supported datetime inputs to the ISO form accepted by Cypher."""
+
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
 def _run_batches(session: Any, query: str, rows: list[Mapping[str, Any]]) -> None:
@@ -297,4 +341,32 @@ FOREACH (_ IN CASE WHEN row.observation_entity_key IS NULL THEN [] ELSE [1] END 
   MERGE (source:SourceEntity {entity_key: row.observation_entity_key})
   MERGE (source)-[:DESCRIBES]->(line)
 )
+"""
+
+_OBSERVATION_VERSION_QUERY = """
+UNWIND $rows AS row
+MERGE (ts:TimeSeries {uuid: row.series_key})
+SET ts.series_key = row.series_key,
+    ts.last_seen_at = datetime()
+WITH row, ts
+OPTIONAL MATCH (ts)-[:HAS_VERSION]->(previous:ObservationVersion)
+WHERE previous.sys_to = 'infinity'
+  AND previous.timeseries_uuid <> row.timeseries_uuid
+  AND previous.ingested_at < datetime(row.ingested_at)
+FOREACH (_ IN CASE WHEN previous IS NULL THEN [] ELSE [1] END |
+  SET previous.sys_to = row.ingested_at
+)
+WITH row, ts
+MERGE (version:ObservationVersion {timeseries_uuid: row.timeseries_uuid})
+ON CREATE SET version.created_at = datetime(),
+              version.operational_value = row.operational_value,
+              version.valid_from = datetime(row.valid_from),
+              version.valid_to = CASE WHEN row.valid_to IS NULL THEN NULL ELSE datetime(row.valid_to) END,
+              version.ingested_at = datetime(row.ingested_at),
+              version.sys_to = 'infinity',
+              version.version_no = row.version_no,
+              version.report_type = row.report_type,
+              version.source_region = row.source_region
+ON MATCH SET version.last_seen_at = datetime()
+MERGE (ts)-[:HAS_VERSION]->(version)
 """

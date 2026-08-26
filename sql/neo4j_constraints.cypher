@@ -16,6 +16,9 @@ FOR (m:Metric) REQUIRE m.name IS UNIQUE;
 CREATE CONSTRAINT timeseries_uuid IF NOT EXISTS
 FOR (ts:TimeSeries) REQUIRE ts.uuid IS UNIQUE;
 
+CREATE CONSTRAINT observation_version_uuid IF NOT EXISTS
+FOR (version:ObservationVersion) REQUIRE version.timeseries_uuid IS UNIQUE;
+
 CREATE CONSTRAINT observation_key IF NOT EXISTS
 FOR (o:Observation) REQUIRE o.observation_key IS UNIQUE;
 
@@ -30,3 +33,9 @@ FOR (node:VoltageNode) REQUIRE node.key IS UNIQUE;
 
 CREATE CONSTRAINT transmission_line_key IF NOT EXISTS
 FOR (line:TransmissionLine) REQUIRE line.key IS UNIQUE;
+
+CREATE CONSTRAINT generating_unit_key IF NOT EXISTS
+FOR (unit:GeneratingUnit) REQUIRE unit.key IS UNIQUE;
+
+CREATE CONSTRAINT power_station_key IF NOT EXISTS
+FOR (station:PowerStation) REQUIRE station.key IS UNIQUE;

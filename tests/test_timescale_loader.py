@@ -62,7 +62,66 @@ def test_timescale_loader_reports_export_insert_and_dedup_counts(tmp_path: Path)
         "observations_exported": 2,
         "observations_inserted": 1,
         "observations_deduplicated": 1,
+        "observation_lineage_exported": 0,
     }
+
+
+def test_timescale_loader_persists_observations_and_lineage_atomically(
+    tmp_path: Path,
+) -> None:
+    """The curated path passes one exact lineage payload to the repository."""
+
+    sqlite_path = tmp_path / "curated.sqlite"
+    sqlite3.connect(sqlite_path).close()
+    observation = _observation()
+
+    class FakeRepository:
+        def __init__(self, dsn: str) -> None:
+            assert dsn == "postgresql://test"
+
+        def upsert_curated_observations(self, facts, observation_lineage) -> int:
+            assert facts == [observation]
+            assert len(observation_lineage) == 1
+            assert observation_lineage[0].raw_kind == "cell"
+            return 1
+
+    def exporter(*args: object, **kwargs: object) -> list[FactObservation]:
+        return [observation]
+
+    def lineage_exporter(*args: object, **kwargs: object):
+        from psp_pipeline.models.contracts import ObservationLineage
+
+        return [
+            ObservationLineage(
+                lineage_key="00000000-0000-0000-0000-000000000002",
+                timeseries_uuid=observation.timeseries_uuid,
+                source_id="srldc",
+                report_document_id=1,
+                content_hash="source-hash",
+                destination_table="FactSRLDCRegionalDaily",
+                destination_key="report=1;date=1;region=1",
+                destination_column="DayEnergyMetMU",
+                raw_kind="cell",
+                raw_item_id=44,
+                page_no=1,
+                table_no=1,
+                row_no=2,
+                col_no=3,
+                confidence=1.0,
+                extraction_method="pdfplumber",
+            )
+        ]
+
+    result = load_curated_observations_to_timescale(
+        sqlite_path,
+        "postgresql://test",
+        observation_exporter=exporter,
+        observation_lineage_exporter=lineage_exporter,
+        repository_factory=FakeRepository,
+    )
+
+    assert result["observations_inserted"] == 1
+    assert result["observation_lineage_exported"] == 1
 
 
 def test_timescale_loader_rejects_missing_sqlite_database(tmp_path: Path) -> None:

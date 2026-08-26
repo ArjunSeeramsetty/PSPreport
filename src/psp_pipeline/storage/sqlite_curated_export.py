@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timezone
+from dataclasses import dataclass
 import sqlite3
 from typing import Iterable
 from uuid import NAMESPACE_URL, uuid5
 
-from psp_pipeline.models.contracts import FactObservation
+from psp_pipeline.models.contracts import FactObservation, ObservationLineage
+from psp_pipeline.storage.observation_identity import (
+    build_revision_uuid,
+    build_series_key,
+)
 
 
 SOURCE_REGION = "SR"
@@ -28,6 +33,26 @@ _DIMENSION_COLUMNS = {
     "CountryID",
     "IsTotalRow",
 }
+
+
+@dataclass(frozen=True)
+class TableExportSpec:
+    """Declarative projection of one curated fact table."""
+
+    table_name: str
+    entity_expression: str
+    joins: str = ""
+
+
+@dataclass(frozen=True)
+class RLDCExportConfig:
+    """Source metadata and table projections for one regional PSP family."""
+
+    source_id: str
+    metric_prefix: str
+    report_type: str
+    source_region: str
+    tables: tuple[TableExportSpec, ...]
 
 
 def export_srldc_daily_observations(
@@ -402,6 +427,93 @@ RLDC_EXPORTERS = {
 }
 
 
+RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
+    "srldc": RLDCExportConfig(
+        "srldc", "srldc", REPORT_TYPE, "SR", (
+            TableExportSpec("FactSRLDCRegionalDaily", "'SR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactSRLDCStateDaily", "'SR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+        ),
+    ),
+    "nrldc": RLDCExportConfig(
+        "nrldc", "nrldc", "nrldc_daily_psp", "NR", (
+            TableExportSpec("FactNRLDCRegionalDaily", "'NR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactNRLDCStateDaily", "'NR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec("FactNRLDCGenerationDaily", "'NR:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactNRLDCFrequencyDaily", "'NR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactNRLDCVoltageProfile", "'NR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
+            TableExportSpec("FactNRLDCReservoirDaily", "'NR:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
+            TableExportSpec("FactNRLDCInterRegionalExchange", "'NR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+            TableExportSpec("FactNRLDCInterRegionalScheduleExchange", "'NR:interregional-schedule:' || fact.CounterpartyRegion"),
+            TableExportSpec("FactNRLDCInternationalExchange", "'NR:international-line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+        ),
+    ),
+    "wrldc": RLDCExportConfig(
+        "wrldc", "wrldc", "wrldc_daily_psp", "WR", (
+            TableExportSpec("FactWRLDCRegionalDaily", "'WR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactWRLDCStateDaily", "'WR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec("FactWRLDCGenerationDaily", "'WR:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactWRLDCFrequencyDaily", "'WR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactWRLDCVoltageProfile", "'WR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
+            TableExportSpec("FactWRLDCReservoirDaily", "'WR:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
+            TableExportSpec("FactWRLDCInterRegionalExchange", "'WR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+        ),
+    ),
+    "erldc": RLDCExportConfig(
+        "erldc", "erldc", "erldc_daily_psp", "ER", (
+            TableExportSpec("FactERLDCRegionalDaily", "'ER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactERLDCStateDaily", "'ER:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec("FactERLDCGenerationDaily", "'ER:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactERLDCFrequencyDaily", "'ER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactERLDCVoltageProfile", "'ER:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
+            TableExportSpec("FactERLDCReservoirDaily", "'ER:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
+            TableExportSpec("FactERLDCInterRegionalExchange", "'ER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+            TableExportSpec("FactERLDCInternationalExchange", "'ER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
+        ),
+    ),
+    "nerldc": RLDCExportConfig(
+        "nerldc", "nerldc", "nerldc_daily_psp", "NER", (
+            TableExportSpec("FactNERLDCRegionalDaily", "'NER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactNERLDCStateDaily", "'NER:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec("FactNERLDCGenerationDaily", "'NER:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactNERLDCFrequencyDaily", "'NER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactNERLDCVoltageProfile", "'NER:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
+            TableExportSpec("FactNERLDCInterRegionalExchange", "'NER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+            TableExportSpec("FactNERLDCInternationalExchange", "'NER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
+        ),
+    ),
+}
+
+
+def export_registered_daily_observations(
+    conn: sqlite3.Connection,
+    rldc: str,
+    report_document_id: int | None = None,
+    *,
+    ingested_at: datetime | None = None,
+) -> list[FactObservation]:
+    """Export one region through the declarative registry without changing defaults."""
+
+    config = RLDC_EXPORT_CONFIG[rldc.lower()]
+    recorded_at = ingested_at or datetime.now(timezone.utc)
+    observations: list[FactObservation] = []
+    for table in config.tables:
+        observations.extend(
+            _export_table(
+                conn,
+                table_name=table.table_name,
+                entity_expression=table.entity_expression,
+                joins=table.joins,
+                report_document_id=report_document_id,
+                ingested_at=recorded_at,
+                source_id=config.source_id,
+                metric_prefix=config.metric_prefix,
+                report_type=config.report_type,
+                source_region=config.source_region,
+            )
+        )
+    return observations
+
+
 def export_all_daily_observations(
     conn: sqlite3.Connection,
     rldcs: Iterable[str] | None = None,
@@ -482,7 +594,9 @@ def _export_table(
         parameters.append(report_document_id)
     rows = conn.execute(
         f"""
-        SELECT fact.ReportDocumentID, date.ActualDate, {entity_expression},
+        SELECT fact.ReportDocumentID, {_report_content_hash_expression(conn)},
+               date.ActualDate, {entity_expression},
+               {', '.join(f'fact.{column}' for column in _present_dimension_columns(conn, table_name))},
                {', '.join(f'fact.{column}' for column in numeric_columns)}
         FROM {table_name} AS fact
         JOIN DimDates AS date ON date.DateID = fact.DateID
@@ -494,8 +608,12 @@ def _export_table(
         parameters,
     ).fetchall()
     observations: list[FactObservation] = []
+    dimension_columns = _present_dimension_columns(conn, table_name)
     for row in rows:
-        report_id, actual_date, entity_key, *values = row
+        report_id, content_hash, actual_date, entity_key, *remaining = row
+        dimension_values = remaining[: len(dimension_columns)]
+        values = remaining[len(dimension_columns) :]
+        destination_dimensions = dict(zip(dimension_columns, dimension_values, strict=True))
         valid_from = datetime.combine(
             datetime.fromisoformat(str(actual_date)).date(),
             time.min,
@@ -505,6 +623,15 @@ def _export_table(
             if value is None:
                 continue
             metric_name = f"{metric_prefix}.{table_name}.{column}"
+            series_key = build_series_key(
+                entity_key=str(entity_key),
+                metric_name=metric_name,
+                time_block=None,
+                report_type=report_type,
+                source_region=source_region,
+                valid_from=valid_from.isoformat(),
+                valid_to=None,
+            )
             observations.append(
                 FactObservation(
                     entity_key=str(entity_key),
@@ -519,15 +646,255 @@ def _export_table(
                     valid_to=None,
                     version_no=1,
                     ingested_at=ingested_at,
-                    timeseries_uuid=str(
-                        uuid5(
-                            NAMESPACE_URL,
-                            f"{entity_key}|{metric_name}|{valid_from.isoformat()}|{report_id}",
+                    timeseries_uuid=build_revision_uuid(series_key, str(content_hash)),
+                    series_key=series_key,
+                    content_hash=str(content_hash),
+                    report_document_id=int(report_id),
+                    source_id=source_id,
+                    destination_table=table_name,
+                    destination_key=_resolve_destination_key(
+                        conn,
+                        report_document_id=int(report_id),
+                        destination_table=table_name,
+                        destination_column=column,
+                        dimensions=destination_dimensions,
+                    ),
+                    destination_column=column,
+                )
+            )
+    return observations
+
+
+def _report_content_hash_expression(conn: sqlite3.Connection) -> str:
+    """Return a backwards-compatible artifact hash expression for SQLite exports."""
+
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(psp_report_document)")
+    }
+    if "content_hash" in columns:
+        return "COALESCE(document.content_hash, 'legacy:' || fact.ReportDocumentID)"
+    return "'legacy:' || fact.ReportDocumentID"
+
+
+def _present_dimension_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    """Return fact dimension columns that identify a promoted-row grain."""
+
+    return [
+        str(name)
+        for _, name, _, _, _, _ in conn.execute(f"PRAGMA table_info({table_name})")
+        if str(name) in _DIMENSION_COLUMNS and str(name) != "ReportDocumentID"
+    ]
+
+
+def _resolve_destination_key(
+    conn: sqlite3.Connection,
+    *,
+    report_document_id: int,
+    destination_table: str,
+    destination_column: str,
+    dimensions: dict[str, object],
+) -> str | None:
+    """Resolve one lineage key only when its fact dimensions identify it exactly."""
+
+    candidates = conn.execute(
+        """
+        SELECT DISTINCT DestinationKey
+        FROM curated_field_lineage
+        WHERE ReportDocumentID = ?
+          AND DestinationTable = ?
+          AND DestinationColumn = ?
+        """,
+        (report_document_id, destination_table, destination_column),
+    ).fetchall()
+    matching = []
+    for (candidate,) in candidates:
+        tokens = _destination_key_tokens(str(candidate))
+        if all(
+            _destination_dimension_matches(tokens, key, value)
+            for key, value in dimensions.items()
+            if value is not None
+        ):
+            matching.append(str(candidate))
+    return matching[0] if len(matching) == 1 else None
+
+
+def _destination_key_tokens(destination_key: str) -> dict[str, str]:
+    """Parse the stable semicolon-delimited keys emitted by curated promoters."""
+
+    return {
+        key.strip().lower(): value.strip()
+        for part in destination_key.split(";")
+        if "=" in part
+        for key, value in [part.split("=", 1)]
+    }
+
+
+def _destination_dimension_matches(
+    tokens: dict[str, str],
+    column: str,
+    value: object,
+) -> bool:
+    """Match dimensions to their established promoter-key spellings.
+
+    Some dimensions such as generation source refine a fact grain but are not
+    encoded in historical destination keys.  They are intentionally ignored;
+    the caller still requires exactly one matching key before exporting lineage.
+    """
+
+    key_names = {
+        "DateID": ("date",),
+        "RegionID": ("region",),
+        "StateID": ("state",),
+        "EntityID": ("entity",),
+        "StationID": ("station",),
+        "GeneratingUnitID": ("unit",),
+        "AggregateID": ("aggregate",),
+        "ElementID": ("element",),
+        "VoltageNodeID": ("node", "voltage_node"),
+        "ReservoirID": ("reservoir",),
+        "CountryID": ("country",),
+    }.get(column)
+    if not key_names:
+        return True
+    return any(tokens.get(key_name) == str(value) for key_name in key_names)
+
+
+def export_observation_lineage(
+    conn: sqlite3.Connection,
+    observations: Iterable[FactObservation],
+) -> list[ObservationLineage]:
+    """Project exact curated-cell lineage for exported observations.
+
+    Facts with an unresolved destination key are deliberately omitted: assigning
+    one raw cell to several similarly shaped fact rows would corrupt provenance.
+    """
+
+    if not _raw_lineage_tables_exist(conn):
+        return []
+    lineage: list[ObservationLineage] = []
+    for observation in observations:
+        if not all(
+            (
+                observation.report_document_id is not None,
+                observation.destination_table,
+                observation.destination_key,
+                observation.destination_column,
+                observation.source_id,
+                observation.content_hash,
+            )
+        ):
+            continue
+        rows = conn.execute(
+            """
+            SELECT lineage.RawCellID, lineage.RawTextItemID, lineage.RawLineID,
+                   lineage.Confidence, lineage.ExtractionMethod,
+                   cell.page_no, cell.table_no, cell.row_no, cell.col_no,
+                   text_item.page_no, raw_line.page_no
+            FROM curated_field_lineage AS lineage
+            LEFT JOIN psp_raw_cell AS cell ON cell.id = lineage.RawCellID
+            LEFT JOIN psp_raw_text_item AS text_item ON text_item.id = lineage.RawTextItemID
+            LEFT JOIN psp_raw_line AS raw_line ON raw_line.id = lineage.RawLineID
+            WHERE lineage.ReportDocumentID = ?
+              AND lineage.DestinationTable = ?
+              AND lineage.DestinationKey = ?
+              AND lineage.DestinationColumn = ?
+            """,
+            (
+                observation.report_document_id,
+                observation.destination_table,
+                observation.destination_key,
+                observation.destination_column,
+            ),
+        ).fetchall()
+        for row in rows:
+            raw_kind, raw_item_id, page_no, table_no, row_no, col_no = _raw_lineage_details(row)
+            lineage_key = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    "|".join(
+                        (
+                            observation.timeseries_uuid,
+                            raw_kind,
+                            str(raw_item_id),
+                            observation.destination_table,
+                            observation.destination_key,
+                            observation.destination_column,
                         )
                     ),
                 )
             )
-    return observations
+            lineage.append(
+                ObservationLineage(
+                    lineage_key=lineage_key,
+                    timeseries_uuid=observation.timeseries_uuid,
+                    source_id=observation.source_id,
+                    report_document_id=observation.report_document_id,
+                    content_hash=observation.content_hash,
+                    destination_table=observation.destination_table,
+                    destination_key=observation.destination_key,
+                    destination_column=observation.destination_column,
+                    raw_kind=raw_kind,
+                    raw_item_id=raw_item_id,
+                    page_no=page_no,
+                    table_no=table_no,
+                    row_no=row_no,
+                    col_no=col_no,
+                    confidence=float(row[3]),
+                    extraction_method=str(row[4]),
+                )
+            )
+    return lineage
+
+
+def _raw_lineage_tables_exist(conn: sqlite3.Connection) -> bool:
+    """Return whether raw source tables required by the bridge are available."""
+
+    names = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    return {
+        "curated_field_lineage",
+        "psp_raw_cell",
+        "psp_raw_text_item",
+        "psp_raw_line",
+    }.issubset(names)
+
+
+def _raw_lineage_details(
+    row: tuple[object, ...],
+) -> tuple[str, int, int | None, int | None, int | None, int | None]:
+    """Return one raw-item identity and optional spatial coordinates."""
+
+    raw_cell_id, raw_text_item_id, raw_line_id = row[:3]
+    if raw_cell_id is not None:
+        return (
+            "cell",
+            int(raw_cell_id),
+            int(row[5]) if row[5] is not None else None,
+            int(row[6]) if row[6] is not None else None,
+            int(row[7]) if row[7] is not None else None,
+            int(row[8]) if row[8] is not None else None,
+        )
+    if raw_text_item_id is not None:
+        return (
+            "text_item",
+            int(raw_text_item_id),
+            int(row[9]) if row[9] is not None else None,
+            None,
+            None,
+            None,
+        )
+    return (
+        "line",
+        int(raw_line_id),
+        int(row[10]) if row[10] is not None else None,
+        None,
+        None,
+        None,
+    )
 
 
 def _numeric_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:

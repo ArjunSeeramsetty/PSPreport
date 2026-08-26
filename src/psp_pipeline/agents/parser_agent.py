@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List
-from uuid import uuid4
 
 from psp_pipeline.agents.base import BaseAgent
 from psp_pipeline.models.contracts import FactObservation, FetchArtifact, LineageRecord
+from psp_pipeline.storage.observation_identity import (
+    build_revision_uuid,
+    build_series_key,
+)
 
 
 class ParserAgent(BaseAgent):
@@ -48,6 +51,15 @@ class ParserAgent(BaseAgent):
             )
 
             # Minimal placeholder fact enables end-to-end pipeline smoke tests.
+            series_key = build_series_key(
+                entity_key=f"{source_region}:{artifact.source_id}",
+                metric_name="raw_artifact_count",
+                time_block=None,
+                report_type=report_type,
+                source_region=source_region,
+                valid_from=now.isoformat(),
+                valid_to=None,
+            )
             facts.append(
                 FactObservation(
                     entity_key=f"{source_region}:{artifact.source_id}",
@@ -62,7 +74,9 @@ class ParserAgent(BaseAgent):
                     valid_to=None,
                     version_no=1,
                     ingested_at=now,
-                    timeseries_uuid=str(uuid4()),
+                    timeseries_uuid=build_revision_uuid(series_key, artifact.content_hash),
+                    series_key=series_key,
+                    content_hash=artifact.content_hash,
                 )
             )
 
@@ -97,4 +111,3 @@ def _infer_region_from_source(source_id: str) -> str:
     if "er" in sid:
         return "ER"
     return "NATIONAL"
-

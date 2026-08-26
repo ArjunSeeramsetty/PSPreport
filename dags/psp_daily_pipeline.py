@@ -38,6 +38,7 @@ from psp_pipeline.pipelines.stages import (
     persist_sql,
     reconcile_facts,
     reconcile_national_daily_balance,
+    record_pipeline_run,
     repromote_srldc_curated,
     summarize_run,
     sync_all_curated_to_graph,
@@ -69,6 +70,7 @@ def psp_daily_public_ingestion():
         return {
             "run_id": run_id,
             "target_date": datetime.now(timezone.utc).date().isoformat(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
         }
 
     @task
@@ -264,6 +266,24 @@ def psp_daily_public_ingestion():
             target_date=date.fromisoformat(run_meta["target_date"]),
         )
 
+    @task(trigger_rule="all_done")
+    def pipeline_run_history_task(
+        run_meta: dict,
+        collection: dict,
+        observations_inserted: int,
+        graph_observations: int,
+    ) -> dict:
+        """Persist the run outcome even when an upstream source is partial."""
+
+        return record_pipeline_run(
+            load_settings(),
+            run_id=run_meta["run_id"],
+            started_at=datetime.fromisoformat(run_meta["started_at"]),
+            collection=collection,
+            observations_inserted=observations_inserted,
+            graph_observations=graph_observations,
+        )
+
     @task
     def dq_task(
         source_payload: list[dict],
@@ -318,6 +338,7 @@ def psp_daily_public_ingestion():
     all_timescale = all_curated_timescale_task(all_rldc_collection, run_meta)
     all_graph = all_curated_graph_task(all_rldc_collection, run_meta)
     all_timescale >> all_graph
+    pipeline_run_history_task(run_meta, all_rldc_collection, all_timescale, all_graph)
 
 
 dag = psp_daily_public_ingestion()

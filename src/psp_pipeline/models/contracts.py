@@ -62,6 +62,52 @@ class FactObservation:
     version_no: int
     ingested_at: datetime
     timeseries_uuid: str
+    series_key: str | None = None
+    content_hash: str | None = None
+    report_document_id: int | None = None
+    source_id: str | None = None
+    destination_table: str | None = None
+    destination_key: str | None = None
+    destination_column: str | None = None
+
+
+@dataclass(frozen=True)
+class ObservationLineage:
+    """Cell-level provenance for one exported time-series observation."""
+
+    lineage_key: str
+    timeseries_uuid: str
+    source_id: str
+    report_document_id: int
+    content_hash: str
+    destination_table: str
+    destination_key: str
+    destination_column: str
+    raw_kind: str
+    raw_item_id: int
+    page_no: int | None
+    table_no: int | None
+    row_no: int | None
+    col_no: int | None
+    confidence: float
+    extraction_method: str
+
+
+@dataclass(frozen=True)
+class PipelineRun:
+    """Persisted operational outcome for one orchestration execution."""
+
+    run_id: str
+    dag_id: str
+    started_at: datetime
+    completed_at: datetime
+    status: str
+    sources_requested: int
+    sources_completed: int
+    sources_failed: int
+    observations_exported: int
+    observations_inserted: int
+    observations_deduplicated: int
 
 
 @dataclass(frozen=True)

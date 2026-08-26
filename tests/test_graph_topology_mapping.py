@@ -71,18 +71,30 @@ def test_graph_sync_agent_prefers_batch_topology_merge():
     class FakeRepo:
         def __init__(self):
             self.payload = []
+            self.value_payload = []
 
         def merge_observation_topologies(self, payload):
             self.payload = payload
 
+        def merge_daily_observation_values(self, payload):
+            self.value_payload = payload
+
     repo = FakeRepo()
     GraphSyncAgent(repo).run([fact])
 
-    assert repo.payload == [{
-        "entity_key": "SR:state:IN-AP",
-        "report_type": "srldc_daily_psp",
-        "metric_name": "state_demand_met_mw",
-        "source_region": "SR",
-        "timeseries_uuid": "uuid-1",
-        "time_block": None,
-    }]
+    assert repo.payload[0]["entity_key"] == "SR:state:IN-AP"
+    assert repo.payload[0]["timeseries_uuid"] == "uuid-1"
+    assert repo.payload[0]["operational_value"] == 1.0
+    assert repo.payload[0]["valid_from"] == now
+    assert repo.value_payload == repo.payload
+
+
+def test_observation_version_query_preserves_revision_history() -> None:
+    """Graph value nodes are UUID-scoped and only close older open versions."""
+
+    from psp_pipeline.storage.neo4j_repo import _OBSERVATION_VERSION_QUERY
+
+    assert "ObservationVersion {timeseries_uuid: row.timeseries_uuid}" in _OBSERVATION_VERSION_QUERY
+    assert "previous.sys_to = 'infinity'" in _OBSERVATION_VERSION_QUERY
+    assert "previous.ingested_at < datetime(row.ingested_at)" in _OBSERVATION_VERSION_QUERY
+    assert "MERGE (ts)-[:HAS_VERSION]->(version)" in _OBSERVATION_VERSION_QUERY
