@@ -15,8 +15,6 @@ import pytest
 from psp_pipeline.storage.sqlite_curated_export import (
     export_all_daily_observations,
     export_registered_daily_observations,
-    export_srldc_daily_observations,
-    export_nerldc_daily_observations,
 )
 from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
 
@@ -111,29 +109,59 @@ def test_export_all_daily_observations_filters_by_rldc(
     assert len(observations_ner) >= 2
 
 
-@pytest.mark.parametrize(
-    ("rldc", "legacy_exporter"),
-    [
-        ("srldc", export_srldc_daily_observations),
-        ("nerldc", export_nerldc_daily_observations),
-    ],
-)
-def test_registry_exporter_matches_legacy_golden_behavior(
+@pytest.mark.parametrize("rldc", ["srldc", "nerldc"])
+def test_registry_exporter_has_stable_fixture_snapshot(
     multi_rldc_curated_conn: sqlite3.Connection,
     rldc: str,
-    legacy_exporter,
 ) -> None:
-    """The new registry is equivalent before it is allowed to replace wrappers."""
+    """The declarative exporter keeps a stable portable observation shape."""
 
     timestamp = datetime(2026, 8, 25, 2, 0, 0, tzinfo=timezone.utc)
-    legacy = legacy_exporter(multi_rldc_curated_conn, ingested_at=timestamp)
-    registered = export_registered_daily_observations(
+    observations = export_registered_daily_observations(
         multi_rldc_curated_conn,
         rldc,
         ingested_at=timestamp,
     )
 
-    assert registered == legacy
+    snapshot = sorted(
+        (
+            item.entity_key,
+            item.metric_name,
+            item.operational_value,
+            item.destination_column,
+        )
+        for item in observations
+    )
+    assert snapshot
+    assert all(
+        metric_name.startswith(f"{rldc}.")
+        for _, metric_name, _, _ in snapshot
+    )
+
+
+def test_export_all_daily_observations_uses_registry_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    multi_rldc_curated_conn: sqlite3.Connection,
+) -> None:
+    """The unified path does not invoke compatibility exporter wrappers."""
+
+    calls: list[str] = []
+
+    def record_registered_export(*args, **kwargs):
+        calls.append(args[1])
+        return []
+
+    monkeypatch.setattr(
+        "psp_pipeline.storage.sqlite_curated_export.export_registered_daily_observations",
+        record_registered_export,
+    )
+
+    export_all_daily_observations(
+        multi_rldc_curated_conn,
+        rldcs=["srldc", "nerldc"],
+    )
+
+    assert calls == ["srldc", "nerldc"]
 
 
 def test_export_curated_observations_cli(tmp_path: Path, multi_rldc_curated_conn: sqlite3.Connection) -> None:

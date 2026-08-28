@@ -40,6 +40,64 @@ class BaseRLDCAdapter(ABC):
         raise NotImplementedError
 
 
+class GridIndiaNLDCAdapter(BaseRLDCAdapter):
+    """Discover daily NLDC PSP PDFs through Grid-India's public file API."""
+
+    SOURCE_ID = "grid_india_national"
+    BASE_URL = "https://webapi.grid-india.in"
+    FILE_API_PATH = "/api/v1/file"
+    FILE_CDN_BASE_URL = "https://webcdn.grid-india.in/"
+    DAILY_PSP_FILE_TYPE = "DAILY_PSP_REPORT"
+
+    def discover(self, client: httpx.Client, target_date: date) -> list[DiscoveredLink]:
+        """Return exact-date public NLDC PSP PDF links, or no links on API failure."""
+
+        try:
+            response = client.post(
+                f"{self.BASE_URL}{self.FILE_API_PATH}",
+                json={"_source": "GRDW", "_type": self.DAILY_PSP_FILE_TYPE},
+            )
+        except httpx.HTTPError as error:
+            logger.warning("NLDC file listing request failed: %s", error)
+            return []
+        if response.status_code >= 400:
+            return []
+
+        try:
+            records = response.json().get("retData", [])
+        except ValueError:
+            logger.warning("NLDC file listing returned invalid JSON")
+            return []
+
+        links: list[DiscoveredLink] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            if record.get("MimeType", "").lower() != "application/pdf":
+                continue
+            file_path = str(record.get("FilePath", "")).lstrip("/")
+            report_date = _parse_report_date_from_text(
+                f"{record.get('Title_', '')} {record.get('Field2', '')}"
+            )
+            if not file_path or report_date != target_date:
+                continue
+            links.append(
+                DiscoveredLink(
+                    url=urljoin(self.FILE_CDN_BASE_URL, file_path),
+                    report_date=report_date,
+                    source_id=self.SOURCE_ID,
+                    report_family="nldc_daily_psp",
+                    confidence=1.0,
+                )
+            )
+        return links
+
+    def requires_playwright(self) -> bool:
+        """The documented public file API makes browser automation unnecessary."""
+
+        return False
+
+
 def _parse_report_date_from_text(text: str) -> date | None:
     patterns = [
         r"(\d{2})-(\d{2})-(\d{4})",

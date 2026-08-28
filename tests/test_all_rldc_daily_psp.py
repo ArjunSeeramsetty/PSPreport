@@ -36,10 +36,17 @@ def test_coordinator_continues_after_one_source_failure(tmp_path: Path) -> None:
         collection_runner=runner,
     )
 
-    assert calls == ["srldc", "nrldc", "wrldc", "erldc", "nerldc"]
-    assert result["aggregate"]["sources_completed"] == 4
+    assert calls == [
+        "srldc",
+        "nrldc",
+        "wrldc",
+        "erldc",
+        "nerldc",
+        "grid_india_national",
+    ]
+    assert result["aggregate"]["sources_completed"] == 5
     assert result["aggregate"]["sources_failed"] == 1
-    assert result["aggregate"]["reports_persisted"] == 4
+    assert result["aggregate"]["reports_persisted"] == 5
     assert result["source_failures"]["nrldc"] == "RuntimeError: listing unavailable"
 
 

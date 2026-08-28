@@ -11,7 +11,14 @@ from psp_pipeline.pipelines.rldc_daily_psp import run_rldc_daily_psp_collection
 
 
 LOGGER = logging.getLogger(__name__)
-RLDC_SOURCE_IDS = ("srldc", "nrldc", "wrldc", "erldc", "nerldc")
+RLDC_SOURCE_IDS = (
+    "srldc",
+    "nrldc",
+    "wrldc",
+    "erldc",
+    "nerldc",
+    "grid_india_national",
+)
 CollectionRunner = Callable[..., dict[str, int]]
 
 
@@ -33,7 +40,7 @@ def run_all_rldc_daily_psp(
         target_date: Optional report date; defaults to the individual collector's
             current-date behavior.
         max_reports_per_rldc: Per-source discovery limit.
-        target_rldcs: Optional subset of the five canonical regional sources.
+        target_rldcs: Optional subset of the regional sources and NLDC feed.
         collection_runner: Injectable collector used by tests and local runners.
 
     Returns:

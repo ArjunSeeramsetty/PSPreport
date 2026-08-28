@@ -629,6 +629,13 @@ def promote_report_to_curated(conn: sqlite3.Connection, report_document_id: int)
     report = _fetch_report(conn, report_document_id)
     if not report:
         return
+    if report["rldc"] == "grid_india_national":
+        from psp_pipeline.storage.sqlite_nldc_promoter import (
+            promote_nldc_report_to_curated,
+        )
+
+        promote_nldc_report_to_curated(conn, report_document_id)
+        return
     if report["rldc"] == "nrldc":
         from psp_pipeline.storage.sqlite_nrldc_promoter import (
             promote_nrldc_report_to_curated,

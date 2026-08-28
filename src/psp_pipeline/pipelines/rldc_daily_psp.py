@@ -23,6 +23,7 @@ from psp_pipeline.acquisition.adapters import (
     BaseRLDCAdapter,
     DiscoveredLink,
     ERLDCAdapter,
+    GridIndiaNLDCAdapter,
     NERLDCAdapter,
     NRLDCAdapter,
     SRLDCAdapter,
@@ -174,6 +175,8 @@ def _get_adapter(source_key: str) -> BaseRLDCAdapter | None:
         return ERLDCAdapter()
     if source == "nerldc":
         return NERLDCAdapter()
+    if source == "grid_india_national":
+        return GridIndiaNLDCAdapter()
     return None
 
 
@@ -777,6 +780,9 @@ def ensure_sqlite_schema(conn: sqlite3.Connection) -> None:
     ):
         if column not in existing_columns:
             conn.execute(ddl)
+    # NLDC facts have a real FK to this raw document table, so create them only
+    # after the raw persistence contract is established.
+    ensure_curated_sqlite_schema(conn)
     conn.commit()
 
 

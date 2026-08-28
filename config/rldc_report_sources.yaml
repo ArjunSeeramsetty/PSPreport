@@ -40,3 +40,12 @@ rldc_sources:
     include_keywords: ["psp", "power supply position", "daily"]
     allow_domains:
       - "nerldc.in"
+  GRID_INDIA_NATIONAL:
+    mode: "adapter"
+    access_mode: "public"
+    listing_url: "https://webapi.grid-india.in/api/v1/file"
+    pdf_link_regex: "(?i)_NLDC_PSP.*\\.pdf$"
+    include_keywords: ["nldc", "psp", "daily"]
+    allow_domains:
+      - "webapi.grid-india.in"
+      - "webcdn.grid-india.in"

@@ -10,6 +10,7 @@ import pytest
 from psp_pipeline.acquisition.adapters.rldc import (
     DiscoveredLink,
     ERLDCAdapter,
+    GridIndiaNLDCAdapter,
     NERLDCAdapter,
     NRLDCAdapter,
     PublicListingPSPAdapter,
@@ -40,7 +41,50 @@ def test_get_adapter_resolves_all_five_rldcs():
     assert isinstance(_get_adapter("wrldc"), WRLDCAdapter)
     assert isinstance(_get_adapter("erldc"), ERLDCAdapter)
     assert isinstance(_get_adapter("nerldc"), NERLDCAdapter)
+    assert isinstance(_get_adapter("grid_india_national"), GridIndiaNLDCAdapter)
     assert _get_adapter("unknown_rldc") is None
+
+
+def test_grid_india_nldc_adapter_filters_exact_pdf_reports() -> None:
+    """The NLDC adapter accepts only exact-date PDF records from the public API."""
+
+    target = date(2026, 8, 25)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "https://webapi.grid-india.in/api/v1/file"
+        return httpx.Response(
+            200,
+            json={
+                "retData": [
+                    {
+                        "Title_": "25.08.26_NLDC_PSP",
+                        "Field2": "2026-08-26",
+                        "MimeType": "application/pdf",
+                        "FilePath": "files/grdw/2026/08/25.08.26_NLDC_PSP.pdf",
+                    },
+                    {
+                        "Title_": "25.08.26_NLDC_PSP",
+                        "Field2": "2026-08-26",
+                        "MimeType": "application/vnd.ms-excel",
+                        "FilePath": "files/grdw/2026/08/25.08.26_NLDC_PSP.xls",
+                    },
+                ]
+            },
+        )
+
+    with _build_mock_client(handler) as client:
+        links = GridIndiaNLDCAdapter().discover(client, target)
+
+    assert links == [
+        DiscoveredLink(
+            url="https://webcdn.grid-india.in/files/grdw/2026/08/25.08.26_NLDC_PSP.pdf",
+            report_date=target,
+            source_id="grid_india_national",
+            report_family="nldc_daily_psp",
+            confidence=1.0,
+        )
+    ]
 
 
 @pytest.mark.parametrize(

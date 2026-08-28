@@ -421,6 +421,7 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_wrldc_curated_tables(conn)
     _ensure_erldc_curated_tables(conn)
     _ensure_nerldc_curated_tables(conn)
+    _ensure_nldc_curated_tables(conn)
     _ensure_transmission_country_columns(conn)
     _migrate_curated_lineage_for_raw_lines(conn)
     _seed_curated_dimensions(conn)
@@ -577,6 +578,174 @@ def _ensure_schema_design_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def _ensure_nldc_curated_tables(conn: sqlite3.Connection) -> None:
+    """Create NLDC fact tables once the raw document contract is available.
+
+    NLDC facts reference the raw report identity directly. Curated-only
+    in-memory databases intentionally omit these tables; the normal PSP
+    persistence path creates ``psp_report_document`` before curated promotion.
+    """
+
+    raw_document_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'psp_report_document'"
+    ).fetchone()
+    if not raw_document_exists:
+        return
+
+    legacy_tables = _prepare_legacy_nldc_tables(conn)
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS FactNLDCDailyNational (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            EveningPeakDemandMetMW REAL,
+            PeakShortageMW REAL,
+            EnergyMetMU REAL,
+            HydroGenMU REAL,
+            WindGenMU REAL,
+            SolarGenMU REAL,
+            EnergyShortageMU REAL,
+            MaxDemandMetMW REAL,
+            TimeOfMaxDemand TEXT,
+            PRIMARY KEY (ReportDocumentID, DateID),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNLDCDailyRegional (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            EveningPeakDemandMetMW REAL,
+            PeakShortageMW REAL,
+            EnergyMetMU REAL,
+            HydroGenMU REAL,
+            WindGenMU REAL,
+            SolarGenMU REAL,
+            EnergyShortageMU REAL,
+            MaxDemandMetMW REAL,
+            TimeOfMaxDemand TEXT,
+            PRIMARY KEY (ReportDocumentID, DateID, RegionID),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (RegionID) REFERENCES DimRegions(RegionID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNLDCDailyFrequency (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            FVI REAL,
+            Below_49_7 REAL,
+            From_49_7_to_49_8 REAL,
+            From_49_8_to_49_9 REAL,
+            Below_49_9 REAL,
+            From_49_9_to_50_05 REAL,
+            Above_50_05 REAL,
+            PRIMARY KEY (ReportDocumentID, DateID),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNLDCDailyInterRegionalExchange (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            ElementID INTEGER NOT NULL,
+            CounterpartyRegion TEXT NOT NULL,
+            VoltageLevel TEXT,
+            CircuitCount INTEGER,
+            MaxImportMW REAL,
+            MaxExportMW REAL,
+            ImportMU REAL,
+            ExportMU REAL,
+            NetMU REAL,
+            PRIMARY KEY (ReportDocumentID, DateID, ElementID, CounterpartyRegion),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (ElementID) REFERENCES DimTransmissionElements(ElementID)
+        );
+        """
+    )
+    _copy_compatible_legacy_nldc_rows(conn, legacy_tables)
+
+
+def _prepare_legacy_nldc_tables(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Rename NLDC tables whose foreign keys or exchange grain are obsolete.
+
+    SQLite cannot alter a foreign key in place. Earlier experimental tables
+    pointed at ``DimReports(DateID)`` and the exchange table stored a page-two
+    schedule matrix rather than physical lines, so affected tables are rebuilt.
+    """
+
+    table_names = (
+        "FactNLDCDailyNational",
+        "FactNLDCDailyRegional",
+        "FactNLDCDailyFrequency",
+        "FactNLDCDailyInterRegionalExchange",
+    )
+    renamed: list[str] = []
+    for table_name in table_names:
+        columns = {
+            str(row[1])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if not columns:
+            continue
+        foreign_keys = conn.execute(
+            f"PRAGMA foreign_key_list({table_name})"
+        ).fetchall()
+        has_legacy_document_key = any(str(row[2]) == "DimReports" for row in foreign_keys)
+        invalid_exchange_grain = (
+            table_name == "FactNLDCDailyInterRegionalExchange"
+            and "ElementID" not in columns
+        )
+        if not has_legacy_document_key and not invalid_exchange_grain:
+            continue
+        legacy_name = f"{table_name}_legacy"
+        conn.execute(f"DROP TABLE IF EXISTS {legacy_name}")
+        conn.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_name}")
+        renamed.append(table_name)
+    return tuple(renamed)
+
+
+def _copy_compatible_legacy_nldc_rows(
+    conn: sqlite3.Connection, legacy_tables: tuple[str, ...]
+) -> None:
+    """Copy valid compatible NLDC rows after an FK rebuild.
+
+    The old physical-exchange rows deliberately remain retired because their
+    schedule-matrix grain cannot be converted to an individual tie line.
+    """
+
+    columns_by_table = {
+        "FactNLDCDailyNational": (
+            "ReportDocumentID, DateID, EveningPeakDemandMetMW, PeakShortageMW, "
+            "EnergyMetMU, HydroGenMU, WindGenMU, SolarGenMU, EnergyShortageMU, "
+            "MaxDemandMetMW, TimeOfMaxDemand"
+        ),
+        "FactNLDCDailyRegional": (
+            "ReportDocumentID, DateID, RegionID, EveningPeakDemandMetMW, "
+            "PeakShortageMW, EnergyMetMU, HydroGenMU, WindGenMU, SolarGenMU, "
+            "EnergyShortageMU, MaxDemandMetMW, TimeOfMaxDemand"
+        ),
+        "FactNLDCDailyFrequency": (
+            "ReportDocumentID, DateID, FVI, Below_49_7, From_49_7_to_49_8, "
+            "From_49_8_to_49_9, Below_49_9, From_49_9_to_50_05, Above_50_05"
+        ),
+    }
+    for table_name in legacy_tables:
+        legacy_name = f"{table_name}_legacy"
+        columns = columns_by_table.get(table_name)
+        if columns:
+            conn.execute(
+                f"INSERT OR IGNORE INTO {table_name}({columns}) "
+                f"SELECT {columns} FROM {legacy_name} "
+                "WHERE ReportDocumentID IN (SELECT id FROM psp_report_document)"
+            )
+        conn.execute(f"DROP TABLE {legacy_name}")
 
 
 def _migrate_curated_lineage_for_raw_lines(conn: sqlite3.Connection) -> None:

@@ -1,4 +1,4 @@
-"""Export curated SRLDC daily facts into portable time-series observations."""
+"""Export curated daily facts into portable time-series observations."""
 
 from __future__ import annotations
 
@@ -418,6 +418,8 @@ def export_nerldc_daily_observations(
     ]
 
 
+# Compatibility mapping retained for external callers during the registry
+# transition. New orchestration code uses RLDC_EXPORT_CONFIG directly.
 RLDC_EXPORTERS = {
     "srldc": export_srldc_daily_observations,
     "nrldc": export_nrldc_daily_observations,
@@ -481,6 +483,14 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactNERLDCInternationalExchange", "'NER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
         ),
     ),
+    "grid_india_national": RLDCExportConfig(
+        "grid_india_national", "nldc", "nldc_daily_psp", "ALL", (
+            TableExportSpec("FactNLDCDailyNational", "'NLDC:national'", ""),
+            TableExportSpec("FactNLDCDailyRegional", "'NLDC:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
+            TableExportSpec("FactNLDCDailyFrequency", "'NLDC:frequency'", ""),
+            TableExportSpec("FactNLDCDailyInterRegionalExchange", "'NLDC:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+        ),
+    ),
 }
 
 
@@ -534,7 +544,9 @@ def export_all_daily_observations(
         Consolidated list of FactObservation instances.
     """
     target_rldcs = (
-        [r.lower() for r in rldcs] if rldcs is not None else list(RLDC_EXPORTERS.keys())
+        [r.lower() for r in rldcs]
+        if rldcs is not None
+        else list(RLDC_EXPORT_CONFIG.keys())
     )
 
     if rldcs is None:
@@ -548,18 +560,18 @@ def export_all_daily_observations(
                     "SELECT DISTINCT rldc FROM psp_report_document WHERE rldc IS NOT NULL"
                 ).fetchall()
             }
-            filtered = [r for r in RLDC_EXPORTERS if r in present_rldcs]
+            filtered = [r for r in RLDC_EXPORT_CONFIG if r in present_rldcs]
             if filtered:
                 target_rldcs = filtered
 
     all_observations: list[FactObservation] = []
     for rldc in target_rldcs:
-        exporter = RLDC_EXPORTERS.get(rldc)
-        if exporter is None:
+        if rldc not in RLDC_EXPORT_CONFIG:
             continue
         try:
-            obs = exporter(
+            obs = export_registered_daily_observations(
                 conn,
+                rldc,
                 report_document_id=report_document_id,
                 ingested_at=ingested_at,
             )
