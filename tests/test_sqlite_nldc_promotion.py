@@ -84,6 +84,7 @@ def test_nldc_raw_cell_promotion_preserves_document_and_cell_lineage(
     national = in_memory_db.execute("SELECT * FROM FactNLDCDailyNational").fetchone()
     assert national is not None
     assert national["EveningPeakDemandMetMW"] > 200000
+    assert national["PeakShortageMW"] == pytest.approx(2083.0)
 
     regional = in_memory_db.execute(
         "SELECT fact.* FROM FactNLDCDailyRegional fact "
@@ -108,6 +109,9 @@ def test_nldc_raw_cell_promotion_preserves_document_and_cell_lineage(
     assert exchange is not None
     assert exchange["VoltageLevel"] == "HVDC"
     assert exchange["NetMU"] == pytest.approx(-7.2)
+    assert in_memory_db.execute(
+        "SELECT COUNT(*) FROM DimTransmissionElements WHERE ElementName = 'ER'"
+    ).fetchone()[0] == 0
 
     lineage_count = in_memory_db.execute(
         "SELECT COUNT(*) FROM curated_field_lineage "

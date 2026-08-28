@@ -52,7 +52,7 @@ def test_rldc_report_sources_yaml_contains_all_five_public_rldcs():
     data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
     rldc_sources = data.get("rldc_sources", {})
 
-    expected_rldcs = {"SRLDC", "NRLDC", "WRLDC", "ERLDC", "NERLDC"}
+    expected_rldcs = {"SRLDC", "NRLDC", "WRLDC", "ERLDC", "NERLDC", "GRID_INDIA_NATIONAL"}
     assert set(rldc_sources.keys()) == expected_rldcs
 
     for name, config in rldc_sources.items():

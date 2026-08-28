@@ -15,15 +15,15 @@ _REGION_NAMES = {
     "NER": "North Eastern Region",
 }
 _REGIONAL_COLUMNS = {
-    "EveningPeakDemandMetMW": "Demand Met",
-    "PeakShortageMW": "Shortage",
-    "EnergyMetMU": "Energy Met",
-    "HydroGenMU": "Hydro Gen",
-    "WindGenMU": "Wind Gen",
-    "SolarGenMU": "Solar Gen",
-    "EnergyShortageMU": "Energy Shortage",
-    "MaxDemandMetMW": "Maximum Demand Met",
-    "TimeOfMaxDemand": "Time Of Maximum Demand",
+    "EveningPeakDemandMetMW": ("Demand Met",),
+    "PeakShortageMW": ("Shortage", "Shoratge"),
+    "EnergyMetMU": ("Energy Met",),
+    "HydroGenMU": ("Hydro Gen",),
+    "WindGenMU": ("Wind Gen",),
+    "SolarGenMU": ("Solar Gen",),
+    "EnergyShortageMU": ("Energy Shortage",),
+    "MaxDemandMetMW": ("Maximum Demand Met",),
+    "TimeOfMaxDemand": ("Time Of Maximum Demand",),
 }
 
 
@@ -148,12 +148,16 @@ def _promote_regional_summary(
             continue
         values: dict[str, float | str] = {}
         sources: dict[str, int] = {}
-        for field, marker in _REGIONAL_COLUMNS.items():
+        for field, markers in _REGIONAL_COLUMNS.items():
             match = next(
                 (
                     row
                     for row in rows[1:]
-                    if marker.upper() in _normalized(row.get(1, (0, ""))[1])
+                    if any(
+                        marker.upper()
+                        in _normalized(row.get(1, (0, ""))[1])
+                        for marker in markers
+                    )
                 ),
                 None,
             )
@@ -256,6 +260,10 @@ def _promote_physical_exchanges(
     counterparty = ""
     for row in rows[1:]:
         label = row.get(1, (0, ""))[1].strip()
+        if _normalized(label).startswith("INTERNATIONAL EXCHANGES"):
+            # The remainder of the page is a different country-exchange table
+            # with a distinct column contract and is intentionally gated.
+            break
         section = re.fullmatch(r"Import/Export of (.+?) \(With (.+?)\)", label, re.I)
         if section:
             counterparty = _counterparty_region(section.group(2))
