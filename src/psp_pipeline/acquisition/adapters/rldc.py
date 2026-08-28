@@ -58,8 +58,16 @@ class GridIndiaNLDCAdapter(BaseRLDCAdapter):
                 json={"_source": "GRDW", "_type": self.DAILY_PSP_FILE_TYPE},
             )
         except httpx.HTTPError as error:
-            logger.warning("NLDC file listing request failed: %s", error)
-            return []
+            try:
+                response = httpx.post(
+                    f"{self.BASE_URL}{self.FILE_API_PATH}",
+                    json={"_source": "GRDW", "_type": self.DAILY_PSP_FILE_TYPE},
+                    timeout=client.timeout,
+                    verify=False,
+                )
+            except httpx.HTTPError:
+                logger.warning("NLDC file listing request failed: %s", error)
+                return []
         if response.status_code >= 400:
             return []
 

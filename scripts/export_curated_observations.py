@@ -33,7 +33,7 @@ def main() -> None:
         "--rldc",
         type=str,
         default="all",
-        choices=["all", "srldc", "nrldc", "wrldc", "erldc", "nerldc"],
+        choices=["all", "srldc", "nrldc", "wrldc", "erldc", "nerldc", "grid_india_national", "nldc"],
         help="Specific RLDC to export, or 'all' for all available (default: all).",
     )
     parser.add_argument(

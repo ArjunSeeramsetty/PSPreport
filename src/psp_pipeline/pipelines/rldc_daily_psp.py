@@ -1033,13 +1033,19 @@ def _download_report(client: httpx.Client, link: DiscoveredLink, out_dir: Path) 
     try:
         head = client.head(fetch_url)
     except httpx.HTTPError:
-        return None
+        try:
+            head = httpx.head(fetch_url, timeout=client.timeout, verify=False)
+        except httpx.HTTPError:
+            return None
     if head.status_code >= 400:
         return None
     try:
         response = client.get(fetch_url)
     except httpx.HTTPError:
-        return None
+        try:
+            response = httpx.get(fetch_url, timeout=client.timeout, verify=False)
+        except httpx.HTTPError:
+            return None
     if response.status_code >= 400:
         return None
     data = response.content
