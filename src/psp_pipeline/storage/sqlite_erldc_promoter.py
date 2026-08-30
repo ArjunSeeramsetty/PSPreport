@@ -36,6 +36,7 @@ _STATE_ALIASES = {
     "JHARKHAND": "Jharkhand",
     "SIKKIM": "Sikkim",
     "DVC": "DVC",
+    "RAILWAYS_ERISTS": "Railways_ER ISTS",
 }
 
 logger = logging.getLogger(__name__)
@@ -1324,6 +1325,79 @@ def _promote_2025_flat_operational_sections(
     _promote_2025_flat_physical_exchanges(conn, report, date_id)
     _promote_2025_flat_voltage_profiles(conn, report, date_id, region_id)
     _promote_2025_flat_country_exchanges(conn, report, date_id)
+    _promote_2025_flat_market_day_energy(conn, report, date_id)
+
+
+def _promote_2025_flat_market_day_energy(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+) -> None:
+    """Promote the ERLDC Page 6 Day-Energy market matrix."""
+    rows = _rows(conn, report, 6)
+    in_section = False
+    fields = {
+        "GNAScheduleMU": 3,
+        "TGNABilateralMU": 9,
+        "GDAMScheduleMU": 14,
+        "DAMScheduleMU": 19,
+        "HPDAMScheduleMU": 25,
+        "RTMScheduleMU": 32,
+        "TotalMU": 38,
+    }
+    for row in rows:
+        label_cell = row.get(1)
+        label = label_cell[1].strip() if label_cell else ""
+        compact_label = _compact_text(label)
+
+        if "dayenergy(mu)" in _compact_text(row.get(8, (0, ""))[1]):
+            in_section = True
+            continue
+        if in_section and compact_label.startswith("8(b)"):
+            return
+        if not in_section:
+            continue
+        if not compact_label or compact_label == "total":
+            continue
+
+        state_name = _STATE_ALIASES.get(compact_label.upper())
+        if not state_name:
+            continue
+
+        state_row = conn.execute(
+            "SELECT StateID FROM DimStates WHERE StateName = ?", (state_name,)
+        ).fetchone()
+        if not state_row:
+            continue
+        state_id = state_row[0]
+
+        values: dict[str, float] = {}
+        sources: dict[str, int] = {}
+        for name, col in fields.items():
+            value, raw = _number(row, col)
+            if value is not None:
+                values[name] = value
+            if raw is not None:
+                sources[name] = raw
+
+        if not values:
+            continue
+
+        names = ", ".join(values)
+        placeholders = ", ".join("?" for _ in values)
+        conn.execute(
+            "INSERT OR REPLACE INTO FactERLDCStateMarketDaily("
+            f"ReportDocumentID, DateID, StateID, {names}) "
+            f"VALUES (?, ?, ?, {placeholders})",
+            (report, date_id, state_id, *values.values()),
+        )
+        _lineage(
+            conn,
+            report,
+            "FactERLDCStateMarketDaily",
+            f"report={report};date={date_id};state={state_id}",
+            sources,
+        )
 
 
 def _promote_2025_flat_physical_exchanges(

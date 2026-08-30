@@ -316,6 +316,9 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactNRLDCInterRegionalExchange", "'NR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactNRLDCInterRegionalScheduleExchange", "'NR:interregional-schedule:' || fact.CounterpartyRegion"),
             TableExportSpec("FactNRLDCInternationalExchange", "'NR:international-line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+            TableExportSpec("FactNRLDCStateMarketDaily", "'NR:state:' || state.StateCode || ':market:day-energy'", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec("FactNRLDCStateMarketPointDaily", "'NR:state:' || state.StateCode || ':market:point:' || fact.TimeCategory", "JOIN DimStates AS state ON state.StateID = fact.StateID", (("TimeCategory", "fact.TimeCategory"),)),
+            TableExportSpec("FactNRLDCStateMarketExtremaDaily", "'NR:state:' || state.StateCode || ':market:extrema:' || fact.Mechanism", "JOIN DimStates AS state ON state.StateID = fact.StateID", (("Mechanism", "fact.Mechanism"),)),
         ),
     ),
     "wrldc": RLDCExportConfig(
@@ -326,6 +329,7 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactWRLDCFrequencyDaily", "'WR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
             TableExportSpec("FactWRLDCVoltageProfile", "'WR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID", (), ("NominalVoltageKV",)),
             TableExportSpec("FactWRLDCReservoirDaily", "'WR:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
+            TableExportSpec("FactWRLDCMarketEnergyDaily", "'WR:market-participant:' || entity.EntityName || ':market:day-energy'", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
             TableExportSpec("FactWRLDCInterRegionalExchange", "'WR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
         ),
     ),
@@ -350,6 +354,7 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactERLDCReservoirDaily", "'ER:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
             TableExportSpec("FactERLDCInterRegionalExchange", "'ER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactERLDCInternationalExchange", "'ER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
+            TableExportSpec("FactERLDCStateMarketDaily", "'ER:state:' || state.StateName || ':market:day-energy'", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
         ),
     ),
     "nerldc": RLDCExportConfig(
@@ -369,6 +374,11 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
                 "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
                 (),
                 ("NominalVoltageKV",),
+            ),
+            TableExportSpec(
+                "FactNERLDCReservoirDaily",
+                "'NER:reservoir:' || reservoir.ReservoirName",
+                "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID",
             ),
             TableExportSpec("FactNERLDCInterRegionalExchange", "'NER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactNERLDCInternationalExchange", "'NER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
