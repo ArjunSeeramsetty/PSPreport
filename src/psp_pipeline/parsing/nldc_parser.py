@@ -10,7 +10,11 @@ from psp_pipeline.parsing.rldc.pdf_tables import extract_page_tables
 from psp_pipeline.pipelines.rldc_daily_psp import RawCell
 
 
-NLDC_PROMOTION_PAGES = (2, 3)
+# The control-area drawal matrix moved to Page 1 in an April 2025 layout,
+# while later pages contain market and 15-minute grid snapshots. Persist all
+# available pages so promotion remains section-driven and raw coverage stays
+# auditable when a later section is not yet curated.
+NLDC_PROMOTION_PAGES = (1, 2, 3, 4, 5)
 
 
 def extract_nldc_raw_cells(pdf_path: Path) -> list[RawCell]:

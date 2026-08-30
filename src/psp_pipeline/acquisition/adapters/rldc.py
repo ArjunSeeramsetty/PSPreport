@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+import ssl
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
@@ -14,8 +15,31 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+try:
+    import truststore
+except ImportError:  # Optional until the Windows trust-store retry is needed.
+    truststore = None
+
 
 logger = logging.getLogger(__name__)
+
+
+def grid_india_verified_client(client: httpx.Client) -> httpx.Client | None:
+    """Create a Grid-India retry client backed by the platform trust store.
+
+    This remains certificate-verifying.  It exists for Windows installations
+    whose bundled Python CA store lacks the issuing Indian public PKI root.
+    ``None`` means the caller must retain the original fail-soft behavior.
+    """
+
+    if truststore is None:
+        return None
+    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    return httpx.Client(
+        verify=context,
+        timeout=client.timeout,
+        follow_redirects=client.follow_redirects,
+    )
 
 
 @dataclass(frozen=True)
@@ -58,16 +82,21 @@ class GridIndiaNLDCAdapter(BaseRLDCAdapter):
                 json={"_source": "GRDW", "_type": self.DAILY_PSP_FILE_TYPE},
             )
         except httpx.HTTPError as error:
+            retry_client = grid_india_verified_client(client)
+            if retry_client is None:
+                logger.warning("NLDC file listing request failed: %s", error)
+                return []
             try:
-                response = httpx.post(
+                logger.info("NLDC retrying public API with platform trust store")
+                response = retry_client.post(
                     f"{self.BASE_URL}{self.FILE_API_PATH}",
                     json={"_source": "GRDW", "_type": self.DAILY_PSP_FILE_TYPE},
-                    timeout=client.timeout,
-                    verify=False,
                 )
             except httpx.HTTPError:
                 logger.warning("NLDC file listing request failed: %s", error)
                 return []
+            finally:
+                retry_client.close()
         if response.status_code >= 400:
             return []
 

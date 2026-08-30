@@ -75,6 +75,13 @@ TRANSMISSION_ELEMENT_REGISTRY: dict[str, TransmissionLocation] = {
         to_location=LocationRef("Assam", "North Eastern Region", "grid_india_registry"),
         evidence="grid_india_registry",
     ),
+    "400KV_BINAGURI_BONGAIGAON": TransmissionLocation(
+        element_type="line",
+        nominal_voltage_kv=400.0,
+        from_location=LocationRef("West Bengal", "Eastern Region", "grid_india_registry"),
+        to_location=LocationRef("Assam", "North Eastern Region", "grid_india_registry"),
+        evidence="grid_india_registry",
+    ),
     "765KV_RANCHI_DHARAMJAYGARH": TransmissionLocation(
         element_type="line",
         nominal_voltage_kv=765.0,
@@ -83,6 +90,13 @@ TRANSMISSION_ELEMENT_REGISTRY: dict[str, TransmissionLocation] = {
         evidence="grid_india_registry",
     ),
     "765KV_JHARSUGUDA_DHARAMJAYGARH": TransmissionLocation(
+        element_type="line",
+        nominal_voltage_kv=765.0,
+        from_location=LocationRef("Odisha", "Eastern Region", "grid_india_registry"),
+        to_location=LocationRef("Chhattisgarh", "Western Region", "grid_india_registry"),
+        evidence="grid_india_registry",
+    ),
+    "765KV_JHARSUGUDA_DHARMAJAYAGARH": TransmissionLocation(
         element_type="line",
         nominal_voltage_kv=765.0,
         from_location=LocationRef("Odisha", "Eastern Region", "grid_india_registry"),

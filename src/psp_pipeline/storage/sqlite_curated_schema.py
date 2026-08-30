@@ -667,6 +667,69 @@ def _ensure_nldc_curated_tables(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
             FOREIGN KEY (ElementID) REFERENCES DimTransmissionElements(ElementID)
         );
+
+        CREATE TABLE IF NOT EXISTS FactNLDCDailyControlAreaDrawal (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            MaximumDemandMetMW REAL,
+            MaximumDemandShortageMW REAL,
+            EnergyMetMU REAL,
+            DrawalScheduleMU REAL,
+            OverUnderDrawalMU REAL,
+            MaximumOverDrawalMW REAL,
+            MaximumUnderDrawalMW REAL,
+            EnergyShortageMU REAL,
+            PRIMARY KEY (ReportDocumentID, DateID, EntityID),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (EntityID) REFERENCES DimGridEntities(EntityID),
+            FOREIGN KEY (RegionID) REFERENCES DimRegions(RegionID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNLDC15MinuteGridSnapshot (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            BlockStartTime TEXT NOT NULL,
+            FrequencyHz REAL,
+            DemandMetMW REAL,
+            StorageDemandMW REAL,
+            NuclearGenerationMW REAL,
+            WindGenerationMW REAL,
+            SolarGenerationMW REAL,
+            HydroGenerationMW REAL,
+            GasGenerationMW REAL,
+            ThermalGenerationMW REAL,
+            StorageGenerationMW REAL,
+            OtherGenerationMW REAL,
+            NetDemandMetMW REAL,
+            TotalGenerationMW REAL,
+            NetTransnationalExchangeMW REAL,
+            PRIMARY KEY (ReportDocumentID, DateID, BlockStartTime),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNLDCCrossBorderExchangeDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            CountryID INTEGER NOT NULL,
+            Direction TEXT NOT NULL CHECK(Direction IN ('export', 'import', 'net')),
+            GNAMU REAL,
+            TGNABilateralMU REAL,
+            IEXIDAMMU REAL,
+            PXILIDAMMU REAL,
+            HPXIDAMMU REAL,
+            IEXRTMMU REAL,
+            PXILRTMMU REAL,
+            HPXRTMMU REAL,
+            TotalMU REAL,
+            PRIMARY KEY (ReportDocumentID, DateID, CountryID, Direction),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (CountryID) REFERENCES DimCountries(CountryID)
+        );
         """
     )
     _copy_compatible_legacy_nldc_rows(conn, legacy_tables)
@@ -685,6 +748,7 @@ def _prepare_legacy_nldc_tables(conn: sqlite3.Connection) -> tuple[str, ...]:
         "FactNLDCDailyRegional",
         "FactNLDCDailyFrequency",
         "FactNLDCDailyInterRegionalExchange",
+        "FactNLDCDailyControlAreaDrawal",
     )
     renamed: list[str] = []
     for table_name in table_names:
@@ -1480,7 +1544,8 @@ def _ensure_erldc_curated_tables(conn: sqlite3.Connection) -> None:
             StateID INTEGER, GenerationSourceID INTEGER, StationID INTEGER, GeneratingUnitID INTEGER,
             AggregateID INTEGER, InstalledCapacityMW REAL, EveningPeakMW REAL, OffPeakMW REAL,
             DayPeakMW REAL, DayPeakTime TEXT, MinimumGenerationMW REAL, MinimumGenerationTime TEXT,
-            GrossEnergyMU REAL, NetEnergyMU REAL, AverageMW REAL, IsTotalRow INTEGER NOT NULL DEFAULT 0,
+            ScheduledEnergyMU REAL, GrossEnergyMU REAL, NetEnergyMU REAL, AverageMW REAL,
+            IsTotalRow INTEGER NOT NULL DEFAULT 0,
             GenerationGrain TEXT NOT NULL DEFAULT 'power_station', SectionName TEXT NOT NULL,
             PRIMARY KEY(ReportDocumentID, DateID, EntityID, SectionName),
             CHECK(AggregateID IS NOT NULL OR StationID IS NOT NULL)
@@ -1520,6 +1585,20 @@ def _ensure_erldc_curated_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_erldc_generation_columns(conn)
+
+
+def _ensure_erldc_generation_columns(conn: sqlite3.Connection) -> None:
+    """Add later verified ERLDC regional-generation measures to existing DBs."""
+
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(FactERLDCGenerationDaily)")
+    }
+    if "ScheduledEnergyMU" not in existing:
+        conn.execute(
+            "ALTER TABLE FactERLDCGenerationDaily "
+            "ADD COLUMN ScheduledEnergyMU REAL"
+        )
 
 
 def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
@@ -1546,7 +1625,9 @@ def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
             StateID INTEGER, StationID INTEGER, GeneratingUnitID INTEGER, AggregateID INTEGER,
             InstalledCapacityMW REAL, EveningPeakMW REAL, OffPeakMW REAL, DayPeakMW REAL,
             DayPeakTime TEXT, MinimumGenerationMW REAL, MinimumGenerationTime TEXT,
-            NetEnergyMU REAL, AverageMW REAL, IsTotalRow INTEGER NOT NULL DEFAULT 0,
+            GrossEnergyMU REAL, NetEnergyMU REAL, AverageMW REAL,
+            ScheduledEnergyMU REAL, UIMU REAL, RRASScheduleMU REAL,
+            IsTotalRow INTEGER NOT NULL DEFAULT 0,
             GenerationGrain TEXT NOT NULL DEFAULT 'power_station', SectionName TEXT NOT NULL,
             PRIMARY KEY(ReportDocumentID, DateID, EntityID, SectionName),
             CHECK(AggregateID IS NOT NULL OR StationID IS NOT NULL)
@@ -1579,6 +1660,25 @@ def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_nerldc_generation_columns(conn)
+
+
+def _ensure_nerldc_generation_columns(conn: sqlite3.Connection) -> None:
+    """Add verified regional-generation measures to existing NERLDC DBs."""
+
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(FactNERLDCGenerationDaily)")
+    }
+    for column_name in (
+        "GrossEnergyMU",
+        "ScheduledEnergyMU",
+        "UIMU",
+        "RRASScheduleMU",
+    ):
+        if column_name not in existing:
+            conn.execute(
+                f"ALTER TABLE FactNERLDCGenerationDaily ADD COLUMN {column_name} REAL"
+            )
 
 
 def _ensure_transmission_country_columns(conn: sqlite3.Connection) -> None:

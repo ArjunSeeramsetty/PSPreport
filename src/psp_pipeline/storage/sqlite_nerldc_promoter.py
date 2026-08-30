@@ -50,6 +50,7 @@ def promote_nerldc_report_to_curated(conn: sqlite3.Connection, report_id: int) -
     _regional(conn, report_id, date_id, region_id)
     _states(conn, report_id, date_id)
     _generation(conn, report_id, date_id, region_id, str(report[2]))
+    _regional_generation(conn, report_id, date_id, region_id)
     _frequency(conn, report_id, date_id, region_id)
     _voltage(conn, report_id, date_id, region_id)
     _exchanges(conn, report_id, date_id)
@@ -228,6 +229,143 @@ def _generation(
             )
             _lineage(conn, report, "FactNERLDCGenerationDaily",
                      f"report={report};date={date_id};entity={entity_id};section=state_generation_{current_state_id}", sources)
+
+
+def _regional_generation(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+) -> None:
+    """Promote the owner-grouped NERLDC regional generation table.
+
+    The table is distinct from state generation: it includes gross energy,
+    schedule, UI, and RRAS schedule. Repeated subtotal names are separated by
+    their published owner group in ``SectionName``.
+    """
+    fields = {
+        "InstalledCapacityMW": 2,
+        "EveningPeakMW": 3,
+        "OffPeakMW": 4,
+        "DayPeakMW": 5,
+        "DayPeakTime": 6,
+        "GrossEnergyMU": 7,
+        "NetEnergyMU": 8,
+        "AverageMW": 9,
+        "ScheduledEnergyMU": 10,
+        "UIMU": 11,
+        "RRASScheduleMU": 12,
+    }
+    for rows in _all_tables(conn, report):
+        if not _is_regional_generation_table(rows):
+            continue
+        owner_group: str | None = None
+        for row in rows:
+            label = row.get(1, (0, ""))[1].strip()
+            if not label or "station/constituents" in label.lower():
+                continue
+            capacity, _ = _number(row, fields["InstalledCapacityMW"])
+            is_total = _is_total_generation_row(label)
+            if capacity is None:
+                if not is_total:
+                    owner_group = _owner_group_key(label)
+                continue
+            if owner_group is None:
+                continue
+            values, sources = _values(row, fields)
+            canonical_label = generation_entity_canonical_name(label)
+            try:
+                identity = resolve_generation_identity(
+                    conn,
+                    "nerldc",
+                    canonical_label,
+                    None,
+                    region_id,
+                    None,
+                    capacity,
+                    is_total,
+                )
+            except DimensionResolutionError as error:
+                record_resolution_issue(
+                    conn,
+                    report,
+                    "nerldc",
+                    "generation_entity",
+                    label,
+                    str(error),
+                )
+                continue
+            entity_id = _grid_entity(
+                conn,
+                canonical_label,
+                "generation_aggregate" if is_total else "generating_entity",
+                None,
+                region_id,
+                None,
+                capacity,
+                is_total,
+                identity,
+            )
+            section = f"regional_generation:{owner_group}"
+            conn.execute(
+                "INSERT OR REPLACE INTO FactNERLDCGenerationDaily("
+                "ReportDocumentID, DateID, EntityID, StateID, StationID, "
+                "GeneratingUnitID, AggregateID, IsTotalRow, GenerationGrain, "
+                f"SectionName, {', '.join(values)}) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {', '.join('?' for _ in values)})",
+                (
+                    report,
+                    date_id,
+                    entity_id,
+                    None,
+                    identity.station_id,
+                    identity.generating_unit_id,
+                    identity.aggregate_id,
+                    int(is_total),
+                    identity.entity_type,
+                    section,
+                    *values.values(),
+                ),
+            )
+            _lineage(
+                conn,
+                report,
+                "FactNERLDCGenerationDaily",
+                f"report={report};date={date_id};entity={entity_id};section={section}",
+                sources,
+            )
+
+
+def _is_regional_generation_table(
+    rows: list[dict[int, tuple[int, str]]],
+) -> bool:
+    """Return whether rows are the schedule/UI/RRAS regional generation table."""
+
+    header_rows = rows[:3]
+    has_station_header = any(
+        "station/constituents" in row.get(1, (0, ""))[1].lower()
+        for row in header_rows
+    )
+    has_schedule_header = any(
+        "schedule" in row.get(10, (0, ""))[1].lower()
+        and row.get(11, (0, ""))[1].strip().upper() == "UI"
+        and row.get(12, (0, ""))[1].strip().upper() == "RRAS"
+        for row in header_rows
+    )
+    return has_station_header and has_schedule_header
+
+
+def _is_total_generation_row(value: str) -> bool:
+    """Return whether a regional generation label is an aggregate row."""
+
+    normalized = re.sub(r"\s+", "", value).lower()
+    return normalized.startswith(("total", "subtotal", "sub-total"))
+
+
+def _owner_group_key(value: str) -> str:
+    """Produce a stable owner context for repeated regional aggregate labels."""
+
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_") or "unclassified"
 
 
 def _frequency(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:

@@ -187,8 +187,8 @@ def test_export_erldc_daily_observations_emits_valid_records(
 
     entity_keys = {obs.entity_key for obs in observations}
     assert "ER:region:Eastern Region" in entity_keys
-    assert "ER:state:WB" in entity_keys
-    assert "ER:generation:FSTPS" in entity_keys
+    assert "ER:state:West Bengal" in entity_keys
+    assert "ER:generation:FSTPS:section:thermal" in entity_keys
     assert "ER:voltage:JEERAT_400" in entity_keys
     assert "ER:reservoir:MAITHON" in entity_keys
     assert "ER:line:400KV_BINAGURI_BONGAIGAON" in entity_keys
@@ -203,6 +203,7 @@ def test_export_erldc_daily_observations_emits_valid_records(
     assert "erldc.FactERLDCGenerationDaily.GrossEnergyMU" in metrics
     assert "erldc.FactERLDCFrequencyDaily.MaximumFrequencyHz" in metrics
     assert "erldc.FactERLDCVoltageProfile.MaximumKV" in metrics
+    assert "erldc.FactERLDCVoltageProfile.NominalVoltageKV" not in metrics
     assert "erldc.FactERLDCReservoirDaily.CurrentLevelM" in metrics
     assert "erldc.FactERLDCInterRegionalExchange.NetEnergyMU" in metrics
     assert "erldc.FactERLDCInternationalExchange.NetEnergyMU" in metrics

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional
 
 try:
@@ -175,6 +176,22 @@ class Neo4jRepository:
             return
         with self.driver.session() as session:
             session.run(_OBSERVATION_VERSION_QUERY, {"rows": rows})
+
+    def retire_observation_versions(
+        self,
+        timeseries_uuids: Iterable[str],
+        retired_at: datetime,
+    ) -> None:
+        """Close graph measurement versions retired by a Timescale snapshot."""
+
+        rows = [
+            {"timeseries_uuid": str(timeseries_uuid), "retired_at": _iso_datetime(retired_at)}
+            for timeseries_uuid in timeseries_uuids
+        ]
+        if not rows:
+            return
+        with self.driver.session() as session:
+            session.run(_RETIRE_OBSERVATION_VERSION_QUERY, {"rows": rows})
 
     def merge_grid_topology(self, topology: Mapping[str, list[Mapping[str, Any]]]) -> None:
         """Idempotently merge curated dimension topology in bounded batches."""
@@ -369,4 +386,12 @@ ON CREATE SET version.created_at = datetime(),
               version.source_region = row.source_region
 ON MATCH SET version.last_seen_at = datetime()
 MERGE (ts)-[:HAS_VERSION]->(version)
+"""
+
+_RETIRE_OBSERVATION_VERSION_QUERY = """
+UNWIND $rows AS row
+MATCH (version:ObservationVersion {timeseries_uuid: row.timeseries_uuid})
+WHERE version.sys_to = 'infinity'
+SET version.sys_to = datetime(row.retired_at),
+    version.retired_at = datetime(row.retired_at)
 """

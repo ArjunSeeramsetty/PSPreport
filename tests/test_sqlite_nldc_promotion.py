@@ -120,6 +120,155 @@ def test_nldc_raw_cell_promotion_preserves_document_and_cell_lineage(
     ).fetchone()[0]
     assert lineage_count > 0
 
+    snapshots = in_memory_db.execute(
+        "SELECT * FROM FactNLDC15MinuteGridSnapshot ORDER BY BlockStartTime"
+    ).fetchall()
+    assert len(snapshots) == 96
+    assert snapshots[0]["BlockStartTime"] == "00:00"
+    assert snapshots[0]["FrequencyHz"] is not None
+    assert snapshots[0]["StorageDemandMW"] is not None
+    assert snapshots[0]["StorageGenerationMW"] is not None
+    assert in_memory_db.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage "
+        "WHERE ReportDocumentID = ? "
+        "AND DestinationTable = 'FactNLDC15MinuteGridSnapshot'",
+        (report_id,),
+    ).fetchone()[0] >= 96 * 10
+
+    cross_border = in_memory_db.execute(
+        "SELECT fact.* FROM FactNLDCCrossBorderExchangeDaily AS fact "
+        "JOIN DimCountries AS country ON country.CountryID = fact.CountryID "
+        "WHERE country.CountryName = 'Bangladesh' AND fact.Direction = 'export'"
+    ).fetchone()
+    assert cross_border is not None
+    assert cross_border["GNAMU"] == pytest.approx(22.98)
+    assert cross_border["TGNABilateralMU"] == pytest.approx(0.24)
+    assert cross_border["TotalMU"] == pytest.approx(23.22)
+    assert in_memory_db.execute(
+        "SELECT COUNT(*) FROM FactNLDCCrossBorderExchangeDaily"
+    ).fetchone()[0] == 15
+
+
+@pytest.mark.parametrize(
+    ("filename", "report_date", "maximum_demand_mw", "maximum_od_mw", "maximum_ud_mw"),
+    [
+        ("01.04.23_NLDC_PSP.pdf", "2023-04-01", 5839.0, 222.0, None),
+        ("01.04.25_NLDC_PSP.pdf", "2025-04-01", 7420.0, 623.0, None),
+        ("25-08-2026-nldc-psp.pdf", "2026-08-25", 16194.0, 887.0, -680.0),
+    ],
+)
+def test_nldc_control_area_drawal_promotes_across_layout_epochs(
+    filename: str,
+    report_date: str,
+    maximum_demand_mw: float,
+    maximum_od_mw: float,
+    maximum_ud_mw: float | None,
+    in_memory_db: sqlite3.Connection,
+) -> None:
+    """Promote the stable control-area matrix across page and column variants."""
+
+    pdf_path = Path("downloads/NLDC_PSP") / filename
+    if not pdf_path.exists():
+        pytest.skip(f"Fixture {pdf_path} not found")
+    report_id = 200
+    in_memory_db.execute(
+        "INSERT INTO psp_report_document(id, rldc, report_date) VALUES (?, ?, ?)",
+        (report_id, "grid_india_national", report_date),
+    )
+    extracted_at = datetime.now(timezone.utc).isoformat()
+    in_memory_db.executemany(
+        "INSERT INTO psp_raw_cell("
+        "report_document_id, page_no, table_no, row_no, col_no, cell_text, "
+        "extraction_method, extracted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                report_id,
+                cell.page_no,
+                cell.table_no,
+                cell.row_no,
+                cell.col_no,
+                cell.cell_text,
+                cell.extraction_method,
+                extracted_at,
+            )
+            for cell in extract_nldc_raw_cells(pdf_path)
+        ],
+    )
+
+    promote_report_to_curated(in_memory_db, report_id)
+
+    punjab = in_memory_db.execute(
+        "SELECT fact.* FROM FactNLDCDailyControlAreaDrawal AS fact "
+        "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID "
+        "WHERE fact.ReportDocumentID = ? AND entity.EntityName = 'Punjab'",
+        (report_id,),
+    ).fetchone()
+    assert punjab is not None
+    assert punjab["MaximumDemandMetMW"] == pytest.approx(maximum_demand_mw)
+    assert punjab["MaximumOverDrawalMW"] == pytest.approx(maximum_od_mw)
+    if maximum_ud_mw is None:
+        assert punjab["MaximumUnderDrawalMW"] is None
+    else:
+        assert punjab["MaximumUnderDrawalMW"] == pytest.approx(maximum_ud_mw)
+    assert in_memory_db.execute(
+        "SELECT COUNT(*) FROM FactNLDCDailyControlAreaDrawal "
+        "WHERE ReportDocumentID = ?",
+        (report_id,),
+    ).fetchone()[0] >= 37
+    assert in_memory_db.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage "
+        "WHERE ReportDocumentID = ? "
+        "AND DestinationTable = 'FactNLDCDailyControlAreaDrawal'",
+        (report_id,),
+    ).fetchone()[0] > 0
+
+
+def test_nldc_2025_grid_snapshots_preserve_absent_storage_columns(
+    in_memory_db: sqlite3.Connection,
+) -> None:
+    """The pre-storage 13-column snapshot contract must not fabricate fields."""
+
+    pdf_path = Path("downloads/NLDC_PSP/01.04.25_NLDC_PSP.pdf")
+    if not pdf_path.exists():
+        pytest.skip(f"Fixture {pdf_path} not found")
+    report_id = 300
+    in_memory_db.execute(
+        "INSERT INTO psp_report_document(id, rldc, report_date) VALUES (?, ?, ?)",
+        (report_id, "grid_india_national", "2025-04-01"),
+    )
+    extracted_at = datetime.now(timezone.utc).isoformat()
+    in_memory_db.executemany(
+        "INSERT INTO psp_raw_cell("
+        "report_document_id, page_no, table_no, row_no, col_no, cell_text, "
+        "extraction_method, extracted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                report_id,
+                cell.page_no,
+                cell.table_no,
+                cell.row_no,
+                cell.col_no,
+                cell.cell_text,
+                cell.extraction_method,
+                extracted_at,
+            )
+            for cell in extract_nldc_raw_cells(pdf_path)
+        ],
+    )
+
+    promote_report_to_curated(in_memory_db, report_id)
+
+    rows = in_memory_db.execute(
+        "SELECT * FROM FactNLDC15MinuteGridSnapshot "
+        "WHERE ReportDocumentID = ? ORDER BY BlockStartTime",
+        (report_id,),
+    ).fetchall()
+    assert len(rows) == 96
+    assert rows[0]["BlockStartTime"] == "00:00"
+    assert rows[0]["StorageDemandMW"] is None
+    assert rows[0]["StorageGenerationMW"] is None
+    assert rows[0]["TotalGenerationMW"] is not None
+
 
 def test_nldc_fact_foreign_keys_follow_raw_document_contract() -> None:
     """The normal schema initializer creates NLDC facts after raw persistence."""
@@ -132,6 +281,9 @@ def test_nldc_fact_foreign_keys_follow_raw_document_contract() -> None:
             "FactNLDCDailyRegional",
             "FactNLDCDailyFrequency",
             "FactNLDCDailyInterRegionalExchange",
+            "FactNLDCDailyControlAreaDrawal",
+            "FactNLDC15MinuteGridSnapshot",
+            "FactNLDCCrossBorderExchangeDaily",
         ):
             foreign_tables = {
                 str(row[2])

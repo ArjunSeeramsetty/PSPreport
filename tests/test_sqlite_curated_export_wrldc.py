@@ -166,8 +166,8 @@ def test_export_wrldc_daily_observations_entity_keys_and_metrics(
 
     entity_keys = {obs.entity_key for obs in observations}
     assert "WR:region:Western Region" in entity_keys
-    assert "WR:state:MH" in entity_keys
-    assert "WR:generation:KORADI_TPS" in entity_keys
+    assert "WR:state:Maharashtra" in entity_keys
+    assert "WR:generation:KORADI_TPS:section:thermal" in entity_keys
     assert "WR:voltage:PADGHE_765" in entity_keys
     assert "WR:reservoir:KOYNA" in entity_keys
     assert "WR:line:765KV_GWALIOR_AGRA" in entity_keys

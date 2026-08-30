@@ -1,5 +1,6 @@
 beautifulsoup4
 httpx
+truststore
 pandas
 pyarrow
 tabula-py

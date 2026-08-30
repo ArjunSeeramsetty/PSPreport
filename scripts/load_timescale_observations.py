@@ -28,6 +28,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--rldc", action="append", default=[])
     parser.add_argument("--report-id", type=int)
+    parser.add_argument(
+        "--replace-complete-snapshots",
+        action="store_true",
+        help="Close current facts absent from a complete report export.",
+    )
     return parser.parse_args()
 
 
@@ -41,6 +46,7 @@ def main() -> None:
         load_settings().postgres_dsn,
         rldcs=args.rldc or None,
         report_document_id=args.report_id,
+        replace_complete_snapshots=args.replace_complete_snapshots,
     )
     LOGGER.info("timescale_observation_load_complete result=%s", result)
 

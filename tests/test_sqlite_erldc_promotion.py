@@ -12,6 +12,7 @@ from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_sch
 
 ERLDC_FLAT_2023_TEMPLATE_ID = "erldc_daily_psp_v2023_flat_09_column_generation"
 ERLDC_FLAT_2024_TEMPLATE_ID = "erldc_daily_psp_v2024_flat_09_column_generation"
+ERLDC_FLAT_2025_TEMPLATE_ID = "erldc_daily_psp_v2025_flat_11_column_generation"
 ERLDC_SPLIT_2025_TEMPLATE_ID = "erldc_daily_psp_v2025_split_11_column_generation"
 ERLDC_SPLIT_2024_TEMPLATE_ID = "erldc_daily_psp_v2024_split_11_column_generation"
 
@@ -263,6 +264,359 @@ def test_erldc_promotes_voltage_profiles_and_exchanges() -> None:
     ).fetchone()
     if intl is not None:
         assert intl == ("Bhutan", 8.2)
+
+
+def test_erldc_2025_flat_promotes_sparse_operational_sections() -> None:
+    """2025-flat physical, voltage, and country rows retain their raw lineage."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (25, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+
+    _insert_cells(conn, 25, 4, 1, 1, {1: "4(A) INTER-REGIONAL EXCHANGES"})
+    _insert_cells(
+        conn,
+        25,
+        4,
+        1,
+        2,
+        {
+            1: "1",
+            2: "400KV-BINAGURI-BONGAIGAON-1",
+            9: "408",
+            13: "122",
+            17: "447",
+            19: "-101",
+            21: "2.51",
+            23: "-0.12",
+            25: "2.39",
+        },
+    )
+    _insert_cells(conn, 25, 4, 1, 3, {1: "4(B) INTER-REGIONAL SCHEDULE"})
+
+    _insert_cells(conn, 25, 5, 1, 1, {1: "7. Voltage Profile: 400kV"})
+    _insert_cells(
+        conn,
+        25,
+        5,
+        1,
+        2,
+        {
+            1: "BINAGURI-400KV",
+            5: "415",
+            8: "03:03",
+            12: "400",
+            17: "18:21",
+            22: "0",
+            27: "100",
+            29: "0",
+        },
+    )
+    _insert_cells(conn, 25, 5, 1, 3, {1: "8(A) SHORT-TERM OPEN ACCESS"})
+    _insert_cells(
+        conn,
+        25,
+        5,
+        2,
+        1,
+        {
+            1: "BHUTAN",
+            2: "-11.82",
+            3: "-11.63",
+            4: "-867",
+            5: "23",
+            6: "-484.58",
+        },
+    )
+
+    promote_report_to_curated(conn, 25)
+
+    voltage = conn.execute(
+        """
+        SELECT f.MaximumKV, f.MinimumKV, f.IEGCBandPct
+        FROM FactERLDCVoltageProfile AS f
+        JOIN DimVoltageNodes AS node ON node.VoltageNodeID = f.VoltageNodeID
+        WHERE f.ReportDocumentID = 25 AND node.NodeName = 'BINAGURI-400KV'
+        """
+    ).fetchone()
+    exchange = conn.execute(
+        """
+        SELECT f.EveningPeakMW, f.NetEnergyMU
+        FROM FactERLDCInterRegionalExchange AS f
+        JOIN DimTransmissionElements AS element ON element.ElementID = f.ElementID
+        WHERE f.ReportDocumentID = 25
+          AND element.ElementName = '400KV-BINAGURI-BONGAIGAON-1'
+        """
+    ).fetchone()
+    international = conn.execute(
+        """
+        SELECT f.ActualEnergyMU, f.AverageMW
+        FROM FactERLDCInternationalExchange AS f
+        JOIN DimCountries AS country ON country.CountryID = f.CountryID
+        WHERE f.ReportDocumentID = 25 AND country.CountryName = 'Bhutan'
+        """
+    ).fetchone()
+    lineage = conn.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage WHERE ReportDocumentID = 25"
+    ).fetchone()[0]
+
+    assert voltage == (415.0, 400.0, 100.0)
+    assert exchange == (408.0, 2.39)
+    assert international == (-11.63, -484.58)
+    assert lineage == 17
+
+
+def test_erldc_2025_flat_promotes_dense_and_sparse_state_generation() -> None:
+    """2025-flat state generation uses its page-specific verified columns."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (26, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+
+    _insert_cells(conn, 26, 2, 1, 1, {1: "DVC"})
+    _insert_cells(
+        conn,
+        26,
+        2,
+        1,
+        2,
+        {
+            1: "Station/Constituents",
+            2: "Inst.Capacity",
+            9: "Gross(MU)",
+            10: "Net(MU)",
+            11: "AVG.MW",
+        },
+    )
+    _insert_cells(
+        conn,
+        26,
+        2,
+        1,
+        3,
+        {
+            1: "BOKARO-A'(1*500)",
+            2: "500",
+            3: "263",
+            4: "265",
+            5: "478",
+            6: "07:24",
+            7: "259",
+            8: "17:04",
+            9: "8.83",
+            10: "8.27",
+            11: "345",
+        },
+    )
+    _insert_cells(conn, 26, 2, 1, 4, {1: "WEST BENGAL"})
+    _insert_cells(
+        conn,
+        26,
+        2,
+        1,
+        5,
+        {
+            1: "Station/Constituents",
+            2: "Inst.Capacity",
+            9: "Gross(MU)",
+            10: "Net(MU)",
+            11: "AVG.MW",
+        },
+    )
+    _insert_cells(
+        conn,
+        26,
+        2,
+        1,
+        6,
+        {1: "KOLAGHAT", 2: "1260", 9: "9.50", 10: "9.00", 11: "375"},
+    )
+    _insert_cells(
+        conn,
+        26,
+        3,
+        1,
+        1,
+        {
+            1: "BUDGE-BUDGE(3*250)",
+            3: "750",
+            5: "718",
+            7: "376",
+            9: "760",
+            10: "20:41",
+            13: "370",
+            15: "15:10",
+            17: "16.01",
+            19: "14.88",
+            21: "620",
+        },
+    )
+    _insert_cells(conn, 26, 3, 1, 2, {1: "SIKKIM"})
+    _insert_cells(
+        conn,
+        26,
+        3,
+        1,
+        3,
+        {
+            1: "Station/Constituents",
+            3: "Inst.Capacity",
+            17: "Gross(MU)",
+            19: "Net(MU)",
+            21: "AVG.MW",
+        },
+    )
+    _insert_cells(
+        conn,
+        26,
+        3,
+        1,
+        4,
+        {1: "TOTALRES(SIKKIM)(1*55.6)", 3: "55.6", 17: "0", 19: "0", 21: "0"},
+    )
+    _insert_cells(conn, 26, 3, 1, 5, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(
+        conn,
+        26,
+        3,
+        1,
+        6,
+        {1: "REGIONAL-ROW-MUST-NOT-PROMOTE", 2: "100", 20: "3", 21: "125"},
+    )
+
+    promote_report_to_curated(conn, 26)
+
+    bokaro = conn.execute(
+        """
+        SELECT f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = 26 AND entity.EntityName = "BOKARO-A'(1*500)"
+        """
+    ).fetchone()
+    budge = conn.execute(
+        """
+        SELECT state.StateName, f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        JOIN DimStates AS state ON state.StateID = f.StateID
+        WHERE f.ReportDocumentID = 26
+          AND entity.EntityName = 'BUDGE-BUDGE(3*250)'
+        """
+    ).fetchone()
+    skipped = conn.execute(
+        """
+        SELECT COUNT(*) FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = 26
+          AND entity.EntityName = 'REGIONAL-ROW-MUST-NOT-PROMOTE'
+        """
+    ).fetchone()[0]
+    lineage = conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 26 AND DestinationTable = 'FactERLDCGenerationDaily'
+        """
+    ).fetchone()[0]
+
+    assert bokaro == (8.83, 8.27, 345.0)
+    assert budge == ("West Bengal", 16.01, 14.88, 620.0)
+    assert skipped == 0
+    assert lineage >= 20
+
+
+def test_erldc_2025_flat_promotes_owner_scoped_regional_generation() -> None:
+    """Regional entities retain schedule energy and owner context across pages."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (27, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 27, 3, 1, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 27, 3, 1, 2, {1: "NTPC"})
+    _insert_cells(
+        conn,
+        27,
+        3,
+        1,
+        3,
+        {
+            1: "BARH ST-II(2*660)",
+            2: "1320",
+            4: "612",
+            6: "343",
+            8: "641",
+            11: "07:43",
+            12: "373",
+            14: "13:45",
+            16: "13.29",
+            18: "14.14",
+            20: "12.88",
+            21: "537",
+        },
+    )
+    _insert_cells(conn, 27, 4, 1, 1, {1: "TALCHER STPS-I(2*500)" , 3: "1000", 5: "444", 7: "451", 10: "483", 12: "09:06", 15: "395", 16: "13:10", 20: "11.20", 22: "11.61", 24: "10.76", 25: "448"})
+    _insert_cells(conn, 27, 4, 1, 2, {1: "PVUNL"})
+    _insert_cells(conn, 27, 4, 1, 3, {1: "Sub-Total THERMAL", 3: "800", 5: "647", 7: "447", 20: "13.82", 22: "14.75", 24: "13.87", 25: "578"})
+    _insert_cells(conn, 27, 4, 1, 4, {1: "4(A) Inter-Regional Exchanges"})
+
+    promote_report_to_curated(conn, 27)
+
+    barh = conn.execute(
+        """
+        SELECT f.ScheduledEnergyMU, f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW,
+               f.SectionName
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = 27 AND entity.EntityName = 'BARH ST-II(2*660)'
+        """
+    ).fetchone()
+    talcher = conn.execute(
+        """
+        SELECT f.ScheduledEnergyMU, f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW,
+               f.SectionName
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = 27
+          AND entity.EntityName = 'TALCHER STPS-I(2*500)'
+        """
+    ).fetchone()
+    aggregate = conn.execute(
+        """
+        SELECT f.SectionName, f.ScheduledEnergyMU, f.NetEnergyMU
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = 27
+          AND entity.EntityName = 'Sub-Total THERMAL'
+        """
+    ).fetchone()
+
+    assert barh == (13.29, 14.14, 12.88, 537.0, "regional_entities_generation:ntpc")
+    assert talcher == (11.2, 11.61, 10.76, 448.0, "regional_entities_generation:ntpc")
+    assert aggregate == ("regional_entities_generation:pvunl", 13.82, 13.87)
 
 
 def test_erldc_split_promotes_operational_sections() -> None:

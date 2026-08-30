@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Iterable, Optional
 
 try:
@@ -16,6 +17,15 @@ from psp_pipeline.models.contracts import (
     ReconciliationResult,
 )
 from psp_pipeline.storage.observation_identity import build_series_key
+
+
+@dataclass(frozen=True)
+class CuratedSnapshotWriteResult:
+    """Outcome of an authoritative curated-report snapshot replacement."""
+
+    inserted: int
+    retired_timeseries_uuids: tuple[str, ...]
+    retired_at: datetime | None
 
 
 class PostgresRepository:
@@ -80,6 +90,36 @@ class PostgresRepository:
                 self._insert_observation_lineage(cur, observation_lineage)
             conn.commit()
         return inserted
+
+    def replace_curated_observation_snapshots(
+        self,
+        facts: Iterable[FactObservation],
+        observation_lineage: Iterable[ObservationLineage],
+    ) -> CuratedSnapshotWriteResult:
+        """Persist complete report snapshots and close current facts now absent.
+
+        This API is intentionally separate from ordinary upserts. Callers may
+        use it only when ``facts`` represents every exportable observation for
+        each report artifact in the batch; partial loads must use
+        :meth:`upsert_curated_observations` instead.
+        """
+
+        fact_rows = list(facts)
+        lineage_rows = list(observation_lineage)
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                snapshot_groups = self._snapshot_groups(fact_rows)
+                self._lock_snapshot_groups(cur, snapshot_groups)
+                retired_at = self._transaction_timestamp(cur)
+                inserted = self._upsert_facts(cur, fact_rows)
+                retired = self._retire_absent_snapshot_facts(cur, snapshot_groups)
+                self._insert_observation_lineage(cur, lineage_rows)
+            conn.commit()
+        return CuratedSnapshotWriteResult(
+            inserted=inserted,
+            retired_timeseries_uuids=tuple(retired),
+            retired_at=retired_at if retired else None,
+        )
 
     def upsert_pipeline_run(self, record: PipelineRun) -> None:
         """Persist an idempotent orchestration outcome for freshness and SLA checks."""
@@ -271,6 +311,105 @@ class PostgresRepository:
             )
             inserted += 1
         return inserted
+
+    @staticmethod
+    def _snapshot_groups(
+        records: Iterable[FactObservation],
+    ) -> dict[tuple[object, ...], set[str]]:
+        """Group complete snapshots by immutable artifact and valid-time scope."""
+
+        groups: dict[tuple[object, ...], set[str]] = {}
+        for item in records:
+            series_key = item.series_key or build_series_key(
+                entity_key=item.entity_key,
+                metric_name=item.metric_name,
+                time_block=item.time_block,
+                report_type=item.report_type,
+                source_region=item.source_region,
+                valid_from=item.valid_from.isoformat(),
+                valid_to=item.valid_to.isoformat() if item.valid_to else None,
+            )
+            content_hash = item.content_hash or f"legacy:{item.timeseries_uuid}"
+            group_key = (
+                content_hash,
+                item.report_type,
+                item.source_region,
+                item.valid_from,
+                item.valid_to,
+            )
+            groups.setdefault(group_key, set()).add(series_key)
+        return groups
+
+    @staticmethod
+    def _lock_snapshot_groups(cur, groups: dict[tuple[object, ...], set[str]]) -> None:
+        """Serialize replacements for each artifact snapshot before mutation."""
+
+        for group_key in sorted(groups, key=repr):
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (repr(group_key),),
+            )
+
+    @staticmethod
+    def _transaction_timestamp(cur) -> datetime:
+        """Read the stable PostgreSQL transaction timestamp for cross-store closure."""
+
+        cur.execute("SELECT CURRENT_TIMESTAMP")
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("PostgreSQL did not return a transaction timestamp")
+        return row[0]
+
+    @staticmethod
+    def _retire_absent_snapshot_facts(
+        cur,
+        groups: dict[tuple[object, ...], set[str]],
+    ) -> list[str]:
+        """Close only current rows omitted from an authoritative report snapshot."""
+
+        retired: list[str] = []
+        for group_key, current_series_keys in groups.items():
+            (
+                content_hash,
+                report_type,
+                source_region,
+                valid_from,
+                valid_to,
+            ) = group_key
+            params = {
+                "content_hash": content_hash,
+                "report_type": report_type,
+                "source_region": source_region,
+                "valid_from": valid_from,
+                "valid_to": valid_to,
+                "series_keys": sorted(current_series_keys),
+            }
+            cur.execute(
+                """
+                UPDATE fact_observation
+                SET sys_to = CURRENT_TIMESTAMP
+                WHERE content_hash = %(content_hash)s
+                  AND report_type = %(report_type)s
+                  AND source_region = %(source_region)s
+                  AND valid_from = %(valid_from)s
+                  AND valid_to IS NOT DISTINCT FROM %(valid_to)s
+                  AND sys_to = 'infinity'
+                  AND NOT (series_key = ANY(%(series_keys)s))
+                RETURNING timeseries_uuid
+                """,
+                params,
+            )
+            retired.extend(str(row[0]) for row in cur.fetchall())
+
+        if retired:
+            cur.execute(
+                """
+                DELETE FROM fact_observation_current
+                WHERE timeseries_uuid = ANY(%s)
+                """,
+                (retired,),
+            )
+        return retired
 
     @staticmethod
     def _insert_observation_lineage(

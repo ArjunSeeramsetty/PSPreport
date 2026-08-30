@@ -312,6 +312,45 @@ def test_wrldc_promotes_frequency_from_text_lines_with_line_lineage() -> None:
     assert lineage == (11, 601, 603)
 
 
+def test_wrldc_promotes_2026_operational_tables_with_cell_lineage() -> None:
+    """The 2026 page shifts retain all four operational fact grains."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (7, 'wrldc', 'WRLDC_PSP_Report_01-01-2026.pdf', '2026-01-01', ?, 0)
+        """,
+        ("wrldc_daily_psp_v2026_early_11_column_generation",),
+    )
+    _insert_cells(conn, 7, 6, 25, {1: "4(A) Inter-Regional Exchanges"})
+    _insert_cells(conn, 7, 6, 28, {1: "EAST REGION and WEST REGION"})
+    _insert_cells(conn, 7, 6, 29, {
+        1: "1", 2: "220KV-KORBA-BUDIPADAR", 7: "72", 9: "13",
+        11: "164", 14: "-21", 17: "1.1", 19: "-0.02", 22: "1.08",
+    })
+    _insert_cells_in_table(conn, 7, 7, 2, 3, {1: "50.28", 2: "17:02:10", 3: "49.74", 4: "09:06:00", 5: "50", 7: "0.042", 9: "0.065", 11: "50.13", 12: "49.84"})
+    _insert_cells(conn, 7, 7, 11, {1: "Percentage of Time Frequency Remained outside IEGC Band", 14: "24.54"})
+    _insert_cells(conn, 7, 7, 12, {1: "No. of hours frequency outside IEGC Band", 14: "5.8896"})
+    _insert_cells_in_table(conn, 7, 7, 2, 4, {1: "6. Voltage Profile: 400kV"})
+    _insert_cells_in_table(conn, 7, 7, 2, 7, {1: "AMRELI-400KV", 3: "435.14", 4: "13:04", 5: "408.5", 6: "09:25", 8: "0", 10: "27.3", 11: "72.7", 12: "17.4"})
+    _insert_cells(conn, 7, 9, 1, {1: "8. Major Reservoir Particulars"})
+    _insert_cells(conn, 7, 9, 4, {1: "INDIRASAGAR", 2: "243.23", 3: "262.13", 4: "1367", 6: "260.35", 8: "1160.83", 10: "259.69", 11: "1076.39", 12: "0", 15: "0", 17: "0"})
+
+    promote_report_to_curated(conn, 7)
+
+    assert conn.execute("SELECT COUNT(*) FROM FactWRLDCInterRegionalExchange").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM FactWRLDCFrequencyDaily").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM FactWRLDCVoltageProfile").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM FactWRLDCReservoirDaily").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage WHERE ReportDocumentID = 7 AND RawCellID IS NOT NULL"
+    ).fetchone()[0] >= 20
+
+
 def _create_raw_tables(conn: sqlite3.Connection) -> None:
     """Create the immutable raw tables required by curated promotion tests."""
     conn.executescript(
@@ -362,6 +401,28 @@ def _insert_cells(
             ) VALUES (?, ?, ?, 1, ?, ?, ?)
             """,
             (raw_id, report_id, page_no, row_no, col_no, text),
+        )
+
+
+def _insert_cells_in_table(
+    conn: sqlite3.Connection,
+    report_id: int,
+    page_no: int,
+    table_no: int,
+    row_no: int,
+    cells: dict[int, str],
+) -> None:
+    """Insert one sparse row into a non-default raw PDF table."""
+
+    for col_no, text in cells.items():
+        raw_id = page_no * 1_000_000 + table_no * 100_000 + row_no * 100 + col_no
+        conn.execute(
+            """
+            INSERT INTO psp_raw_cell(
+                id, report_document_id, page_no, table_no, row_no, col_no, cell_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (raw_id, report_id, page_no, table_no, row_no, col_no, text),
         )
 
 

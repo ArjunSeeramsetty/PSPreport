@@ -85,6 +85,7 @@ class AllIndiaBalance:
     day_energy_met_mu: float | None
     fuel_generation_mu: dict[str, float]
     nldc_comparisons: dict[str, MetricComparison]
+    nldc_comparison_status: str
 
     def as_dict(self) -> dict[str, Any]:
         """Return a serialization-friendly representation for callers and CLIs."""
@@ -99,8 +100,9 @@ def synthesize_all_india_daily_balance(
     """Aggregate latest regional facts and reconcile them if NLDC data exists.
 
     The function deliberately does not fill missing regional reports with zero.
-    A comparison is returned only where an NLDC ``FactAllIndiaDailySummary``
-    metric is present for the same date.
+    A comparison is returned only where a current NLDC national fact is
+    available for the same date. ``FactAllIndiaDailySummary`` remains a
+    compatibility fallback while older local databases are migrated.
     """
 
     original_row_factory = conn.row_factory
@@ -138,7 +140,7 @@ def synthesize_all_india_daily_balance(
                 comparisons,
                 "evening_peak_demand_met_mw",
                 demand,
-                nldc_row["EveningPeakDemandMet"],
+                nldc_row["EveningPeakDemandMetMW"],
                 absolute_tolerance=5.0,
                 relative_tolerance=0.01,
             )
@@ -146,12 +148,16 @@ def synthesize_all_india_daily_balance(
                 comparisons,
                 "day_energy_met_mu",
                 energy,
-                nldc_row["EnergyMet"],
+                nldc_row["EnergyMetMU"],
                 absolute_tolerance=1.0,
                 relative_tolerance=0.01,
             )
 
         present = tuple(source_rows)
+        comparison_status = _nldc_comparison_status(
+            nldc_row=nldc_row,
+            sources_present=present,
+        )
         return AllIndiaBalance(
             date_id=date_id,
             sources_present=present,
@@ -160,6 +166,7 @@ def synthesize_all_india_daily_balance(
             day_energy_met_mu=energy,
             fuel_generation_mu=dict(sorted(fuel_generation.items())),
             nldc_comparisons=comparisons,
+            nldc_comparison_status=comparison_status,
         )
     finally:
         conn.row_factory = original_row_factory
@@ -206,9 +213,35 @@ def _add_fuel_generation(
 
 
 def _nldc_summary(conn: sqlite3.Connection, date_id: int) -> sqlite3.Row | None:
+    """Return the latest curated NLDC national fact for a date.
+
+    The national source has a separate document identity from the five RLDC
+    reports. Selecting its latest fetched document keeps a corrected NLDC PSP
+    report aligned with the version used for the comparison. The legacy
+    summary table is intentionally consulted only when the new NLDC curated
+    table is unavailable or has no fact for this date.
+    """
+
+    try:
+        row = conn.execute(
+            "SELECT national.EveningPeakDemandMetMW, national.EnergyMetMU "
+            "FROM FactNLDCDailyNational AS national "
+            "JOIN psp_report_document AS document "
+            "ON document.id = national.ReportDocumentID "
+            "WHERE national.DateID = ? "
+            "AND document.rldc = 'grid_india_national' "
+            "ORDER BY document.fetched_at DESC, document.id DESC LIMIT 1",
+            (date_id,),
+        ).fetchone()
+        if row is not None:
+            return row
+    except sqlite3.OperationalError:
+        pass
+
     try:
         return conn.execute(
-            "SELECT EveningPeakDemandMet, EnergyMet FROM FactAllIndiaDailySummary "
+            "SELECT EveningPeakDemandMet AS EveningPeakDemandMetMW, "
+            "EnergyMet AS EnergyMetMU FROM FactAllIndiaDailySummary "
             "WHERE DateID = ? ORDER BY CASE WHEN RegionID IS NULL THEN 0 ELSE 1 END LIMIT 1",
             (date_id,),
         ).fetchone()
@@ -219,6 +252,25 @@ def _nldc_summary(conn: sqlite3.Connection, date_id: int) -> sqlite3.Row | None:
 def _sum_optional(values: Any) -> float | None:
     numbers = [float(value) for value in values if value is not None]
     return sum(numbers) if numbers else None
+
+
+def _nldc_comparison_status(
+    *,
+    nldc_row: sqlite3.Row | None,
+    sources_present: tuple[str, ...],
+) -> str:
+    """Describe whether an NLDC comparison covers every required RLDC.
+
+    A partial regional sum remains useful for diagnostics, but it must never be
+    presented as a complete all-India reconciliation. Callers can use the
+    existing ``sources_missing`` field to identify the absent source reports.
+    """
+
+    if nldc_row is None:
+        return "nldc_not_available"
+    if len(sources_present) == len(_REGIONAL_FACT_TABLES):
+        return "complete"
+    return "incomplete_coverage"
 
 
 def _add_comparison(

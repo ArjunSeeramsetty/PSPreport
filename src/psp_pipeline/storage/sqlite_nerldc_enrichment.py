@@ -134,6 +134,7 @@ TRANSMISSION_ELEMENT_REGISTRY: dict[str, TransmissionLocation] = {
 # capacity formatting and case variants only for known publisher labels.
 GENERATION_ENTITY_CANONICAL_NAMES: dict[str, str] = {
     "Agartala GT": "Agartala GT",
+    "Agartala Gas Turbine CCPP": "Agartala GT",
     "Ganol HEP": "Ganol HEP",
     "Karbi Langpi HEP": "Karbi Langpi HEP",
     "Lakwa Replacement PP": "Lakwa Replacement PP",

@@ -124,6 +124,45 @@ def test_timescale_loader_persists_observations_and_lineage_atomically(
     assert result["observation_lineage_exported"] == 1
 
 
+def test_timescale_loader_replaces_only_explicit_complete_snapshots(
+    tmp_path: Path,
+) -> None:
+    """Snapshot retirement is opt-in and returns UUIDs for graph closure."""
+
+    sqlite_path = tmp_path / "curated.sqlite"
+    sqlite3.connect(sqlite_path).close()
+    observation = _observation()
+
+    class SnapshotResult:
+        inserted = 1
+        retired_timeseries_uuids = ("00000000-0000-0000-0000-000000000099",)
+        retired_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
+
+    class FakeRepository:
+        def __init__(self, dsn: str) -> None:
+            assert dsn == "postgresql://test"
+
+        def replace_curated_observation_snapshots(self, facts, observation_lineage):
+            assert facts == [observation]
+            assert observation_lineage == []
+            return SnapshotResult()
+
+    result = load_curated_observations_to_timescale(
+        sqlite_path,
+        "postgresql://test",
+        observation_exporter=lambda *args, **kwargs: [observation],
+        repository_factory=FakeRepository,
+        replace_complete_snapshots=True,
+    )
+
+    assert result["observations_inserted"] == 1
+    assert result["observations_retired"] == 1
+    assert result["retired_timeseries_uuids"] == [
+        "00000000-0000-0000-0000-000000000099"
+    ]
+    assert result["retired_at"] == "2026-05-01T00:00:00+00:00"
+
+
 def test_timescale_loader_rejects_missing_sqlite_database(tmp_path: Path) -> None:
     """A missing local curated database is an explicit configuration error."""
 

@@ -29,6 +29,7 @@ class GraphSyncAgent(BaseAgent):
                 "version_no": fact.version_no,
             }
             for fact in facts
+            if fact.time_block is None
         ]
         if not payload:
             return

@@ -21,7 +21,10 @@ data/sqlite/
 data/wbes_probe/
 data/diagnostics/
 data/airflow_staging/
+data/exports/
+uv.lock
 logs/
 .pytest_cache/
 .tmp_pytest*/
 .pytest_tmp*/
+.pytest_*/

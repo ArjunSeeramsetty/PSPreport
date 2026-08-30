@@ -100,6 +100,43 @@ def test_duplicate_revision_does_not_close_the_existing_current_truth() -> None:
     assert not any("SET sys_to" in query for query, _ in cursor.calls)
 
 
+def test_authoritative_snapshot_closes_only_absent_current_series() -> None:
+    """A complete report replacement retires omitted facts without deletion."""
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def execute(self, query: str, params: object = None) -> None:
+            self.calls.append((query, params))
+
+        def fetchall(self):
+            return [("00000000-0000-0000-0000-000000000099",)]
+
+    fact = _observation("snapshot-hash")
+    groups = PostgresRepository._snapshot_groups([fact])
+    cursor = Cursor()
+
+    retired = PostgresRepository._retire_absent_snapshot_facts(cursor, groups)
+    queries = "\n".join(query for query, _ in cursor.calls)
+
+    assert retired == ["00000000-0000-0000-0000-000000000099"]
+    assert "AND NOT (series_key = ANY(%(series_keys)s))" in queries
+    assert "UPDATE fact_observation" in queries
+    assert "DELETE FROM fact_observation_current" in queries
+
+
+def test_snapshot_groups_do_not_use_local_report_document_ids() -> None:
+    """Snapshot identity stays portable across independently replayed SQLite DBs."""
+
+    fact = _observation("portable-snapshot-hash")
+    groups = PostgresRepository._snapshot_groups([fact])
+    group_key = next(iter(groups))
+
+    assert fact.report_document_id not in group_key
+    assert group_key[0] == "portable-snapshot-hash"
+
+
 def test_repository_writes_cell_lineage_to_the_dedicated_bridge() -> None:
     """Cell provenance is idempotent and separate from the telemetry table."""
 

@@ -8,7 +8,10 @@ import pytest
 
 from psp_pipeline.pipelines.rldc_daily_psp import LocalReportInput, run_rldc_local_pdf_ingestion
 from psp_pipeline.storage.sqlite_curated_promoter import repromote_srldc_reports
-from psp_pipeline.storage.sqlite_curated_export import export_srldc_daily_observations
+from psp_pipeline.storage.sqlite_curated_export import (
+    export_observation_lineage,
+    export_srldc_daily_observations,
+)
 
 
 def test_repromotion_replaces_existing_coverage_evidence(tmp_path: Path) -> None:
@@ -922,6 +925,81 @@ def test_flat_6_regional_market_totals_and_frequency_extrema_are_promoted(
         observation.metric_name.endswith("Maximum15MinuteBlockFrequencyHz")
         for observation in observations
     )
+
+
+def test_srldc_governed_exports_have_exact_cell_lineage(tmp_path: Path) -> None:
+    """Export every lineage-safe numeric SRLDC fact family without collisions."""
+
+    pdf_path = Path("downloads/SRLDC_PSP/01-01-2026-psp.pdf")
+    if not pdf_path.exists():
+        pytest.skip("January 2026 SRLDC fixture PDF is not available locally")
+    db_path = tmp_path / "rldc_daily_psp_january_2026.db"
+    run_rldc_local_pdf_ingestion(
+        db_path,
+        [LocalReportInput("srldc", pdf_path, date(2026, 1, 1))],
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        observations = export_srldc_daily_observations(conn)
+        lineage = export_observation_lineage(conn, observations)
+
+    exported_tables = {item.destination_table for item in observations}
+    assert exported_tables == {
+        "FactSRLDCRegionalDaily",
+        "FactSRLDCStateDaily",
+        "FactSRLDCGenerationDaily",
+        "FactSRLDCInterRegionalExchange",
+        "FactSRLDCVoltageProfile",
+        "FactSRLDCReservoirDaily",
+        "FactSRLDCMarketTransaction",
+        "FactSRLDCRegionalMarketTransaction",
+    }
+    assert all(item.destination_key is not None for item in observations)
+    assert len({item.series_key for item in observations}) == len(observations)
+    assert {item.timeseries_uuid for item in lineage} == {
+        item.timeseries_uuid for item in observations
+    }
+    assert not any("MechanismID" in item.metric_name for item in observations)
+    assert not any(
+        item.metric_name.endswith("ForecastDeviationPct") for item in observations
+    )
+
+
+@pytest.mark.parametrize(
+    ("filename", "report_date"),
+    [
+        ("01-04-2023-psp.pdf", date(2023, 4, 1)),
+        ("15-04-2024-psp.pdf", date(2024, 4, 15)),
+        ("01-01-2026-psp.pdf", date(2026, 1, 1)),
+    ],
+)
+def test_srldc_governed_exports_preserve_lineage_across_layout_eras(
+    tmp_path: Path,
+    filename: str,
+    report_date: date,
+) -> None:
+    """Keep exported SRLDC fields collision-free across approved layout eras."""
+
+    pdf_path = Path("downloads/SRLDC_PSP") / filename
+    if not pdf_path.exists():
+        pytest.skip(f"SRLDC fixture PDF is not available locally: {filename}")
+    db_path = tmp_path / f"srldc_export_{report_date.isoformat()}.db"
+    result = run_rldc_local_pdf_ingestion(
+        db_path,
+        [LocalReportInput("srldc", pdf_path, report_date)],
+    )
+    assert result["reports_persisted"] == 1
+
+    with sqlite3.connect(db_path) as conn:
+        observations = export_srldc_daily_observations(conn)
+        lineage = export_observation_lineage(conn, observations)
+
+    assert observations
+    assert all(item.destination_key is not None for item in observations)
+    assert len({item.series_key for item in observations}) == len(observations)
+    assert {item.timeseries_uuid for item in lineage} == {
+        item.timeseries_uuid for item in observations
+    }
 
 
 def test_april_2024_wide_operations_layout_promotes_all_available_fact_domains(

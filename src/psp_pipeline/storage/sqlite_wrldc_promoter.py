@@ -53,7 +53,15 @@ WRLDC_9_COLUMN_TEMPLATE_IDS = frozenset(
 WRLDC_GENERATION_TEMPLATE_IDS = (
     WRLDC_9_COLUMN_TEMPLATE_IDS | WRLDC_11_COLUMN_TEMPLATE_IDS
 )
-WRLDC_OPERATIONAL_TEMPLATE_IDS = frozenset({WRLDC_2025_TEMPLATE.template_id})
+WRLDC_2026_OPERATIONAL_TEMPLATE_IDS = frozenset(
+    {
+        WRLDC_2026_EARLY_TEMPLATE.template_id,
+        WRLDC_2026_TEMPLATE.template_id,
+    }
+)
+WRLDC_OPERATIONAL_TEMPLATE_IDS = frozenset(
+    {WRLDC_2025_TEMPLATE.template_id, *WRLDC_2026_OPERATIONAL_TEMPLATE_IDS}
+)
 
 _REGIONAL_COLUMNS = {
     "EveningPeakDemandMetMW": 1,
@@ -165,12 +173,37 @@ def promote_wrldc_report_to_curated(
         mapped_cells,
     )
     if template_id in WRLDC_OPERATIONAL_TEMPLATE_IDS:
-        _promote_physical_exchanges(conn, report_document_id, date_id, mapped_cells)
-        _promote_voltage_profiles(
-            conn, report_document_id, date_id, region_id, mapped_cells
+        _promote_physical_exchanges(
+            conn,
+            report_document_id,
+            date_id,
+            template_id,
+            mapped_cells,
         )
-        _promote_reservoirs(conn, report_document_id, date_id, region_id, mapped_cells)
-        _promote_frequency_daily(conn, report_document_id, date_id, region_id)
+        _promote_voltage_profiles(
+            conn,
+            report_document_id,
+            date_id,
+            region_id,
+            template_id,
+            mapped_cells,
+        )
+        _promote_reservoirs(
+            conn,
+            report_document_id,
+            date_id,
+            region_id,
+            template_id,
+            mapped_cells,
+        )
+        _promote_frequency_daily(
+            conn,
+            report_document_id,
+            date_id,
+            region_id,
+            template_id,
+            mapped_cells,
+        )
 
 
 def _scope_is_affected(report: sqlite3.Row) -> bool:
@@ -555,9 +588,10 @@ def _promote_physical_exchanges(
     conn: sqlite3.Connection,
     report_id: int,
     date_id: int,
+    template_id: str,
     mapped_cells: set[int],
 ) -> None:
-    """Promote verified 2025 Section 4(A) line-level exchanges."""
+    """Promote verified Section 4(A) line-level exchanges by layout family."""
 
     in_section = False
     counterparty: str | None = None
@@ -587,7 +621,7 @@ def _promote_physical_exchanges(
                     "ExportEnergyMU": 19,
                     "NetEnergyMU": 22,
                 }
-                if page_no == 5
+                if page_no == 5 or template_id in WRLDC_2026_OPERATIONAL_TEMPLATE_IDS
                 else {
                     "EveningPeakMW": 9,
                     "OffPeakMW": 11,
@@ -630,13 +664,38 @@ def _promote_voltage_profiles(
     report_id: int,
     date_id: int,
     region_id: int,
+    template_id: str,
     mapped_cells: set[int],
 ) -> None:
     """Promote 400 and 765 kV Section 6 monitoring-node profiles."""
 
     nominal_kv: float | None = None
-    for page_no in (6, 7):
-        for row in _table_rows(conn, report_id, page_no, 1):
+    if template_id in WRLDC_2026_OPERATIONAL_TEMPLATE_IDS:
+        table_locations = ((7, 2),)
+        columns = {
+            "MaximumKV": 3,
+            "MinimumKV": 5,
+            "LowCriticalPct": 8,
+            "IEGCBandPct": 10,
+            "HighCriticalPct": 11,
+            "VoltageDeviationIndexPct": 12,
+        }
+        maximum_time_column = 4
+        minimum_time_column = 6
+    else:
+        table_locations = ((6, 1), (7, 1))
+        columns = {
+            "MaximumKV": 4,
+            "MinimumKV": 8,
+            "LowCriticalPct": 13,
+            "IEGCBandPct": 15,
+            "HighCriticalPct": 17,
+            "VoltageDeviationIndexPct": 19,
+        }
+        maximum_time_column = 6
+        minimum_time_column = 10
+    for page_no, table_no in table_locations:
+        for row in _table_rows(conn, report_id, page_no, table_no):
             label = _clean_label(row.get(1, (0, ""))[1])
             normalized = re.sub(r"\s+", "", label.lower())
             match = re.search(r"voltageprofile:?(\d+)kv", normalized)
@@ -648,20 +707,21 @@ def _promote_voltage_profiles(
             node_nominal_kv = _nominal_voltage_from_node(label) or nominal_kv
             if node_nominal_kv is None or _is_total_row(label):
                 continue
-            values, sources = _values(
-                row,
-                {
-                    "MaximumKV": 4,
-                    "MinimumKV": 8,
-                    "LowCriticalPct": 13,
-                    "IEGCBandPct": 15,
-                    "HighCriticalPct": 17,
-                    "VoltageDeviationIndexPct": 19,
-                },
+            values, sources = _values(row, columns)
+            values["MaximumTime"] = (
+                _time(row[maximum_time_column][1])
+                if row.get(maximum_time_column)
+                else None
             )
-            values["MaximumTime"] = _time(row[6][1]) if row.get(6) else None
-            values["MinimumTime"] = _time(row[10][1]) if row.get(10) else None
-            for field_name, column in (("MaximumTime", 6), ("MinimumTime", 10)):
+            values["MinimumTime"] = (
+                _time(row[minimum_time_column][1])
+                if row.get(minimum_time_column)
+                else None
+            )
+            for field_name, column in (
+                ("MaximumTime", maximum_time_column),
+                ("MinimumTime", minimum_time_column),
+            ):
                 raw = row.get(column)
                 if raw and values[field_name] is not None:
                     sources[field_name] = raw[0]
@@ -698,12 +758,41 @@ def _promote_reservoirs(
     report_id: int,
     date_id: int,
     region_id: int,
+    template_id: str,
     mapped_cells: set[int],
 ) -> None:
-    """Promote verified 2025 Section 8 major-reservoir measures."""
+    """Promote verified Section 8 major-reservoir measures by layout family."""
 
+    page_no = 9 if template_id in WRLDC_2026_OPERATIONAL_TEMPLATE_IDS else 8
+    columns = (
+        {
+            "MinimumDrawdownLevelM": 2,
+            "FullReservoirLevelM": 3,
+            "DesignedEnergyMU": 4,
+            "CurrentLevelM": 6,
+            "CurrentEnergyMU": 8,
+            "PreviousYearLevelM": 10,
+            "PreviousYearEnergyMU": 11,
+            "InflowMU": 12,
+            "ProgressiveInflowMU": 15,
+            "ProgressiveUsageMU": 17,
+        }
+        if template_id in WRLDC_2026_OPERATIONAL_TEMPLATE_IDS
+        else {
+            "MinimumDrawdownLevelM": 2,
+            "FullReservoirLevelM": 5,
+            "DesignedEnergyMU": 8,
+            "CurrentLevelM": 11,
+            "CurrentEnergyMU": 13,
+            "PreviousYearLevelM": 16,
+            "PreviousYearEnergyMU": 18,
+            "InflowMU": 21,
+            "ProgressiveInflowMU": 26,
+            "ProgressiveUsageMU": 29,
+        }
+    )
     in_section = False
-    for row in _table_rows(conn, report_id, 8, 1):
+    for row in _table_rows(conn, report_id, page_no, 1):
         label = _clean_label(row.get(1, (0, ""))[1])
         normalized = re.sub(r"\s+", "", label.lower())
         if normalized.startswith("8.majorreservoir"):
@@ -713,21 +802,7 @@ def _promote_reservoirs(
             return
         if not in_section or not label or _is_total_row(label):
             continue
-        values, sources = _values(
-            row,
-            {
-                "MinimumDrawdownLevelM": 2,
-                "FullReservoirLevelM": 5,
-                "DesignedEnergyMU": 8,
-                "CurrentLevelM": 11,
-                "CurrentEnergyMU": 13,
-                "PreviousYearLevelM": 16,
-                "PreviousYearEnergyMU": 18,
-                "InflowMU": 21,
-                "ProgressiveInflowMU": 26,
-                "ProgressiveUsageMU": 29,
-            },
-        )
+        values, sources = _values(row, columns)
         if values["MinimumDrawdownLevelM"] is None or values["FullReservoirLevelM"] is None:
             continue
         reservoir_id = _get_or_create_reservoir(conn, label, region_id)
@@ -758,6 +833,8 @@ def _promote_frequency_daily(
     report_id: int,
     date_id: int,
     region_id: int,
+    template_id: str,
+    mapped_cells: set[int],
 ) -> None:
     """Promote Section 5 frequency measures from their native text-line layout.
 
@@ -765,6 +842,16 @@ def _promote_frequency_daily(
     lines rather than extractable table cells.  Their lineage is therefore
     retained through ``RawLineID`` instead of manufacturing a cell coordinate.
     """
+
+    if template_id in WRLDC_2026_OPERATIONAL_TEMPLATE_IDS:
+        _promote_2026_frequency_daily(
+            conn,
+            report_id,
+            date_id,
+            region_id,
+            mapped_cells,
+        )
+        return
 
     rows = conn.execute(
         """
@@ -826,6 +913,67 @@ def _promote_frequency_daily(
         "FactWRLDCFrequencyDaily",
         f"report={report_id};date={date_id};region={region_id}",
         sources,
+    )
+
+
+def _promote_2026_frequency_daily(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote the 2026 page-seven frequency tables with cell lineage."""
+
+    extrema_row = _table_row(conn, report_id, 7, 2, 3)
+    values, sources = _values(
+        extrema_row,
+        {
+            "MaximumFrequencyHz": 1,
+            "MinimumFrequencyHz": 3,
+            "AverageFrequencyHz": 5,
+            "FrequencyVariationIndex": 7,
+            "StandardDeviationHz": 9,
+            "Maximum15MinuteBlockFrequencyHz": 11,
+            "Minimum15MinuteBlockFrequencyHz": 12,
+        },
+    )
+    for field_name, column in (
+        ("MaximumFrequencyTime", 2),
+        ("MinimumFrequencyTime", 4),
+    ):
+        raw = extrema_row.get(column)
+        values[field_name] = _time(raw[1]) if raw else None
+        if raw and values[field_name] is not None:
+            sources[field_name] = raw[0]
+    for row_no, field_name in (
+        (11, "PercentageOutsideIEGCBand"),
+        (12, "HoursOutsideIEGCBand"),
+    ):
+        row = _table_row(conn, report_id, 7, 1, row_no)
+        value_cell = row.get(14)
+        values[field_name] = _float(value_cell[1]) if value_cell else None
+        if value_cell and values[field_name] is not None:
+            sources[field_name] = value_cell[0]
+    if values["MaximumFrequencyHz"] is None or values["MinimumFrequencyHz"] is None:
+        return
+    _insert_fact(
+        conn,
+        "FactWRLDCFrequencyDaily",
+        {
+            "ReportDocumentID": report_id,
+            "DateID": date_id,
+            "RegionID": region_id,
+            **values,
+        },
+    )
+    _write_lineage(
+        conn,
+        report_id,
+        "FactWRLDCFrequencyDaily",
+        f"report={report_id};date={date_id};region={region_id}",
+        sources,
+        mapped_cells,
     )
 
 

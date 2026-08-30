@@ -63,3 +63,7 @@ def main() -> None:
         sum(len(rows) for rows in topology.values()),
         len(observations),
     )
+
+
+if __name__ == "__main__":
+    main()

@@ -30,11 +30,14 @@ def load_curated_observations_to_timescale(
     observation_exporter: ObservationExporter = export_all_daily_observations,
     observation_lineage_exporter: ObservationLineageExporter = export_observation_lineage,
     repository_factory: RepositoryFactory = PostgresRepository,
-) -> dict[str, int]:
+    replace_complete_snapshots: bool = False,
+) -> dict[str, int | str | list[str]]:
     """Export curated SQLite facts and load idempotent Timescale versions.
 
     The database repository owns UUID replay deduplication and correction
-    version assignment. This function intentionally does not transform facts.
+    version assignment. ``replace_complete_snapshots`` is opt-in because it
+    closes current facts omitted from a full report export; never enable it
+    for a partial source, date, or table selection.
     """
 
     if not sqlite_path.exists():
@@ -48,14 +51,33 @@ def load_curated_observations_to_timescale(
         )
         observation_lineage = observation_lineage_exporter(connection, observations)
     repository = repository_factory(postgres_dsn)
-    if hasattr(repository, "upsert_curated_observations"):
+    retired_timeseries_uuids: tuple[str, ...] = ()
+    retired_at: datetime | None = None
+    if replace_complete_snapshots and hasattr(
+        repository,
+        "replace_curated_observation_snapshots",
+    ):
+        result = repository.replace_curated_observation_snapshots(
+            observations,
+            observation_lineage,
+        )
+        inserted = result.inserted
+        retired_timeseries_uuids = result.retired_timeseries_uuids
+        retired_at = result.retired_at
+    elif hasattr(repository, "upsert_curated_observations"):
         inserted = repository.upsert_curated_observations(observations, observation_lineage)
     else:
         # Compatibility for constrained test doubles and legacy tooling.
         inserted = repository.upsert_fact_observations(observations)
-    return {
+    summary: dict[str, int | str | list[str]] = {
         "observations_exported": len(observations),
         "observations_inserted": inserted,
         "observations_deduplicated": len(observations) - inserted,
         "observation_lineage_exported": len(observation_lineage),
     }
+    if replace_complete_snapshots:
+        summary["observations_retired"] = len(retired_timeseries_uuids)
+        summary["retired_timeseries_uuids"] = list(retired_timeseries_uuids)
+        if retired_at is not None:
+            summary["retired_at"] = retired_at.isoformat()
+    return summary

@@ -92,8 +92,8 @@ def test_export_nerldc_daily_observations_generates_valid_records(
     assert observations
     entity_keys = {item.entity_key for item in observations}
     assert "NER:region:North Eastern Region" in entity_keys
-    assert "NER:state:AS" in entity_keys
-    assert "NER:generation:KOPILI_HEP" in entity_keys
+    assert "NER:state:Assam" in entity_keys
+    assert "NER:generation:KOPILI_HEP:section:state_generation_assam" in entity_keys
     assert "NER:voltage:BONGAIGAON - 400KV" in entity_keys
     assert "NER:line:400KV-BONGAIGAON-ALIPURDUAR-1" in entity_keys
     assert "NER:country:Bhutan" in entity_keys

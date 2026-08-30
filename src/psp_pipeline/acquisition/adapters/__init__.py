@@ -10,6 +10,7 @@ from psp_pipeline.acquisition.adapters.rldc import (
     PublicListingPSPAdapter,
     SRLDCAdapter,
     WRLDCAdapter,
+    grid_india_verified_client,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "PublicListingPSPAdapter",
     "SRLDCAdapter",
     "WRLDCAdapter",
+    "grid_india_verified_client",
 ]

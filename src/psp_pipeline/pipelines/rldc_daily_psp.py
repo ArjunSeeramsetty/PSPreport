@@ -28,6 +28,7 @@ from psp_pipeline.acquisition.adapters import (
     NRLDCAdapter,
     SRLDCAdapter,
     WRLDCAdapter,
+    grid_india_verified_client,
 )
 from psp_pipeline.parsing.rldc.pdf_tables import extract_page_tables
 from psp_pipeline.parsing.rldc.templates import TemplateMatch, inspect_report_structure, match_report_template
@@ -1030,22 +1031,35 @@ def _download_report(client: httpx.Client, link: DiscoveredLink, out_dir: Path) 
     if "srldc.in" in urlparse(fetch_url).netloc and fetch_url.startswith("https://"):
         fetch_url = fetch_url.replace("https://", "http://", 1)
     # HEAD first for cheap availability + lineage metadata.
+    retry_client: httpx.Client | None = None
     try:
-        head = client.head(fetch_url)
-    except httpx.HTTPError:
         try:
-            head = httpx.head(fetch_url, timeout=client.timeout, verify=False)
+            head = client.head(fetch_url)
         except httpx.HTTPError:
+            if link.source_id != "grid_india_national":
+                return None
+            retry_client = grid_india_verified_client(client)
+            if retry_client is None:
+                return None
+            logger.info("NLDC retrying public download with platform trust store")
+            head = retry_client.head(fetch_url)
+        if head.status_code >= 400:
             return None
-    if head.status_code >= 400:
+        try:
+            response = (retry_client or client).get(fetch_url)
+        except httpx.HTTPError:
+            if link.source_id != "grid_india_national" or retry_client is not None:
+                return None
+            retry_client = grid_india_verified_client(client)
+            if retry_client is None:
+                return None
+            logger.info("NLDC retrying public download with platform trust store")
+            response = retry_client.get(fetch_url)
+    except httpx.HTTPError:
         return None
-    try:
-        response = client.get(fetch_url)
-    except httpx.HTTPError:
-        try:
-            response = httpx.get(fetch_url, timeout=client.timeout, verify=False)
-        except httpx.HTTPError:
-            return None
+    finally:
+        if retry_client is not None:
+            retry_client.close()
     if response.status_code >= 400:
         return None
     data = response.content

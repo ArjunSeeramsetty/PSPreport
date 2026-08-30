@@ -17,6 +17,7 @@ from psp_pipeline.acquisition.adapters.rldc import (
     SRLDCAdapter,
     WRLDCAdapter,
 )
+from psp_pipeline.pipelines import rldc_daily_psp
 from psp_pipeline.pipelines.rldc_daily_psp import _get_adapter
 
 
@@ -85,6 +86,77 @@ def test_grid_india_nldc_adapter_filters_exact_pdf_reports() -> None:
             confidence=1.0,
         )
     ]
+
+
+def test_grid_india_nldc_adapter_retries_with_verified_platform_trust(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TLS failure may retry only through a certificate-verifying client."""
+
+    target = date(2026, 8, 25)
+
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("certificate verify failed", request=request)
+
+    def trusted_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "retData": [
+                    {
+                        "Title_": "25.08.26_NLDC_PSP",
+                        "MimeType": "application/pdf",
+                        "FilePath": "files/grdw/2026/08/25.08.26_NLDC_PSP.pdf",
+                    }
+                ]
+            },
+        )
+
+    trusted_client = _build_mock_client(trusted_handler)
+    monkeypatch.setattr(
+        "psp_pipeline.acquisition.adapters.rldc.grid_india_verified_client",
+        lambda _client: trusted_client,
+    )
+    with _build_mock_client(failing_handler) as client:
+        links = GridIndiaNLDCAdapter().discover(client, target)
+
+    assert len(links) == 1
+    assert links[0].source_id == "grid_india_national"
+
+
+def test_grid_india_download_retries_with_verified_platform_trust(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Grid-India PDF retries retain certificate verification after TLS failure."""
+
+    link = DiscoveredLink(
+        url="https://webcdn.grid-india.in/files/grdw/test.pdf",
+        report_date=date(2026, 8, 25),
+        source_id="grid_india_national",
+        report_family="nldc_daily_psp",
+        confidence=1.0,
+    )
+
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("certificate verify failed", request=request)
+
+    def trusted_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"content-length": "4"})
+        return httpx.Response(200, content=b"%PDF")
+
+    trusted_client = _build_mock_client(trusted_handler)
+    monkeypatch.setattr(
+        rldc_daily_psp,
+        "grid_india_verified_client",
+        lambda _client: trusted_client,
+    )
+    with _build_mock_client(failing_handler) as client:
+        report = rldc_daily_psp._download_report(client, link, tmp_path)
+
+    assert report is not None
+    assert report.local_path.read_bytes() == b"%PDF"
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from dataclasses import dataclass
 import sqlite3
 from typing import Iterable
@@ -31,7 +31,9 @@ _DIMENSION_COLUMNS = {
     "VoltageNodeID",
     "ReservoirID",
     "CountryID",
+    "MechanismID",
     "IsTotalRow",
+    "BlockStartTime",
 }
 
 
@@ -42,6 +44,9 @@ class TableExportSpec:
     table_name: str
     entity_expression: str
     joins: str = ""
+    lineage_expressions: tuple[tuple[str, str], ...] = ()
+    excluded_numeric_columns: tuple[str, ...] = ()
+    block_start_time_column: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,40 +66,18 @@ def export_srldc_daily_observations(
     *,
     ingested_at: datetime | None = None,
 ) -> list[FactObservation]:
-    """Return numeric regional and state SRLDC facts as bitemporal observations.
+    """Return governed numeric SRLDC facts as bitemporal observations.
 
     The function is intentionally read-only.  The calling persistence stage owns
     the Timescale transaction and may retain every later ingestion as a new
     system-time version.
     """
-
-    recorded_at = ingested_at or datetime.now(timezone.utc)
-    return [
-        *_export_table(
-            conn,
-            table_name="FactSRLDCRegionalDaily",
-            entity_expression="'SR:region:' || region.RegionName",
-            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
-            report_document_id=report_document_id,
-            ingested_at=recorded_at,
-            source_id="srldc",
-            metric_prefix="srldc",
-            report_type=REPORT_TYPE,
-            source_region=SOURCE_REGION,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactSRLDCStateDaily",
-            entity_expression="'SR:state:' || state.StateCode",
-            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
-            report_document_id=report_document_id,
-            ingested_at=recorded_at,
-            source_id="srldc",
-            metric_prefix="srldc",
-            report_type=REPORT_TYPE,
-            source_region=SOURCE_REGION,
-        ),
-    ]
+    return export_registered_daily_observations(
+        conn,
+        "srldc",
+        report_document_id=report_document_id,
+        ingested_at=ingested_at,
+    )
 
 
 def export_nrldc_daily_observations(
@@ -197,69 +180,12 @@ def export_wrldc_daily_observations(
 ) -> list[FactObservation]:
     """Return curated WRLDC facts as portable bitemporal observations."""
 
-    recorded_at = ingested_at or datetime.now(timezone.utc)
-    common = {
-        "report_document_id": report_document_id,
-        "ingested_at": recorded_at,
-        "source_id": "wrldc",
-        "metric_prefix": "wrldc",
-        "report_type": "wrldc_daily_psp",
-        "source_region": "WR",
-    }
-    return [
-        *_export_table(
-            conn,
-            table_name="FactWRLDCRegionalDaily",
-            entity_expression="'WR:region:' || region.RegionName",
-            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactWRLDCStateDaily",
-            entity_expression="'WR:state:' || state.StateCode",
-            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactWRLDCGenerationDaily",
-            entity_expression="'WR:generation:' || entity.EntityName",
-            joins="JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactWRLDCFrequencyDaily",
-            entity_expression="'WR:region:' || region.RegionName",
-            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactWRLDCVoltageProfile",
-            entity_expression="'WR:voltage:' || node.NodeName",
-            joins="JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactWRLDCReservoirDaily",
-            entity_expression="'WR:reservoir:' || reservoir.ReservoirName",
-            joins="JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactWRLDCInterRegionalExchange",
-            entity_expression="'WR:line:' || element.ElementName",
-            joins=(
-                "JOIN DimTransmissionElements AS element "
-                "ON element.ElementID = fact.ElementID"
-            ),
-            **common,
-        ),
-    ]
+    return export_registered_daily_observations(
+        conn,
+        "wrldc",
+        report_document_id=report_document_id,
+        ingested_at=ingested_at,
+    )
 
 
 def export_erldc_daily_observations(
@@ -269,77 +195,12 @@ def export_erldc_daily_observations(
     ingested_at: datetime | None = None,
 ) -> list[FactObservation]:
     """Return curated ERLDC facts as portable bitemporal observations."""
-
-    recorded_at = ingested_at or datetime.now(timezone.utc)
-    common = {
-        "report_document_id": report_document_id,
-        "ingested_at": recorded_at,
-        "source_id": "erldc",
-        "metric_prefix": "erldc",
-        "report_type": "erldc_daily_psp",
-        "source_region": "ER",
-    }
-    return [
-        *_export_table(
-            conn,
-            table_name="FactERLDCRegionalDaily",
-            entity_expression="'ER:region:' || region.RegionName",
-            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactERLDCStateDaily",
-            entity_expression="'ER:state:' || state.StateCode",
-            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactERLDCGenerationDaily",
-            entity_expression="'ER:generation:' || entity.EntityName",
-            joins="JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactERLDCFrequencyDaily",
-            entity_expression="'ER:region:' || region.RegionName",
-            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactERLDCVoltageProfile",
-            entity_expression="'ER:voltage:' || node.NodeName",
-            joins="JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactERLDCReservoirDaily",
-            entity_expression="'ER:reservoir:' || reservoir.ReservoirName",
-            joins="JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactERLDCInterRegionalExchange",
-            entity_expression="'ER:line:' || element.ElementName",
-            joins=(
-                "JOIN DimTransmissionElements AS element "
-                "ON element.ElementID = fact.ElementID"
-            ),
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactERLDCInternationalExchange",
-            entity_expression="'ER:country:' || country.CountryName",
-            joins="JOIN DimCountries AS country ON country.CountryID = fact.CountryID",
-            **common,
-        ),
-    ]
+    return export_registered_daily_observations(
+        conn,
+        "erldc",
+        report_document_id=report_document_id,
+        ingested_at=ingested_at,
+    )
 
 
 def export_nerldc_daily_observations(
@@ -349,73 +210,12 @@ def export_nerldc_daily_observations(
     ingested_at: datetime | None = None,
 ) -> list[FactObservation]:
     """Return curated NERLDC facts as portable bitemporal observations."""
-
-    recorded_at = ingested_at or datetime.now(timezone.utc)
-    common = {
-        "report_document_id": report_document_id,
-        "ingested_at": recorded_at,
-        "source_id": "nerldc",
-        "metric_prefix": "nerldc",
-        "report_type": "nerldc_daily_psp",
-        "source_region": "NER",
-    }
-    return [
-        *_export_table(
-            conn,
-            table_name="FactNERLDCRegionalDaily",
-            entity_expression="'NER:region:' || region.RegionName",
-            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactNERLDCStateDaily",
-            entity_expression="'NER:state:' || state.StateCode",
-            joins="JOIN DimStates AS state ON state.StateID = fact.StateID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactNERLDCGenerationDaily",
-            entity_expression="'NER:generation:' || entity.EntityName",
-            joins="JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactNERLDCFrequencyDaily",
-            entity_expression="'NER:region:' || region.RegionName",
-            joins="JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactNERLDCVoltageProfile",
-            entity_expression="'NER:voltage:' || node.NodeName",
-            joins=(
-                "JOIN DimVoltageNodes AS node "
-                "ON node.VoltageNodeID = fact.VoltageNodeID"
-            ),
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactNERLDCInterRegionalExchange",
-            entity_expression="'NER:line:' || element.ElementName",
-            joins=(
-                "JOIN DimTransmissionElements AS element "
-                "ON element.ElementID = fact.ElementID"
-            ),
-            **common,
-        ),
-        *_export_table(
-            conn,
-            table_name="FactNERLDCInternationalExchange",
-            entity_expression="'NER:country:' || country.CountryName",
-            joins="JOIN DimCountries AS country ON country.CountryID = fact.CountryID",
-            **common,
-        ),
-    ]
+    return export_registered_daily_observations(
+        conn,
+        "nerldc",
+        report_document_id=report_document_id,
+        ingested_at=ingested_at,
+    )
 
 
 # Compatibility mapping retained for external callers during the registry
@@ -432,8 +232,77 @@ RLDC_EXPORTERS = {
 RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
     "srldc": RLDCExportConfig(
         "srldc", "srldc", REPORT_TYPE, "SR", (
-            TableExportSpec("FactSRLDCRegionalDaily", "'SR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
-            TableExportSpec("FactSRLDCStateDaily", "'SR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec(
+                "FactSRLDCRegionalDaily",
+                "'SR:region:' || region.RegionName",
+                "JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+            ),
+            TableExportSpec(
+                "FactSRLDCStateDaily",
+                "'SR:state:' || state.StateCode",
+                "JOIN DimStates AS state ON state.StateID = fact.StateID",
+                excluded_numeric_columns=(
+                    "ActualDemandMU",
+                    "ForecastDeviationPct",
+                ),
+            ),
+            TableExportSpec(
+                "FactSRLDCGenerationDaily",
+                "'SR:generation:' || entity.EntityName || ':section:' "
+                "|| COALESCE(fact.SectionName, 'unspecified')",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                (("SectionName", "fact.SectionName"),),
+            ),
+            TableExportSpec(
+                "FactSRLDCInterRegionalExchange",
+                "'SR:line:' || element.ElementName || ':category:' "
+                "|| COALESCE(fact.ExchangeCategory, 'unspecified') || ':direction:' "
+                "|| COALESCE(fact.Direction, 'unspecified')",
+                "JOIN DimTransmissionElements AS element "
+                "ON element.ElementID = fact.ElementID",
+                (
+                    ("ExchangeCategory", "fact.ExchangeCategory"),
+                    ("Direction", "fact.Direction"),
+                ),
+            ),
+            TableExportSpec(
+                "FactSRLDCVoltageProfile",
+                "'SR:voltage:' || node.NodeName",
+                "JOIN DimVoltageNodes AS node "
+                "ON node.VoltageNodeID = fact.VoltageNodeID",
+            ),
+            TableExportSpec(
+                "FactSRLDCReservoirDaily",
+                "'SR:reservoir:' || reservoir.ReservoirName",
+                "JOIN DimReservoirs AS reservoir "
+                "ON reservoir.ReservoirID = fact.ReservoirID",
+            ),
+            TableExportSpec(
+                "FactSRLDCMarketTransaction",
+                "'SR:state:' || state.StateCode || ':market:' "
+                "|| mechanism.MechanismName || ':time:' "
+                "|| COALESCE(fact.TimeCategory, 'unspecified')",
+                "JOIN DimStates AS state ON state.StateID = fact.StateID "
+                "JOIN DimExchangeMechanisms AS mechanism "
+                "ON mechanism.MechanismID = fact.MechanismID",
+                (
+                    ("MechanismName", "mechanism.MechanismName"),
+                    ("TimeCategory", "fact.TimeCategory"),
+                ),
+            ),
+            TableExportSpec(
+                "FactSRLDCRegionalMarketTransaction",
+                "'SR:region:' || region.RegionName || ':market:' "
+                "|| mechanism.MechanismName || ':time:' "
+                "|| COALESCE(fact.TimeCategory, 'unspecified')",
+                "JOIN DimRegions AS region ON region.RegionID = fact.RegionID "
+                "JOIN DimExchangeMechanisms AS mechanism "
+                "ON mechanism.MechanismID = fact.MechanismID",
+                (
+                    ("MechanismName", "mechanism.MechanismName"),
+                    ("TimeCategory", "fact.TimeCategory"),
+                ),
+            ),
         ),
     ),
     "nrldc": RLDCExportConfig(
@@ -452,10 +321,10 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
     "wrldc": RLDCExportConfig(
         "wrldc", "wrldc", "wrldc_daily_psp", "WR", (
             TableExportSpec("FactWRLDCRegionalDaily", "'WR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
-            TableExportSpec("FactWRLDCStateDaily", "'WR:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
-            TableExportSpec("FactWRLDCGenerationDaily", "'WR:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactWRLDCStateDaily", "'WR:state:' || state.StateName", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec("FactWRLDCGenerationDaily", "'WR:generation:' || entity.EntityName || ':section:' || fact.SectionName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID", (("SectionName", "fact.SectionName"),)),
             TableExportSpec("FactWRLDCFrequencyDaily", "'WR:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
-            TableExportSpec("FactWRLDCVoltageProfile", "'WR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
+            TableExportSpec("FactWRLDCVoltageProfile", "'WR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID", (), ("NominalVoltageKV",)),
             TableExportSpec("FactWRLDCReservoirDaily", "'WR:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
             TableExportSpec("FactWRLDCInterRegionalExchange", "'WR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
         ),
@@ -463,10 +332,21 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
     "erldc": RLDCExportConfig(
         "erldc", "erldc", "erldc_daily_psp", "ER", (
             TableExportSpec("FactERLDCRegionalDaily", "'ER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
-            TableExportSpec("FactERLDCStateDaily", "'ER:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
-            TableExportSpec("FactERLDCGenerationDaily", "'ER:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactERLDCStateDaily", "'ER:state:' || state.StateName", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec(
+                "FactERLDCGenerationDaily",
+                "'ER:generation:' || entity.EntityName || ':section:' || fact.SectionName",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                (("SectionName", "fact.SectionName"),),
+            ),
             TableExportSpec("FactERLDCFrequencyDaily", "'ER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
-            TableExportSpec("FactERLDCVoltageProfile", "'ER:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
+            TableExportSpec(
+                "FactERLDCVoltageProfile",
+                "'ER:voltage:' || node.NodeName",
+                "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
+                (),
+                ("NominalVoltageKV",),
+            ),
             TableExportSpec("FactERLDCReservoirDaily", "'ER:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
             TableExportSpec("FactERLDCInterRegionalExchange", "'ER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactERLDCInternationalExchange", "'ER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
@@ -475,10 +355,21 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
     "nerldc": RLDCExportConfig(
         "nerldc", "nerldc", "nerldc_daily_psp", "NER", (
             TableExportSpec("FactNERLDCRegionalDaily", "'NER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
-            TableExportSpec("FactNERLDCStateDaily", "'NER:state:' || state.StateCode", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
-            TableExportSpec("FactNERLDCGenerationDaily", "'NER:generation:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactNERLDCStateDaily", "'NER:state:' || state.StateName", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec(
+                "FactNERLDCGenerationDaily",
+                "'NER:generation:' || entity.EntityName || ':section:' || fact.SectionName",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                (("SectionName", "fact.SectionName"),),
+            ),
             TableExportSpec("FactNERLDCFrequencyDaily", "'NER:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
-            TableExportSpec("FactNERLDCVoltageProfile", "'NER:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID"),
+            TableExportSpec(
+                "FactNERLDCVoltageProfile",
+                "'NER:voltage:' || node.NodeName",
+                "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID",
+                (),
+                ("NominalVoltageKV",),
+            ),
             TableExportSpec("FactNERLDCInterRegionalExchange", "'NER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactNERLDCInternationalExchange", "'NER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
         ),
@@ -489,6 +380,20 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactNLDCDailyRegional", "'NLDC:region:' || region.RegionName", "JOIN DimRegions AS region ON region.RegionID = fact.RegionID"),
             TableExportSpec("FactNLDCDailyFrequency", "'NLDC:frequency'", ""),
             TableExportSpec("FactNLDCDailyInterRegionalExchange", "'NLDC:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
+            TableExportSpec("FactNLDCDailyControlAreaDrawal", "'NLDC:control-area:' || entity.EntityName", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec(
+                "FactNLDC15MinuteGridSnapshot",
+                "'NLDC:all-india-grid'",
+                "",
+                excluded_numeric_columns=(),
+                block_start_time_column="BlockStartTime",
+            ),
+            TableExportSpec(
+                "FactNLDCCrossBorderExchangeDaily",
+                "'NLDC:country:' || country.CountryName || ':cross-border:' || fact.Direction",
+                "JOIN DimCountries AS country ON country.CountryID = fact.CountryID",
+                (("Direction", "fact.Direction"),),
+            ),
         ),
     ),
 }
@@ -513,6 +418,9 @@ def export_registered_daily_observations(
                 table_name=table.table_name,
                 entity_expression=table.entity_expression,
                 joins=table.joins,
+                lineage_expressions=table.lineage_expressions,
+                excluded_numeric_columns=table.excluded_numeric_columns,
+                block_start_time_column=table.block_start_time_column,
                 report_document_id=report_document_id,
                 ingested_at=recorded_at,
                 source_id=config.source_id,
@@ -587,6 +495,9 @@ def _export_table(
     table_name: str,
     entity_expression: str,
     joins: str,
+    lineage_expressions: tuple[tuple[str, str], ...] = (),
+    excluded_numeric_columns: tuple[str, ...] = (),
+    block_start_time_column: str | None = None,
     report_document_id: int | None,
     ingested_at: datetime,
     source_id: str,
@@ -596,7 +507,11 @@ def _export_table(
 ) -> Iterable[FactObservation]:
     """Yield each non-null numeric fact column from one daily curated table."""
 
-    numeric_columns = _numeric_columns(conn, table_name)
+    numeric_columns = [
+        column
+        for column in _numeric_columns(conn, table_name)
+        if column not in excluded_numeric_columns
+    ]
     if not numeric_columns:
         return []
     predicates = ["document.rldc = ?"]
@@ -604,12 +519,25 @@ def _export_table(
     if report_document_id is not None:
         predicates.append("fact.ReportDocumentID = ?")
         parameters.append(report_document_id)
+    dimension_columns = _present_dimension_columns(conn, table_name)
+    lineage_columns = [name for name, _ in lineage_expressions]
+    selected_columns = [
+        "fact.ReportDocumentID",
+        _report_content_hash_expression(conn),
+        "date.ActualDate",
+        entity_expression,
+        (
+            f"fact.{block_start_time_column}"
+            if block_start_time_column is not None
+            else "NULL"
+        ),
+        *(f"fact.{column}" for column in dimension_columns),
+        *(f"{expression} AS {name}" for name, expression in lineage_expressions),
+        *(f"fact.{column}" for column in numeric_columns),
+    ]
     rows = conn.execute(
         f"""
-        SELECT fact.ReportDocumentID, {_report_content_hash_expression(conn)},
-               date.ActualDate, {entity_expression},
-               {', '.join(f'fact.{column}' for column in _present_dimension_columns(conn, table_name))},
-               {', '.join(f'fact.{column}' for column in numeric_columns)}
+        SELECT {', '.join(selected_columns)}
         FROM {table_name} AS fact
         JOIN DimDates AS date ON date.DateID = fact.DateID
         JOIN psp_report_document AS document ON document.id = fact.ReportDocumentID
@@ -620,17 +548,33 @@ def _export_table(
         parameters,
     ).fetchall()
     observations: list[FactObservation] = []
-    dimension_columns = _present_dimension_columns(conn, table_name)
     for row in rows:
-        report_id, content_hash, actual_date, entity_key, *remaining = row
+        report_id, content_hash, actual_date, entity_key, block_start_time, *remaining = row
         dimension_values = remaining[: len(dimension_columns)]
-        values = remaining[len(dimension_columns) :]
+        lineage_values = remaining[
+            len(dimension_columns) : len(dimension_columns) + len(lineage_columns)
+        ]
+        values = remaining[len(dimension_columns) + len(lineage_columns) :]
         destination_dimensions = dict(zip(dimension_columns, dimension_values, strict=True))
+        destination_dimensions.update(
+            zip(lineage_columns, lineage_values, strict=True)
+        )
         valid_from = datetime.combine(
             datetime.fromisoformat(str(actual_date)).date(),
             time.min,
             tzinfo=timezone.utc,
         )
+        time_block = None
+        valid_to = None
+        if block_start_time is not None:
+            time_block = str(block_start_time)
+            parsed_time = time.fromisoformat(time_block)
+            valid_from = datetime.combine(
+                datetime.fromisoformat(str(actual_date)).date(),
+                parsed_time,
+                tzinfo=timezone.utc,
+            )
+            valid_to = valid_from + timedelta(minutes=15)
         for column, value in zip(numeric_columns, values, strict=True):
             if value is None:
                 continue
@@ -638,24 +582,24 @@ def _export_table(
             series_key = build_series_key(
                 entity_key=str(entity_key),
                 metric_name=metric_name,
-                time_block=None,
+                time_block=time_block,
                 report_type=report_type,
                 source_region=source_region,
                 valid_from=valid_from.isoformat(),
-                valid_to=None,
+                valid_to=valid_to.isoformat() if valid_to else None,
             )
             observations.append(
                 FactObservation(
                     entity_key=str(entity_key),
                     metric_name=metric_name,
-                    time_block=None,
+                    time_block=time_block,
                     operational_value=float(value),
                     settlement_value=None,
                     variance_pct=None,
                     report_type=report_type,
                     source_region=source_region,
                     valid_from=valid_from,
-                    valid_to=None,
+                    valid_to=valid_to,
                     version_no=1,
                     ingested_at=ingested_at,
                     timeseries_uuid=build_revision_uuid(series_key, str(content_hash)),
@@ -765,10 +709,19 @@ def _destination_dimension_matches(
         "VoltageNodeID": ("node", "voltage_node"),
         "ReservoirID": ("reservoir",),
         "CountryID": ("country",),
+        "SectionName": ("section",),
+        "ExchangeCategory": ("category",),
+        "Direction": ("direction",),
+        "MechanismName": ("mechanism",),
+        "TimeCategory": ("time",),
+        "BlockStartTime": ("block",),
     }.get(column)
     if not key_names:
         return True
-    return any(tokens.get(key_name) == str(value) for key_name in key_names)
+    present_keys = [key_name for key_name in key_names if key_name in tokens]
+    if not present_keys:
+        return True
+    return any(tokens[key_name] == str(value) for key_name in present_keys)
 
 
 def export_observation_lineage(
