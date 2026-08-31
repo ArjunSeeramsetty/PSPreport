@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 from uuid import uuid4
 
 from psp_pipeline.agents.dq_alert_agent import DQAlertAgent
@@ -22,6 +22,15 @@ from psp_pipeline.models.contracts import (
     PipelineRun,
     ReconciliationResult,
     SourceDefinition,
+)
+from psp_pipeline.quality.coverage_contract import (
+    default_coverage_manifest_path,
+    enforce_coverage_manifest,
+    evaluate_coverage_manifest,
+)
+from psp_pipeline.quality.timescale_mirror_reconciliation import (
+    CurrentRowFetcher,
+    verify_exported_current_mirror,
 )
 from psp_pipeline.storage.minio_store import MinioRawStore
 from psp_pipeline.storage.neo4j_repo import Neo4jRepository
@@ -187,6 +196,9 @@ def repromote_srldc_curated(sqlite_db_path: Path) -> Dict[str, int]:
 def export_srldc_curated_to_timescale(
     settings: AppSettings,
     sqlite_db_path: Path,
+    *,
+    verify_current_mirror: bool = True,
+    current_row_fetcher: CurrentRowFetcher | None = None,
 ) -> int:
     """Append curated SRLDC regional and state facts to TimescaleDB."""
 
@@ -205,6 +217,12 @@ def export_srldc_curated_to_timescale(
             observation_lineage,
         )
         repository.refresh_current_truth_views()
+        if verify_current_mirror:
+            verify_exported_current_mirror(
+                facts,
+                settings.postgres_dsn,
+                current_row_fetcher=current_row_fetcher,
+            )
     return len(facts)
 
 
@@ -290,12 +308,14 @@ def export_all_curated_to_timescale(
     sqlite_db_path: Path,
     rldcs: list[str] | None = None,
     target_date: date | None = None,
+    *,
+    verify_current_mirror: bool = True,
+    current_row_fetcher: CurrentRowFetcher | None = None,
 ) -> int:
     """Export a date-scoped curated multi-RLDC slice into TimescaleDB."""
     if not sqlite_db_path.exists():
         return 0
     import sqlite3
-    from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
 
     with sqlite3.connect(sqlite_db_path) as conn:
         facts = _export_curated_observations_for_date(conn, rldcs, target_date)
@@ -307,6 +327,12 @@ def export_all_curated_to_timescale(
             observation_lineage,
         )
         repository.refresh_current_truth_views()
+        if verify_current_mirror:
+            verify_exported_current_mirror(
+                facts,
+                settings.postgres_dsn,
+                current_row_fetcher=current_row_fetcher,
+            )
         return inserted
     return 0
 
@@ -427,6 +453,47 @@ def audit_national_curated_dimensions(
     from psp_pipeline.quality.national_dimension_audit import audit_national_dimensions
 
     return audit_national_dimensions(sqlite_db_path)
+
+
+def evaluate_curated_coverage_contract(
+    sqlite_db_path: Path,
+    *,
+    manifest_path: Path | None = None,
+    profile_name: str = "corpus",
+    require_sources: Iterable[str] | None = None,
+    fail_hard: bool = False,
+) -> Dict[str, Any]:
+    """Evaluate or enforce the committed coverage floors against one SQLite replay.
+
+    Daily orchestration uses ``fail_hard=False`` so a coverage regression is
+    visible in XCom without blocking Timescale or graph publication. Replay and
+    CI callers pass ``fail_hard=True`` for the profile they intend to gate.
+    """
+
+    if not sqlite_db_path.exists():
+        return {
+            "database_path": str(sqlite_db_path),
+            "profile_name": profile_name,
+            "passed": True,
+            "skipped": True,
+            "profiles": {},
+        }
+    resolved_manifest = manifest_path or default_coverage_manifest_path()
+    evaluator = enforce_coverage_manifest if fail_hard else evaluate_coverage_manifest
+    results = evaluator(
+        sqlite_db_path,
+        resolved_manifest,
+        profile_name=profile_name,
+        require_sources=require_sources,
+    )
+    selected = results[profile_name]
+    return {
+        "database_path": str(sqlite_db_path),
+        "profile_name": profile_name,
+        "passed": selected.passed,
+        "skipped": False,
+        "profiles": {name: result.as_dict() for name, result in results.items()},
+    }
 
 
 def record_pipeline_run(

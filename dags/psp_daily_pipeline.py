@@ -28,6 +28,7 @@ from psp_pipeline.pipelines.stages import (
     deduplicate_artifacts,
     detect_schema_drift,
     discover_sources,
+    evaluate_curated_coverage_contract,
     evaluate_dq,
     export_all_curated_to_timescale,
     export_srldc_curated_to_timescale,
@@ -237,6 +238,27 @@ def psp_daily_public_ingestion():
         return audit_national_curated_dimensions(database)
 
     @task
+    def coverage_contract_task(collection: dict) -> dict:
+        """Evaluate corpus coverage floors without blocking Timescale publication."""
+
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        completed = [
+            source_id
+            for source_id, payload in collection.get("sources", {}).items()
+            if int(payload.get("reports_persisted", 0)) > 0
+        ]
+        return evaluate_curated_coverage_contract(
+            database,
+            profile_name="corpus",
+            require_sources=completed or None,
+            fail_hard=False,
+        )
+
+    @task
     def all_curated_timescale_task(collection: dict, run_meta: dict) -> int:
         """Append approved curated observations from all 5 RLDCs to TimescaleDB."""
         _ = collection
@@ -333,8 +355,9 @@ def psp_daily_public_ingestion():
         curated_graph >> summary
 
     all_rldc_collection = collect_all_rldc_task(run_meta)
-    balance = national_balance_task(all_rldc_collection, run_meta)
-    audit = national_dimension_audit_task(all_rldc_collection)
+    national_balance_task(all_rldc_collection, run_meta)
+    national_dimension_audit_task(all_rldc_collection)
+    coverage_contract_task(all_rldc_collection)
     all_timescale = all_curated_timescale_task(all_rldc_collection, run_meta)
     all_graph = all_curated_graph_task(all_rldc_collection, run_meta)
     all_timescale >> all_graph

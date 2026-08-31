@@ -17,10 +17,6 @@ if str(SRC) not in sys.path:
 
 from psp_pipeline.core.logging import configure_logging
 from psp_pipeline.core.settings import load_settings
-from psp_pipeline.quality.timescale_mirror_reconciliation import (
-    fetch_current_timescale_rows,
-    reconcile_timescale_current_mirror,
-)
 from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
 from psp_pipeline.storage.timescale_loader import load_curated_observations_to_timescale
 
@@ -61,25 +57,24 @@ def main() -> None:
     if not observations:
         raise SystemExit(
             "No SRLDC observations were exported for the requested report; "
-            "the pilot refuses an empty acceptance result."
+            "the dual-write gate refuses an empty acceptance result."
         )
 
-    load_result = load_curated_observations_to_timescale(
+    result = load_curated_observations_to_timescale(
         args.db,
         settings.postgres_dsn,
         rldcs=["srldc"],
         report_document_id=args.report_id,
         replace_complete_snapshots=args.replace_complete_snapshot,
+        verify_current_mirror=True,
     )
-    current_rows = fetch_current_timescale_rows(settings.postgres_dsn, observations)
-    reconciliation = reconcile_timescale_current_mirror(observations, current_rows)
-    result = {"load": load_result, "mirror": reconciliation.as_dict()}
     LOGGER.info("srldc_timescale_dual_write_pilot result=%s", result)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    if not reconciliation.is_match:
+    mirror = result.get("mirror")
+    if not isinstance(mirror, dict) or not mirror.get("is_match"):
         raise SystemExit("SRLDC Timescale mirror reconciliation failed.")
 
 

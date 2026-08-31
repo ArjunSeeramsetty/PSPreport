@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+from typing import Iterable
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -44,6 +45,31 @@ def load_fixture_artifacts(manifest_path: Path | str) -> tuple[FixtureArtifact, 
         _validate_fixture(fixture)
         parsed.append(fixture)
     return tuple(parsed)
+
+
+def hash_local_fixtures(
+    artifacts: Iterable[tuple[str, Path | str]],
+) -> tuple[dict[str, str], ...]:
+    """Return SHA-256 pins for local corpus files that already exist.
+
+    Missing files are omitted rather than invented. This lets replay runners
+    record an evidence manifest without requiring a public download URL.
+    """
+
+    pins: list[dict[str, str]] = []
+    for fixture_id, raw_path in artifacts:
+        path = Path(raw_path)
+        if not path.exists() or not path.is_file():
+            continue
+        pins.append(
+            {
+                "id": fixture_id,
+                "filename": path.name,
+                "path": str(path),
+                "sha256": _sha256(path),
+            }
+        )
+    return tuple(pins)
 
 
 def fetch_checksum_pinned_fixtures(

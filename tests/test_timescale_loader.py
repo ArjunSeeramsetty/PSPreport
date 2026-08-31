@@ -9,6 +9,11 @@ import sqlite3
 import pytest
 
 from psp_pipeline.models.contracts import FactObservation
+from psp_pipeline.quality.timescale_mirror_reconciliation import (
+    CurrentMirrorRow,
+    TimescaleMirrorMismatchError,
+)
+from psp_pipeline.storage.observation_identity import build_series_key
 from psp_pipeline.storage.postgres_repo import PostgresRepository
 from psp_pipeline.storage.timescale_loader import load_curated_observations_to_timescale
 
@@ -30,6 +35,32 @@ def _observation() -> FactObservation:
         ingested_at=now,
         timeseries_uuid="00000000-0000-0000-0000-000000000001",
     )
+
+
+def _matching_fetcher(_dsn: str, observations):
+    """Return current-truth rows that exactly match the exported grain set."""
+
+    rows = []
+    for observation in observations:
+        series_key = observation.series_key or build_series_key(
+            entity_key=observation.entity_key,
+            metric_name=observation.metric_name,
+            time_block=observation.time_block,
+            report_type=observation.report_type,
+            source_region=observation.source_region,
+            valid_from=observation.valid_from.isoformat(),
+            valid_to=observation.valid_to.isoformat() if observation.valid_to else None,
+        )
+        rows.append(
+            CurrentMirrorRow(
+                series_key=series_key,
+                timeseries_uuid=observation.timeseries_uuid,
+                metric_id=observation.metric_id,
+                operational_value=observation.operational_value,
+                settlement_value=observation.settlement_value,
+            )
+        )
+    return rows
 
 
 def test_timescale_loader_reports_export_insert_and_dedup_counts(tmp_path: Path) -> None:
@@ -56,14 +87,17 @@ def test_timescale_loader_reports_export_insert_and_dedup_counts(tmp_path: Path)
         rldcs=["srldc"],
         observation_exporter=exporter,
         repository_factory=FakeRepository,
+        current_row_fetcher=_matching_fetcher,
     )
 
+    mirror = result.pop("mirror")
     assert result == {
         "observations_exported": 2,
         "observations_inserted": 1,
         "observations_deduplicated": 1,
         "observation_lineage_exported": 0,
     }
+    assert mirror["is_match"] is True
 
 
 def test_timescale_loader_persists_observations_and_lineage_atomically(
@@ -118,10 +152,12 @@ def test_timescale_loader_persists_observations_and_lineage_atomically(
         observation_exporter=exporter,
         observation_lineage_exporter=lineage_exporter,
         repository_factory=FakeRepository,
+        current_row_fetcher=_matching_fetcher,
     )
 
     assert result["observations_inserted"] == 1
     assert result["observation_lineage_exported"] == 1
+    assert result["mirror"]["is_match"] is True
 
 
 def test_timescale_loader_replaces_only_explicit_complete_snapshots(
@@ -153,6 +189,7 @@ def test_timescale_loader_replaces_only_explicit_complete_snapshots(
         observation_exporter=lambda *args, **kwargs: [observation],
         repository_factory=FakeRepository,
         replace_complete_snapshots=True,
+        current_row_fetcher=_matching_fetcher,
     )
 
     assert result["observations_inserted"] == 1
@@ -161,6 +198,29 @@ def test_timescale_loader_replaces_only_explicit_complete_snapshots(
         "00000000-0000-0000-0000-000000000099"
     ]
     assert result["retired_at"] == "2026-05-01T00:00:00+00:00"
+
+
+def test_timescale_loader_fails_closed_when_current_mirror_diverges(tmp_path: Path) -> None:
+    """A successful insert is not accepted when Timescale current truth differs."""
+
+    sqlite_path = tmp_path / "curated.sqlite"
+    sqlite3.connect(sqlite_path).close()
+
+    class FakeRepository:
+        def __init__(self, dsn: str) -> None:
+            assert dsn == "postgresql://test"
+
+        def upsert_fact_observations(self, records: list[FactObservation]) -> int:
+            return len(records)
+
+    with pytest.raises(TimescaleMirrorMismatchError):
+        load_curated_observations_to_timescale(
+            sqlite_path,
+            "postgresql://test",
+            observation_exporter=lambda *args, **kwargs: [_observation()],
+            repository_factory=FakeRepository,
+            current_row_fetcher=lambda _dsn, _rows: [],
+        )
 
 
 def test_timescale_loader_rejects_missing_sqlite_database(tmp_path: Path) -> None:
