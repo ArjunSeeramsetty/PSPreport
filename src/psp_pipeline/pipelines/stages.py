@@ -142,10 +142,24 @@ def persist_sql(
     facts: List[FactObservation],
     reconciliation: List[ReconciliationResult],
 ) -> int:
-    """Persist facts and return the number of newly inserted observations."""
+    """Persist legacy-path facts only when they are non-placeholder measures.
+
+    The unified curated pipeline owns production PSP observations. This guard
+    keeps the opt-in bootstrap branch useful for lineage migration while
+    preventing synthetic smoke-test counters from entering Timescale.
+    """
+
+    fact_rows = list(facts)
+    placeholder_metrics = [
+        fact.metric_name for fact in fact_rows if fact.metric_name == "raw_artifact_count"
+    ]
+    if placeholder_metrics:
+        raise ValueError(
+            "Legacy bootstrap observations are not eligible for production SQL persistence"
+        )
 
     repo = PostgresRepository(settings.postgres_dsn)
-    return repo.run_in_transaction(lineage, facts, reconciliation)
+    return repo.run_in_transaction(lineage, fact_rows, reconciliation)
 
 
 def sync_graph(settings: AppSettings, facts: List[FactObservation]) -> None:

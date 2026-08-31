@@ -89,6 +89,7 @@ def test_export_all_daily_observations_exports_all_present_regions(
 
     for obs in observations:
         assert isinstance(UUID(obs.timeseries_uuid), UUID)
+        assert obs.metric_id == f"{obs.destination_table}.{obs.destination_column}"
 
 
 def test_export_all_daily_observations_filters_by_rldc(
@@ -189,3 +190,4 @@ def test_export_curated_observations_cli(tmp_path: Path, multi_rldc_curated_conn
     with open(out_file, "r", encoding="utf-8") as f:
         lines = [json.loads(line) for line in f if line.strip()]
     assert len(lines) >= 4
+    assert all(line["metric_id"] for line in lines)

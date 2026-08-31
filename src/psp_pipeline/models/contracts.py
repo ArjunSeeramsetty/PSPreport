@@ -69,6 +69,7 @@ class FactObservation:
     destination_table: str | None = None
     destination_key: str | None = None
     destination_column: str | None = None
+    metric_id: str | None = None
 
 
 @dataclass(frozen=True)

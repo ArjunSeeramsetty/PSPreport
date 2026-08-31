@@ -413,6 +413,16 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (UnitID) REFERENCES DimUnits(UnitID),
             UNIQUE (SchemaName, TableName, ColumnName)
         );
+
+        CREATE TABLE IF NOT EXISTS DimMetric (
+            MetricID TEXT PRIMARY KEY,
+            TableName TEXT NOT NULL,
+            ColumnName TEXT NOT NULL,
+            UnitID INTEGER,
+            Description TEXT NOT NULL,
+            FOREIGN KEY (UnitID) REFERENCES DimUnits(UnitID),
+            UNIQUE (TableName, ColumnName)
+        );
         """
     )
     _ensure_schema_design_tables(conn)
@@ -429,6 +439,7 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _backfill_erldc_dimension_locations(conn)
     _backfill_nerldc_dimension_locations(conn)
     seed_srldc_schema_registry(conn)
+    _seed_metric_registry(conn)
     conn.commit()
 
 
@@ -553,6 +564,21 @@ def _ensure_schema_design_tables(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(CoverageRunID) REFERENCES schema_coverage_run(CoverageRunID),
             FOREIGN KEY(FieldID) REFERENCES schema_field(FieldID),
             UNIQUE(CoverageRunID, SourceReference)
+        );
+
+        CREATE TABLE IF NOT EXISTS promotion_quarantine (
+            QuarantineID INTEGER PRIMARY KEY AUTOINCREMENT,
+            ReportDocumentID INTEGER NOT NULL,
+            SourceID TEXT NOT NULL,
+            Stage TEXT NOT NULL,
+            ReasonCode TEXT NOT NULL,
+            DetailsJson TEXT NOT NULL DEFAULT '{}',
+            Status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(Status IN ('pending', 'resolved', 'dismissed')),
+            CreatedAt TEXT NOT NULL,
+            UpdatedAt TEXT NOT NULL,
+            FOREIGN KEY(ReportDocumentID) REFERENCES psp_report_document(id),
+            UNIQUE(ReportDocumentID, Stage, ReasonCode)
         );
 
         CREATE TABLE IF NOT EXISTS curated_field_lineage (
@@ -2411,6 +2437,100 @@ def _seed_curated_dimensions(conn: sqlite3.Connection) -> None:
             """,
             (table_name, column_name, unit_symbol),
         )
+
+
+def _seed_metric_registry(conn: sqlite3.Connection) -> None:
+    """Materialize stable metric identities for all curated numeric measures.
+
+    ``MetricID`` is deliberately derived from the physical curated contract,
+    rather than a regional export prefix.  The existing source-prefixed metric
+    name remains a backward-compatible export alias while this registry gives
+    consumers a stable, unit-aware identity.
+    """
+
+    dimension_columns = {
+        "ReportDocumentID",
+        "DateID",
+        "RegionID",
+        "StateID",
+        "CountryID",
+        "EntityID",
+        "GenerationSourceID",
+        "StationID",
+        "GeneratingUnitID",
+        "AggregateID",
+        "ElementID",
+        "VoltageNodeID",
+        "ReservoirID",
+        "MechanismID",
+        "IsTotalRow",
+        "BlockNumber",
+    }
+    numeric_types = {"INTEGER", "REAL", "FLOAT", "DOUBLE", "NUMERIC"}
+    tables = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name LIKE 'Fact%'
+        ORDER BY name
+        """
+    ).fetchall()
+    for (table_name,) in tables:
+        for _, column_name, declared_type, *_ in conn.execute(
+            f"PRAGMA table_info({table_name})"
+        ):
+            if column_name in dimension_columns:
+                continue
+            affinity = str(declared_type or "").upper().split("(", 1)[0]
+            if affinity not in numeric_types:
+                continue
+            unit = conn.execute(
+                """
+                SELECT UnitID
+                FROM MetaTableColumnUnits
+                WHERE TableName = ? AND ColumnName = ?
+                """,
+                (table_name, column_name),
+            ).fetchone()
+            unit_id = int(unit[0]) if unit else _inferred_unit_id(conn, column_name)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO DimMetric(
+                    MetricID, TableName, ColumnName, UnitID, Description
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    f"{table_name}.{column_name}",
+                    table_name,
+                    column_name,
+                    unit_id,
+                    f"Curated PSP measure {table_name}.{column_name}",
+                ),
+            )
+
+
+def _inferred_unit_id(conn: sqlite3.Connection, column_name: str) -> int | None:
+    """Return a conservative unit inferred from a stable curated column suffix."""
+
+    normalized = re.sub(r"[^a-z0-9]", "", column_name.lower())
+    suffixes = (
+        ("mw", "MW"),
+        ("mu", "MU"),
+        ("hz", "Hz"),
+        ("kv", "kV"),
+        ("pct", "%"),
+        ("percent", "%"),
+        ("index", "Index"),
+        ("circuits", "Count"),
+        ("count", "Count"),
+    )
+    for suffix, unit_symbol in suffixes:
+        if normalized.endswith(suffix):
+            row = conn.execute(
+                "SELECT UnitID FROM DimUnits WHERE UnitSymbol = ?", (unit_symbol,)
+            ).fetchone()
+            return int(row[0]) if row else None
+    return None
 
 
 def _state_id(conn: sqlite3.Connection, state_name: str | None) -> int | None:

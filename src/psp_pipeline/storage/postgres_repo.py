@@ -239,12 +239,12 @@ class PostgresRepository:
             cur.execute(
                 """
                 INSERT INTO fact_observation_dedup (
-                    timeseries_uuid, series_key, content_hash, entity_key, metric_name, time_block,
+                    timeseries_uuid, series_key, content_hash, entity_key, metric_name, metric_id, time_block,
                     report_type, source_region, valid_from, valid_to,
                     first_ingested_at
                 ) VALUES (
                     %(timeseries_uuid)s, %(series_key)s, %(content_hash)s,
-                    %(entity_key)s, %(metric_name)s,
+                    %(entity_key)s, %(metric_name)s, %(metric_id)s,
                     %(time_block)s, %(report_type)s, %(source_region)s,
                     %(valid_from)s, %(valid_to)s, CURRENT_TIMESTAMP
                 )
@@ -283,12 +283,12 @@ class PostgresRepository:
             cur.execute(
                 """
                 INSERT INTO fact_observation (
-                    entity_key, metric_name, time_block, operational_value, settlement_value,
+                    entity_key, metric_name, metric_id, time_block, operational_value, settlement_value,
                     variance_pct, report_type, source_region, valid_from, valid_to,
                     version_no, ingested_at, sys_to, series_key, content_hash,
                     report_document_id, timeseries_uuid
                 ) VALUES (
-                    %(entity_key)s, %(metric_name)s, %(time_block)s, %(operational_value)s, %(settlement_value)s,
+                    %(entity_key)s, %(metric_name)s, %(metric_id)s, %(time_block)s, %(operational_value)s, %(settlement_value)s,
                     %(variance_pct)s, %(report_type)s, %(source_region)s, %(valid_from)s, %(valid_to)s,
                     %(version_no)s, CURRENT_TIMESTAMP, 'infinity', %(series_key)s, %(content_hash)s,
                     %(report_document_id)s, %(timeseries_uuid)s

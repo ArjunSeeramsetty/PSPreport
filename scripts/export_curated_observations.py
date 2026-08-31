@@ -91,6 +91,7 @@ def main() -> None:
             {
                 "entity_key": obs.entity_key,
                 "metric_name": obs.metric_name,
+                "metric_id": obs.metric_id,
                 "time_block": obs.time_block,
                 "operational_value": obs.operational_value,
                 "settlement_value": obs.settlement_value,

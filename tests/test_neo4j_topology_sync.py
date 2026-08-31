@@ -30,6 +30,8 @@ def test_topology_export_retains_indian_and_cross_border_endpoints() -> None:
     assert line["from_state_code"] == f"STATE-{assam}"
     assert line["to_country_code"] == f"COUNTRY-{bhutan}"
     assert line["to_state_code"] is None
+    assam_state = next(state for state in topology["states"] if state["name"] == "Assam")
+    assert assam_state["observation_entity_keys"] == ["NER:state:Assam"]
 
 
 def test_repository_runs_bounded_topology_batches_without_per_row_queries() -> None:

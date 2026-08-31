@@ -36,9 +36,14 @@ def export_curated_topology(conn: sqlite3.Connection) -> dict[str, list[dict[str
             "code": f"STATE-{state_id}",
             "name": state_name,
             "region_code": region_codes.get(region_id),
+            "observation_entity_keys": _state_observation_entity_keys(
+                region_codes.get(region_id),
+                state_name,
+                state_code,
+            ),
         }
-        for state_id, state_name, region_id in conn.execute(
-            "SELECT StateID, StateName, RegionID FROM DimStates ORDER BY StateID"
+        for state_id, state_name, region_id, state_code in conn.execute(
+            "SELECT StateID, StateName, RegionID, StateCode FROM DimStates ORDER BY StateID"
         )
     ]
     countries = [
@@ -190,3 +195,23 @@ def _observation_entity_key(
     """Build the exporter-compatible entity key when a regional source is known."""
 
     return f"{region_code}:{category}:{name}" if region_code else None
+
+
+def _state_observation_entity_keys(
+    region_code: str | None,
+    state_name: str,
+    state_code: str | None,
+) -> list[str]:
+    """Return every current exporter-compatible key for one state dimension.
+
+    Northern and Southern exporters use approved state codes, while the other
+    regional exporters currently use the canonical display name. Retaining both
+    formats during the transition prevents duplicate graph identities without
+    rewriting existing Timescale series.
+    """
+
+    if not region_code:
+        return []
+    if region_code in {"NR", "SR"} and state_code:
+        return [f"{region_code}:state:{state_code}"]
+    return [f"{region_code}:state:{state_name}"]

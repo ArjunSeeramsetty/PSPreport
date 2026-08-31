@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "fixtures": [],
+  "profiles": {
+    "synthetic": {
+      "required": true,
+      "coverage_floors": {
+        "srldc": 100.0,
+        "nrldc": 100.0,
+        "wrldc": 100.0,
+        "erldc": 100.0,
+        "nerldc": 100.0,
+        "grid_india_national": 100.0
+      }
+    },
+    "corpus": {
+      "required": false,
+      "coverage_floors": {
+        "srldc": 95.0,
+        "nrldc": 80.0,
+        "wrldc": 69.0,
+        "erldc": 54.0,
+        "nerldc": 59.0,
+        "grid_india_national": 84.0
+      },
+      "artifact_manifest": "data/diagnostics/fixture_manifest.json"
+    }
+  }
+}

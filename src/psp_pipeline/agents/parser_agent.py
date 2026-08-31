@@ -6,17 +6,17 @@ from typing import Iterable, List
 
 from psp_pipeline.agents.base import BaseAgent
 from psp_pipeline.models.contracts import FactObservation, FetchArtifact, LineageRecord
-from psp_pipeline.storage.observation_identity import (
-    build_revision_uuid,
-    build_series_key,
-)
 
 
 class ParserAgent(BaseAgent):
     """
     Adapter layer:
     - Keeps existing parser modules untouched.
-    - Emits normalized lineage + minimal fact observations for Bronze staging.
+    - Emits normalized lineage for Bronze staging.
+
+    The generic bootstrap path deliberately does not manufacture numerical
+    observations. Curated source promoters are the only supported route into
+    the production fact store.
     """
 
     parser_version = "v1.0-public-bootstrap"
@@ -47,36 +47,6 @@ class ParserAgent(BaseAgent):
                     valid_to=None,
                     version_no=1,
                     raw_object_key=f"{artifact.source_id}/{Path(artifact.local_path).name}",
-                )
-            )
-
-            # Minimal placeholder fact enables end-to-end pipeline smoke tests.
-            series_key = build_series_key(
-                entity_key=f"{source_region}:{artifact.source_id}",
-                metric_name="raw_artifact_count",
-                time_block=None,
-                report_type=report_type,
-                source_region=source_region,
-                valid_from=now.isoformat(),
-                valid_to=None,
-            )
-            facts.append(
-                FactObservation(
-                    entity_key=f"{source_region}:{artifact.source_id}",
-                    metric_name="raw_artifact_count",
-                    time_block=None,
-                    operational_value=1.0,
-                    settlement_value=None,
-                    variance_pct=None,
-                    report_type=report_type,
-                    source_region=source_region,
-                    valid_from=now,
-                    valid_to=None,
-                    version_no=1,
-                    ingested_at=now,
-                    timeseries_uuid=build_revision_uuid(series_key, artifact.content_hash),
-                    series_key=series_key,
-                    content_hash=artifact.content_hash,
                 )
             )
 

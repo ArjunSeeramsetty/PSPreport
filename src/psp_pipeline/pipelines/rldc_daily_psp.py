@@ -34,6 +34,7 @@ from psp_pipeline.parsing.rldc.pdf_tables import extract_page_tables
 from psp_pipeline.parsing.rldc.templates import TemplateMatch, inspect_report_structure, match_report_template
 from psp_pipeline.storage.sqlite_curated_promoter import promote_report_to_curated
 from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
+from psp_pipeline.quality.promotion_quarantine import record_promotion_quarantine
 
 logger = logging.getLogger(__name__)
 
@@ -622,6 +623,19 @@ def _needs_erldc_market_extrema_spatial_items(raw_cells: list[RawCell]) -> bool:
     return False
 
 
+def _spatial_fallback_reasons(rldc: str, raw_cells: list[RawCell]) -> tuple[str, ...]:
+    """Return explicit spatial-reconstruction needs for ingestion diagnostics."""
+
+    reasons: list[str] = []
+    if rldc == "nrldc" and _needs_nrldc_continuation_spatial_items(raw_cells):
+        reasons.append("nrldc_continuation")
+    if rldc == "erldc" and _needs_erldc_regional_generation_spatial_items(raw_cells):
+        reasons.append("erldc_regional_generation")
+    if rldc == "erldc" and _needs_erldc_market_extrema_spatial_items(raw_cells):
+        reasons.append("erldc_market_extrema")
+    return tuple(reasons)
+
+
 def extract_psp_content(
     pdf_path: Path,
     rldc: str,
@@ -655,10 +669,12 @@ def extract_psp_content(
     erldc_market_extrema_spatial_fallback = (
         rldc == "erldc" and _needs_erldc_market_extrema_spatial_items(raw_cells)
     )
+    spatial_fallback_reasons = _spatial_fallback_reasons(rldc, raw_cells)
     if (
         should_try_liteparse
         or nrldc_continuation_spatial_fallback
         or erldc_regional_spatial_fallback
+        or erldc_market_extrema_spatial_fallback
     ) and _liteparse_available():
         liteparse_text, raw_text_items = _extract_liteparse_content(
             pdf_path,
@@ -686,6 +702,19 @@ def extract_psp_content(
             if len(liteparse_text) > len(text):
                 lines = [line.strip() for line in liteparse_text.splitlines() if line.strip()]
                 text = liteparse_text
+    elif spatial_fallback_reasons:
+        logger.warning(
+            "spatial_fallback_required rldc=%s reasons=%s status=liteparse_unavailable",
+            rldc,
+            ",".join(spatial_fallback_reasons),
+        )
+
+    if spatial_fallback_reasons and not raw_text_items:
+        logger.warning(
+            "spatial_fallback_required rldc=%s reasons=%s status=no_spatial_items",
+            rldc,
+            ",".join(spatial_fallback_reasons),
+        )
 
     total_energy_met = _extract_line_total_metric(lines, ["energy met (mu)", "energy met"])
     if total_energy_met is not None:
@@ -849,6 +878,9 @@ def persist_report(
     raw_cells: Iterable[RawCell] | None = None,
     raw_text_items: Iterable[RawTextItem] | None = None,
 ) -> None:
+    raw_line_rows = list(raw_lines or [])
+    raw_cell_rows = list(raw_cells or [])
+    raw_text_item_rows = list(raw_text_items or [])
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -902,7 +934,7 @@ def persist_report(
             """,
             (report_id, field_name, field_value, now),
         )
-    for line in raw_lines or []:
+    for line in raw_line_rows:
         cursor.execute(
             """
             INSERT INTO psp_raw_line(
@@ -914,7 +946,7 @@ def persist_report(
             """,
             (report_id, line.page_no, line.line_no, line.line_text, line.extraction_method, now),
         )
-    for cell in raw_cells or []:
+    for cell in raw_cell_rows:
         cursor.execute(
             """
             INSERT INTO psp_raw_cell(
@@ -936,9 +968,65 @@ def persist_report(
                 now,
             ),
         )
-    _upsert_raw_text_items(cursor, report_id, raw_text_items or [], now)
+    _upsert_raw_text_items(cursor, report_id, raw_text_item_rows, now)
+    _record_ingestion_quarantine(
+        conn,
+        report_id=int(report_id),
+        report=report,
+        ocr=ocr,
+        template_match=template_match,
+        raw_cells=raw_cell_rows,
+        raw_text_items=raw_text_item_rows,
+    )
     promote_report_to_curated(conn, report_id)
     conn.commit()
+
+
+def _record_ingestion_quarantine(
+    conn: sqlite3.Connection,
+    *,
+    report_id: int,
+    report: DownloadedReport,
+    ocr: OcrAssessment,
+    template_match: TemplateMatch,
+    raw_cells: list[RawCell],
+    raw_text_items: list[RawTextItem],
+) -> None:
+    """Record unresolved extraction prerequisites before curated promotion."""
+
+    if template_match.semantic_pass_required:
+        record_promotion_quarantine(
+            conn,
+            report_document_id=report_id,
+            source_id=report.rldc,
+            stage="template_review",
+            reason_code="semantic_review_required",
+            details={
+                "template_id": template_match.template_id,
+                "confidence": template_match.confidence,
+                "reasons": template_match.reasons,
+            },
+        )
+    fallback_reasons = _spatial_fallback_reasons(report.rldc, raw_cells)
+    if fallback_reasons and not raw_text_items:
+        for reason in fallback_reasons:
+            record_promotion_quarantine(
+                conn,
+                report_document_id=report_id,
+                source_id=report.rldc,
+                stage="spatial_reconstruction",
+                reason_code=reason,
+                details={"raw_text_item_count": 0, "liteparse_required": True},
+            )
+    if ocr.should_use_ocr and not raw_text_items:
+        record_promotion_quarantine(
+            conn,
+            report_document_id=report_id,
+            source_id=report.rldc,
+            stage="ocr",
+            reason_code="ocr_retry_required",
+            details={"reason": ocr.reason, "score": ocr.score},
+        )
 
 
 def backfill_nrldc_continuation_spatial_items(
@@ -1312,6 +1400,9 @@ def run_rldc_daily_psp_collection(
         "reports_downloaded": 0,
         "reports_persisted": 0,
         "ocr_recommended": 0,
+        "semantic_review_required": 0,
+        "spatial_fallback_required": 0,
+        "spatial_fallback_completed": 0,
         "report_family_rejected": 0,
     }
     run_date = target_date or datetime.now(timezone.utc).date()
@@ -1347,6 +1438,13 @@ def run_rldc_daily_psp_collection(
                 if ocr.should_use_ocr:
                     counts["ocr_recommended"] += 1
                 parsed = extract_psp_content(report.local_path, rldc=report.rldc, ocr=ocr)
+                if parsed.template_match.semantic_pass_required:
+                    counts["semantic_review_required"] += 1
+                fallback_reasons = _spatial_fallback_reasons(report.rldc, parsed.raw_cells)
+                if fallback_reasons:
+                    counts["spatial_fallback_required"] += 1
+                    if parsed.raw_text_items:
+                        counts["spatial_fallback_completed"] += 1
                 persist_report(
                     conn,
                     report,
@@ -1371,6 +1469,9 @@ def run_rldc_local_pdf_ingestion(
         "reports_seen": 0,
         "reports_persisted": 0,
         "ocr_recommended": 0,
+        "semantic_review_required": 0,
+        "spatial_fallback_required": 0,
+        "spatial_fallback_completed": 0,
         "report_family_rejected": 0,
     }
     sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1400,6 +1501,13 @@ def run_rldc_local_pdf_ingestion(
             response_last_modified=datetime.fromtimestamp(item.local_path.stat().st_mtime, tz=timezone.utc).isoformat(),
         )
         parsed = extract_psp_content(item.local_path, rldc=item.rldc, ocr=ocr)
+        if parsed.template_match.semantic_pass_required:
+            counts["semantic_review_required"] += 1
+        fallback_reasons = _spatial_fallback_reasons(item.rldc, parsed.raw_cells)
+        if fallback_reasons:
+            counts["spatial_fallback_required"] += 1
+            if parsed.raw_text_items:
+                counts["spatial_fallback_completed"] += 1
         persist_report(
             conn,
             report,

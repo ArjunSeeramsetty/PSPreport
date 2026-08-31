@@ -7,8 +7,12 @@ from time import monotonic
 import pytest
 
 from psp_pipeline.pipelines.rldc_daily_psp import (
+    RawCell,
+    RawTextItem,
     _extract_liteparse_content,
+    _spatial_fallback_reasons,
     _should_try_liteparse,
+    extract_psp_content,
 )
 from psp_pipeline.parsing.rldc.templates import (
     COMPACT_SRLDCP_TEMPLATE,
@@ -682,6 +686,62 @@ def test_liteparse_accepts_current_snake_case_spatial_items(monkeypatch) -> None
     assert items[0].text == "TEST STATION"
     assert items[0].page_no == 6
     assert items[0].x == 15.0
+
+
+def test_erldc_extrema_fallback_requests_page_six_spatial_items(monkeypatch) -> None:
+    """A collapsed Section 8(B) grid must not be skipped before LiteParse."""
+
+    cells = [
+        RawCell(6, 1, 1, 1, "8(B). Short Term Open Access", "pdfplumber"),
+        RawCell(
+            6,
+            1,
+            2,
+            1,
+            "WEST BENGAL\n0 0 0 0 0 0 0 0 255.99 -991.28",
+            "pdfplumber",
+        ),
+    ]
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.rldc_daily_psp.inspect_report_structure",
+        lambda _path: object(),
+    )
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.rldc_daily_psp.match_report_template",
+        lambda _rldc, _structure: object(),
+    )
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.rldc_daily_psp._extract_pdfplumber_raw",
+        lambda _path: ("native text" * 200, [], cells),
+    )
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.rldc_daily_psp._extract_numeric_fields",
+        lambda _text: {},
+    )
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.rldc_daily_psp._extract_table_fallback_fields",
+        lambda _cells: {},
+    )
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.rldc_daily_psp._liteparse_available",
+        lambda: True,
+    )
+
+    def fake_liteparse(_path, *, target_pages=None, **_kwargs):
+        calls.append(target_pages)
+        return "spatial text", [RawTextItem(6, 1, "WEST BENGAL", 1, 1, 1, 1, 1, "liteparse")]
+
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.rldc_daily_psp._extract_liteparse_content",
+        fake_liteparse,
+    )
+
+    parsed = extract_psp_content(Path("fixture.pdf"), "erldc")
+
+    assert _spatial_fallback_reasons("erldc", cells) == ("erldc_market_extrema",)
+    assert calls == ["6"]
+    assert parsed.raw_text_items[0].extraction_method == "liteparse"
 
 
 def test_liteparse_extracts_spatial_items_for_rect_heavy_srldc_fixture() -> None:

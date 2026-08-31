@@ -601,6 +601,7 @@ def _export_table(
             if value is None:
                 continue
             metric_name = f"{metric_prefix}.{table_name}.{column}"
+            metric_id = f"{table_name}.{column}"
             series_key = build_series_key(
                 entity_key=str(entity_key),
                 metric_name=metric_name,
@@ -638,6 +639,7 @@ def _export_table(
                         dimensions=destination_dimensions,
                     ),
                     destination_column=column,
+                    metric_id=metric_id,
                 )
             )
     return observations

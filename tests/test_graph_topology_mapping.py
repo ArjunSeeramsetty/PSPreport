@@ -84,6 +84,7 @@ def test_graph_sync_agent_prefers_batch_topology_merge():
 
     assert repo.payload[0]["entity_key"] == "SR:state:IN-AP"
     assert repo.payload[0]["timeseries_uuid"] == "uuid-1"
+    assert repo.payload[0]["metric_id"] is None
     assert repo.payload[0]["operational_value"] == 1.0
     assert repo.payload[0]["valid_from"] == now
     assert repo.value_payload == repo.payload

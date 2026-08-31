@@ -21,6 +21,7 @@ def test_sqlite_schema_includes_governed_srldc_tables() -> None:
     assert "FactStateDailyEnergy" in tables
     assert "FactTimeBlockPowerData" in tables
     assert "MetaTableColumnUnits" in tables
+    assert "DimMetric" in tables
     assert "psp_raw_cell" in tables
     assert "FactSRLDCRegionalDaily" in tables
     assert "FactSRLDCStateDaily" in tables
@@ -37,6 +38,7 @@ def test_sqlite_schema_includes_governed_srldc_tables() -> None:
     assert "schema_field" in tables
     assert "schema_proposal" in tables
     assert "schema_coverage_run" in tables
+    assert "promotion_quarantine" in tables
     assert "curated_field_lineage" in tables
     regional_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(FactSRLDCRegionalDaily)")
@@ -78,6 +80,26 @@ def test_sqlite_curated_schema_seeds_dimensions_and_unit_mappings() -> None:
         """
     ).fetchone()
     assert unit == ("MU",)
+    metric = conn.execute(
+        """
+        SELECT metric.MetricID, unit.UnitSymbol
+        FROM DimMetric AS metric
+        LEFT JOIN DimUnits AS unit ON unit.UnitID = metric.UnitID
+        WHERE metric.TableName = 'FactStateDailyEnergy'
+          AND metric.ColumnName = 'EnergyMet'
+        """
+    ).fetchone()
+    assert metric == ("FactStateDailyEnergy.EnergyMet", "MU")
+    inferred_metric = conn.execute(
+        """
+        SELECT unit.UnitSymbol
+        FROM DimMetric AS metric
+        JOIN DimUnits AS unit ON unit.UnitID = metric.UnitID
+        WHERE metric.TableName = 'FactSRLDCRegionalDaily'
+          AND metric.ColumnName = 'EveningPeakDemandMetMW'
+        """
+    ).fetchone()
+    assert inferred_metric == ("MW",)
     required_fields = conn.execute(
         "SELECT COUNT(*) FROM schema_field WHERE RequirementLevel = 'required'"
     ).fetchone()[0]

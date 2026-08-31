@@ -18,6 +18,7 @@ class GraphSyncAgent(BaseAgent):
                 "entity_key": fact.entity_key,
                 "report_type": fact.report_type,
                 "metric_name": fact.metric_name,
+                "metric_id": fact.metric_id,
                 "source_region": fact.source_region,
                 "timeseries_uuid": fact.timeseries_uuid,
                 "series_key": fact.series_key,

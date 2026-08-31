@@ -23,6 +23,7 @@ from psp_pipeline.schema_design.registry import (
     STATE_PEAK_MAPPINGS,
 )
 from psp_pipeline.schema_design.service import persist_report_schema_proposals
+from psp_pipeline.quality.promotion_quarantine import record_promotion_quarantine
 from psp_pipeline.storage.sqlite_dimensions import (
     DimensionResolutionError,
     GenerationIdentity,
@@ -2509,6 +2510,14 @@ def _record_unrecognized_report(
         ) VALUES (?, 'new_template', ?, ?, 'template_mapping_required', 'pending', ?)
         """,
         (report_id, f"report:{report_id}", json.dumps(evidence, sort_keys=True), now),
+    )
+    record_promotion_quarantine(
+        conn,
+        report_document_id=report_id,
+        source_id=str(report.get("rldc") or "srldc"),
+        stage="template_review",
+        reason_code="semantic_review_required",
+        details=evidence,
     )
     persist_report_schema_proposals(conn, report_id)
 

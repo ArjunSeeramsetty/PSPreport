@@ -27,6 +27,7 @@ class Neo4jRepository:
         entity_key: str,
         report_type: str,
         metric_name: str,
+        metric_id: str | None = None,
         source_region: str,
         timeseries_uuid: str,
         time_block: Optional[str],
@@ -45,6 +46,7 @@ class Neo4jRepository:
 
                 MERGE (rt:ReportType {name: $report_type})
                 MERGE (m:Metric {name: $metric_name})
+                SET m.metric_id = coalesce($metric_id, $metric_name)
                 MERGE (ts:TimeSeries {uuid: $series_key})
 
                 MERGE (o:Observation {observation_key: $observation_key})
@@ -64,6 +66,7 @@ class Neo4jRepository:
                     "source_entity_id": source_entity_id,
                     "report_type": report_type,
                     "metric_name": metric_name,
+                    "metric_id": metric_id,
                     "series_key": series_key or observation_key,
                     "observation_key": observation_key,
                     "time_block": time_block,
@@ -82,19 +85,14 @@ class Neo4jRepository:
             region_code, source_entity_id = _split_entity_key(entity_key)
             metric_name = str(observation["metric_name"])
             time_block = observation.get("time_block")
-            state_code = (
-                source_entity_id.removeprefix("state:")
-                if source_entity_id.startswith("state:")
-                else None
-            )
             rows.append(
                 {
                     "region_code": region_code,
                     "entity_key": entity_key,
                     "source_entity_id": source_entity_id,
-                    "state_code": state_code,
                     "report_type": str(observation["report_type"]),
                     "metric_name": metric_name,
+                    "metric_id": observation.get("metric_id"),
                     "series_key": str(
                         observation.get("series_key")
                         or f"{entity_key}|{metric_name}|{time_block or 'NA'}"
@@ -120,6 +118,7 @@ class Neo4jRepository:
                              e.last_seen_at = datetime()
                 MERGE (rt:ReportType {name: row.report_type})
                 MERGE (m:Metric {name: row.metric_name})
+                SET m.metric_id = coalesce(row.metric_id, row.metric_name)
                 MERGE (ts:TimeSeries {uuid: row.series_key})
                 MERGE (o:Observation {observation_key: row.observation_key})
                 ON CREATE SET o.time_block = row.time_block,
@@ -127,14 +126,7 @@ class Neo4jRepository:
                               o.last_seen_at = datetime()
                 ON MATCH SET o.time_block = row.time_block,
                              o.last_seen_at = datetime()
-                FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
-                    MERGE (s:State {code: row.state_code})
-                    MERGE (r)-[:CONTAINS_STATE]->(s)
-                    MERGE (s)-[:HAS_ENTITY]->(e)
-                )
-                FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [1] ELSE [] END |
-                    MERGE (r)-[:HAS_ENTITY]->(e)
-                )
+                MERGE (r)-[:HAS_ENTITY]->(e)
                 MERGE (e)-[:IN_REPORT_TYPE]->(rt)
                 MERGE (e)-[:HAS_TIMESERIES]->(ts)
                 MERGE (ts)-[:FOR_METRIC]->(m)
@@ -264,6 +256,10 @@ FOREACH (_ IN CASE WHEN row.region_code IS NULL THEN [] ELSE [1] END |
   MERGE (region:Region {code: row.region_code})
   MERGE (state)-[:LOCATED_IN]->(region)
   MERGE (region)-[:CONTAINS_STATE]->(state)
+)
+FOREACH (entity_key IN row.observation_entity_keys |
+  MERGE (source:SourceEntity {entity_key: entity_key})
+  MERGE (source)-[:DESCRIBES]->(state)
 )
 """
 
