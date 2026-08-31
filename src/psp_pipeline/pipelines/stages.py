@@ -379,7 +379,11 @@ def export_all_curated_to_timescale(
     verify_current_mirror: bool = True,
     current_row_fetcher: CurrentRowFetcher | None = None,
 ) -> int:
-    """Export a date-scoped curated multi-RLDC slice into TimescaleDB."""
+    """Export a date-scoped curated multi-RLDC slice into TimescaleDB.
+
+    Historical replay belongs in ``bootstrap_timescale_from_sqlite`` against a
+    greenfield schema. This stage only publishes the orchestration date.
+    """
     if not sqlite_db_path.exists():
         return 0
     import sqlite3

@@ -45,8 +45,10 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
    - `copy .env.example .env`
 4. Start infrastructure:
    - `powershell -ExecutionPolicy Bypass -File scripts/bootstrap_local.ps1`
-5. Run public ingestion:
+5. Recreate Timescale from `sql/timescale_schema.sql` and backfill curated SQLite:
    - `set PYTHONPATH=src`
+   - `python scripts/bootstrap_timescale_from_sqlite.py --db data/sqlite/all_rldc_daily.sqlite --recreate-schema`
+6. Run public ingestion:
    - `python scripts/run_public_ingestion.py`
 
 ## Airflow

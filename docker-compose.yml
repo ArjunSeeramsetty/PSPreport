@@ -12,7 +12,11 @@ services:
       - "5432:5432"
     volumes:
       - timescale_data:/var/lib/postgresql/data
-      - ./sql/timescale_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d power_kg"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
 
   neo4j:
     image: neo4j:5.22-community
