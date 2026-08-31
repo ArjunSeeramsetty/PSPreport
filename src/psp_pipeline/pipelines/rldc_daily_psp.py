@@ -594,6 +594,34 @@ def _needs_nrldc_continuation_spatial_items(raw_cells: list[RawCell]) -> bool:
     return False
 
 
+def _needs_erldc_regional_generation_spatial_items(raw_cells: list[RawCell]) -> bool:
+    """Return whether ERLDC Page 3 station measurements collapsed into column one."""
+
+    for cell in raw_cells:
+        if cell.page_no != 3 or cell.col_no != 1:
+            continue
+        numeric_values = re.findall(r"(?<![A-Za-z])[-−]?\d+(?:\.\d+)?", cell.cell_text)
+        if len(numeric_values) >= 5:
+            return True
+    return False
+
+
+def _needs_erldc_market_extrema_spatial_items(raw_cells: list[RawCell]) -> bool:
+    """Return whether ERLDC Page 6 Section 8(B) rows collapsed into labels."""
+
+    has_section_heading = False
+    for cell in raw_cells:
+        if cell.page_no != 6 or cell.col_no != 1:
+            continue
+        normalized = re.sub(r"\s+", "", cell.cell_text).lower()
+        if normalized.startswith("8(b).shorttermopenaccess"):
+            has_section_heading = True
+        numeric_values = re.findall(r"(?<![A-Za-z])[-−]?\d+(?:\.\d+)?", cell.cell_text)
+        if "\n" in cell.cell_text and len(numeric_values) >= 8:
+            return has_section_heading
+    return False
+
+
 def extract_psp_content(
     pdf_path: Path,
     rldc: str,
@@ -618,13 +646,37 @@ def extract_psp_content(
         text,
         raw_cells,
     )
-    continuation_spatial_fallback = (
+    nrldc_continuation_spatial_fallback = (
         rldc == "nrldc" and _needs_nrldc_continuation_spatial_items(raw_cells)
     )
-    if (should_try_liteparse or continuation_spatial_fallback) and _liteparse_available():
+    erldc_regional_spatial_fallback = (
+        rldc == "erldc" and _needs_erldc_regional_generation_spatial_items(raw_cells)
+    )
+    erldc_market_extrema_spatial_fallback = (
+        rldc == "erldc" and _needs_erldc_market_extrema_spatial_items(raw_cells)
+    )
+    if (
+        should_try_liteparse
+        or nrldc_continuation_spatial_fallback
+        or erldc_regional_spatial_fallback
+    ) and _liteparse_available():
         liteparse_text, raw_text_items = _extract_liteparse_content(
             pdf_path,
-            target_pages="6-9" if continuation_spatial_fallback else None,
+            target_pages=(
+                "6-9"
+                if nrldc_continuation_spatial_fallback
+                else (
+                    ",".join(
+                        page
+                        for page, enabled in (
+                            ("3", erldc_regional_spatial_fallback),
+                            ("6", erldc_market_extrema_spatial_fallback),
+                        )
+                        if enabled
+                    )
+                    or None
+                )
+            ),
         )
         if liteparse_text:
             methods.append("liteparse")
@@ -972,6 +1024,165 @@ def backfill_nrldc_continuation_spatial_items(
                 """,
                 (report_id,),
             )
+            _upsert_raw_text_items(
+                conn.cursor(),
+                int(report_id),
+                items,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            promote_report_to_curated(conn, int(report_id))
+            conn.commit()
+            result["reports_enriched"] += 1
+    return result
+
+
+def backfill_erldc_regional_generation_spatial_items(
+    sqlite_db_path: Path,
+) -> dict[str, int]:
+    """Add missing LiteParse Page 3 items for ERLDC collapsed station rows.
+
+    Only the verified 2025-flat regional-generation family is considered. Raw
+    table cells remain unchanged; the report is re-promoted only after a full
+    Page 3 spatial item set has been persisted.
+    """
+
+    result = {
+        "reports_seen": 0,
+        "reports_enriched": 0,
+        "reports_already_complete": 0,
+        "reports_missing_local_file": 0,
+        "reports_without_spatial_items": 0,
+        "liteparse_unavailable": 0,
+    }
+    if not sqlite_db_path.exists():
+        return result
+    if not _liteparse_available():
+        logger.warning("erldc_spatial_backfill_skipped reason=liteparse_unavailable")
+        result["liteparse_unavailable"] = 1
+        return result
+
+    template_id = "erldc_daily_psp_v2025_flat_11_column_generation"
+    with sqlite3.connect(sqlite_db_path) as conn:
+        ensure_sqlite_schema(conn)
+        reports = conn.execute(
+            """
+            SELECT id, local_path
+            FROM psp_report_document
+            WHERE rldc = 'erldc' AND template_id = ?
+            ORDER BY report_date, id
+            """,
+            (template_id,),
+        ).fetchall()
+        result["reports_seen"] = len(reports)
+        for report_id, raw_path in reports:
+            existing_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM psp_raw_text_item
+                WHERE report_document_id = ? AND extraction_method = 'liteparse'
+                  AND page_no = 3
+                """,
+                (report_id,),
+            ).fetchone()[0]
+            if existing_count:
+                result["reports_already_complete"] += 1
+                continue
+            pdf_path = Path(str(raw_path))
+            if not pdf_path.exists():
+                logger.warning(
+                    "erldc_spatial_backfill_missing_file report_id=%s path=%s",
+                    report_id,
+                    pdf_path,
+                )
+                result["reports_missing_local_file"] += 1
+                continue
+            _, items = _extract_liteparse_content(pdf_path, target_pages="3")
+            items = [item for item in items if item.page_no == 3]
+            if not items:
+                logger.warning(
+                    "erldc_spatial_backfill_empty report_id=%s path=%s",
+                    report_id,
+                    pdf_path,
+                )
+                result["reports_without_spatial_items"] += 1
+                continue
+            _upsert_raw_text_items(
+                conn.cursor(),
+                int(report_id),
+                items,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            promote_report_to_curated(conn, int(report_id))
+            conn.commit()
+            result["reports_enriched"] += 1
+    return result
+
+
+def backfill_erldc_market_extrema_spatial_items(
+    sqlite_db_path: Path,
+) -> dict[str, int]:
+    """Add missing LiteParse Page 6 items for verified ERLDC Section 8(B) rows."""
+
+    result = {
+        "reports_seen": 0,
+        "reports_enriched": 0,
+        "reports_already_complete": 0,
+        "reports_missing_local_file": 0,
+        "reports_without_spatial_items": 0,
+        "liteparse_unavailable": 0,
+    }
+    if not sqlite_db_path.exists():
+        return result
+    if not _liteparse_available():
+        logger.warning("erldc_market_extrema_backfill_skipped reason=liteparse_unavailable")
+        result["liteparse_unavailable"] = 1
+        return result
+
+    template_id = "erldc_daily_psp_v2025_flat_11_column_generation"
+    with sqlite3.connect(sqlite_db_path) as conn:
+        ensure_sqlite_schema(conn)
+        reports = conn.execute(
+            """
+            SELECT id, local_path
+            FROM psp_report_document
+            WHERE rldc = 'erldc' AND template_id = ?
+            ORDER BY report_date, id
+            """,
+            (template_id,),
+        ).fetchall()
+        result["reports_seen"] = len(reports)
+        for report_id, raw_path in reports:
+            existing_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM psp_raw_text_item
+                WHERE report_document_id = ? AND extraction_method = 'liteparse'
+                  AND page_no = 6
+                """,
+                (report_id,),
+            ).fetchone()[0]
+            if existing_count:
+                result["reports_already_complete"] += 1
+                continue
+            pdf_path = Path(str(raw_path))
+            if not pdf_path.exists():
+                logger.warning(
+                    "erldc_market_extrema_backfill_missing_file report_id=%s path=%s",
+                    report_id,
+                    pdf_path,
+                )
+                result["reports_missing_local_file"] += 1
+                continue
+            _, items = _extract_liteparse_content(pdf_path, target_pages="6")
+            items = [item for item in items if item.page_no == 6]
+            if not items:
+                logger.warning(
+                    "erldc_market_extrema_backfill_empty report_id=%s path=%s",
+                    report_id,
+                    pdf_path,
+                )
+                result["reports_without_spatial_items"] += 1
+                continue
             _upsert_raw_text_items(
                 conn.cursor(),
                 int(report_id),

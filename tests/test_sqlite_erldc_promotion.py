@@ -53,6 +53,21 @@ def _create_raw_tables(conn: sqlite3.Connection) -> None:
             LineIndex INTEGER NOT NULL,
             LineText TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS psp_raw_text_item (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_document_id INTEGER NOT NULL,
+            page_no INTEGER NOT NULL,
+            item_no INTEGER NOT NULL,
+            item_text TEXT NOT NULL,
+            x REAL,
+            y REAL,
+            width REAL,
+            height REAL,
+            confidence REAL,
+            extraction_method TEXT NOT NULL,
+            extracted_at TEXT NOT NULL
+        );
         """
     )
 
@@ -83,6 +98,26 @@ def _insert_cells(
                 text,
                 text.strip().lower(),
             ),
+        )
+
+
+def _insert_spatial_items(
+    conn: sqlite3.Connection,
+    report_doc_id: int,
+    page_number: int,
+    items: list[tuple[str, float, float]],
+) -> None:
+    """Insert persisted LiteParse text items for a spatial promotion fixture."""
+
+    for item_no, (text, x, y) in enumerate(items, start=1):
+        conn.execute(
+            """
+            INSERT INTO psp_raw_text_item(
+                report_document_id, page_no, item_no, item_text, x, y,
+                confidence, extraction_method, extracted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 1.0, 'liteparse', '2026-01-02T00:00:00+00:00')
+            """,
+            (report_doc_id, page_number, item_no, text, x, y),
         )
 
 
@@ -619,6 +654,288 @@ def test_erldc_2025_flat_promotes_owner_scoped_regional_generation() -> None:
     assert aggregate == ("regional_entities_generation:pvunl", 13.82, 13.87)
 
 
+def test_erldc_2025_flat_stops_before_regional_summary_owner_leakage() -> None:
+    """Page 4 balance summaries cannot inherit a preceding generation owner."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (28, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 28, 3, 1, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 28, 3, 1, 2, {1: "NTPC"})
+    _insert_cells(conn, 28, 3, 1, 3, {
+        1: "BARH ST-II(2*660)", 2: "1320", 4: "612", 6: "343", 8: "641",
+        11: "07:43", 12: "373", 14: "13:45", 16: "13.29", 18: "14.14",
+        20: "12.88", 21: "537",
+    })
+    _insert_cells(conn, 28, 4, 1, 1, {
+        1: "TALCHER STPS-I(2*500)", 3: "1000", 5: "444", 7: "451",
+        10: "483", 12: "09:06", 15: "395", 16: "13:10", 20: "11.20",
+        22: "11.61", 24: "10.76", 25: "448",
+    })
+    _insert_cells(conn, 28, 4, 1, 2, {
+        1: "Total ISGS & IPP Thermal", 3: "20680", 5: "15168", 7: "12906",
+        20: "377.1", 22: "390.0", 24: "353.24", 25: "14718",
+    })
+    _insert_cells(conn, 28, 4, 1, 3, {1: "Net Exchange [Import(+ve)/Export(-ve)]"})
+    _insert_cells(conn, 28, 4, 1, 4, {
+        1: "REGIONAL TOTAL (GROSS)", 3: "49966.64", 5: "19000", 7: "15208",
+        20: "523.65", 22: "500.0", 24: "472.511", 25: "19688",
+    })
+    _insert_cells(conn, 28, 4, 1, 5, {1: "4(A) Inter-Regional Exchanges"})
+
+    promote_report_to_curated(conn, 28)
+
+    names = [
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT entity.EntityName
+            FROM FactERLDCGenerationDaily AS fact
+            JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+            WHERE fact.ReportDocumentID = 28
+            ORDER BY entity.EntityName
+            """
+        )
+    ]
+
+    assert names == ["BARH ST-II(2*660)", "TALCHER STPS-I(2*500)"]
+
+
+def test_erldc_2025_flat_ignores_collapsed_station_before_page_four_continuation() -> None:
+    """A collapsed final Page 3 station cannot replace the active NTPC owner."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (29, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 29, 3, 1, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 29, 3, 1, 2, {1: "NTPC"})
+    _insert_cells(conn, 29, 3, 1, 3, {
+        1: "BARH ST-II(2*660)", 2: "1320", 4: "612", 6: "343", 8: "641",
+        11: "07:43", 12: "373", 14: "13:45", 16: "13.29", 18: "14.14",
+        20: "12.88", 21: "537",
+    })
+    _insert_cells(conn, 29, 3, 1, 4, {
+        1: "NKSTPP(3*660) 1,980 1,790 1,642 1,847 08:25 1,588 13:13 "
+           "43.52 44.56 42.37 1,765",
+    })
+    _insert_cells(conn, 29, 4, 1, 1, {
+        1: "TALCHER STPS-I(2*500)", 3: "1000", 5: "444", 7: "451",
+        10: "483", 12: "09:06", 15: "395", 16: "13:10", 20: "11.20",
+        22: "11.61", 24: "10.76", 25: "448",
+    })
+    _insert_cells(conn, 29, 4, 1, 2, {1: "4(A) Inter-Regional Exchanges"})
+
+    promote_report_to_curated(conn, 29)
+
+    rows = conn.execute(
+        """
+        SELECT entity.EntityName, fact.SectionName
+        FROM FactERLDCGenerationDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        WHERE fact.ReportDocumentID = 29
+        ORDER BY entity.EntityName
+        """
+    ).fetchall()
+
+    assert rows == [
+        ("BARH ST-II(2*660)", "regional_entities_generation:ntpc"),
+        ("TALCHER STPS-I(2*500)", "regional_entities_generation:ntpc"),
+    ]
+
+
+def test_erldc_2025_flat_reconstructs_collapsed_station_via_spatial_items() -> None:
+    """A complete Page 3 LiteParse row restores NKSTPP with item-level lineage."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (32, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 32, 3, 1, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 32, 3, 1, 2, {1: "NTPC"})
+    _insert_cells(conn, 32, 3, 1, 3, {
+        1: "NKSTPP(3*660) 1,980 1,790 1,642 1,847 08:25 1,588 13:13 "
+           "43.52 44.56 42.37 1,765",
+    })
+    _insert_spatial_items(conn, 32, 3, [
+        ("NKSTPP(3 * 660)", 51.1, 886.5),
+        ("1,980", 157.9, 886.5),
+        ("1,790", 209.7, 886.5),
+        ("1,642", 261.4, 886.5),
+        ("1,847", 311.6, 886.5),
+        ("08:25", 359.8, 886.5),
+        ("1,588", 408.6, 886.5),
+        ("13:13", 456.9, 886.5),
+        ("43.52", 504.0, 886.5),
+        ("44.56", 546.1, 886.5),
+        ("42.37", 588.2, 886.5),
+        ("1,765", 629.7, 886.5),
+    ])
+
+    promote_report_to_curated(conn, 32)
+
+    fact = conn.execute(
+        """
+        SELECT fact.InstalledCapacityMW, fact.GrossEnergyMU, fact.NetEnergyMU,
+               fact.AverageMW, fact.SectionName
+        FROM FactERLDCGenerationDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        WHERE fact.ReportDocumentID = 32 AND entity.EntityName = 'NKSTPP(3*660)'
+        """
+    ).fetchone()
+    lineage = conn.execute(
+        """
+        SELECT COUNT(*), COUNT(RawTextItemID), COUNT(RawCellID), MIN(ExtractionMethod)
+        FROM curated_field_lineage
+        WHERE ReportDocumentID = 32 AND DestinationTable = 'FactERLDCGenerationDaily'
+        """
+    ).fetchone()
+
+    assert fact == (1980.0, 44.56, 42.37, 1765.0, "regional_entities_generation:ntpc")
+    assert lineage == (11, 11, 0, "liteparse")
+
+
+def test_erldc_2025_flat_rejects_incomplete_spatial_generation_row() -> None:
+    """A partial spatial row remains unpromoted rather than receiving inferred data."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (33, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 33, 3, 1, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 33, 3, 1, 2, {1: "NTPC"})
+    _insert_cells(conn, 33, 3, 1, 3, {
+        1: "NKSTPP(3*660) 1,980 1,790 1,642 1,847 08:25 1,588 13:13 "
+           "43.52 44.56 42.37 1,765",
+    })
+    _insert_spatial_items(conn, 33, 3, [
+        ("NKSTPP(3 * 660)", 51.1, 886.5), ("1,980", 157.9, 886.5),
+        ("1,790", 209.7, 886.5), ("1,642", 261.4, 886.5),
+        ("1,847", 311.6, 886.5), ("08:25", 359.8, 886.5),
+        ("1,588", 408.6, 886.5), ("13:13", 456.9, 886.5),
+        ("43.52", 504.0, 886.5), ("44.56", 546.1, 886.5),
+        ("42.37", 588.2, 886.5),
+    ])
+
+    promote_report_to_curated(conn, 33)
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM FactERLDCGenerationDaily WHERE ReportDocumentID = 33"
+    ).fetchone()[0] == 0
+
+
+def test_erldc_2025_flat_promotes_spatial_market_extrema_without_hpx_rtm() -> None:
+    """Page 6 spatial extrema retain 13 verified pairs and reject malformed HPX RTM."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (34, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 34, 6, 1, 1, {1: "8(B). Short-Term Open Access Details"})
+    _insert_cells(conn, 34, 6, 1, 2, {
+        1: "State", 2: "GNA Schedule", 7: "T-GNA BILATERAL (MW)",
+        12: "IEX GDAM (MW)", 18: "PXIL GDAM (MW)", 24: "HPX GDAM (MW)",
+        31: "IEX DAM (MW)", 37: "PXIL DAM (MW)",
+    })
+    _insert_cells(conn, 34, 6, 1, 3, {
+        2: "Maximum", 4: "Minimum", 7: "Maximum", 10: "Minimum",
+        12: "Maximum", 16: "Minimum", 18: "Maximum", 21: "Minimum",
+        24: "Maximum", 27: "Minimum", 31: "Maximum", 35: "Minimum",
+        37: "Maximum", 40: "Minimum",
+    })
+    _insert_cells(conn, 34, 6, 1, 4, {
+        1: "State", 2: "HPX DAM (MW)", 7: "IEX HPDAM (MW)",
+        12: "PXIL HPDAM (MW)", 18: "HPX HPDAM (MW)", 24: "IEX RTM (MW)",
+        31: "PXIL RTM (MW)", 37: "HPX RTM (MW)",
+    })
+    _insert_cells(conn, 34, 6, 1, 5, {
+        2: "Maximum", 4: "Minimum", 7: "Maximum", 10: "Minimum",
+        12: "Maximum", 16: "Minimum", 18: "Maximum", 21: "Minimum",
+        24: "Maximum", 27: "Minimum", 31: "Maximum", 35: "Minimum",
+        37: "Minimum", 40: "Minimum",
+    })
+    _insert_spatial_items(conn, 34, 6, [
+        ("WEST", 19.4, 530.0), ("BENGAL", 23.0, 535.0),
+        ("0", 88.0, 530.0), ("0", 130.0, 530.0),
+        ("0", 172.0, 530.0), ("0", 214.0, 530.0),
+        ("0", 256.0, 530.0), ("0", 298.0, 530.0),
+        ("0", 340.0, 530.0), ("0", 382.0, 530.0),
+        ("255.99", 415.0, 530.0), ("-991.28", 456.0, 530.0),
+        ("0", 508.0, 530.0), ("0", 550.0, 530.0),
+    ])
+
+    promote_report_to_curated(conn, 34)
+
+    rows = conn.execute(
+        """
+        SELECT fact.Mechanism, fact.MaximumMW, fact.MinimumMW
+        FROM FactERLDCMarketExtremaDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 34 AND state.StateName = 'West Bengal'
+        ORDER BY fact.Mechanism
+        """
+    ).fetchall()
+    lineage = conn.execute(
+        """
+        SELECT COUNT(*), COUNT(RawTextItemID), COUNT(RawCellID)
+        FROM curated_field_lineage
+        WHERE ReportDocumentID = 34 AND DestinationTable = 'FactERLDCMarketExtremaDaily'
+        """
+    ).fetchone()
+
+    assert rows == [
+        ("HPXDAM", 0.0, 0.0),
+        ("HPXHPDAM", 0.0, 0.0),
+        ("IEXHPDAM", 0.0, 0.0),
+        ("IEXRTM", 255.99, -991.28),
+        ("PXILHPDAM", 0.0, 0.0),
+        ("PXILRTM", 0.0, 0.0),
+    ]
+    assert lineage == (12, 12, 0)
+
+
 def test_erldc_split_promotes_operational_sections() -> None:
     """Split layout operational sections promote frequency, reservoirs, and exchanges."""
     conn = sqlite3.connect(":memory:")
@@ -818,6 +1135,104 @@ def test_erldc_handles_unsupported_template_gracefully() -> None:
 
     count = conn.execute("SELECT COUNT(*) FROM FactERLDCRegionalDaily").fetchone()[0]
     assert count == 0
+
+
+def test_erldc_promotes_header_verified_market_day_energy_at_entity_grain() -> None:
+    """Page 6 daily market energy preserves participant identity and lineage."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (31, 'erldc', 'Power Supply Position Report_01012026.pdf',
+                  '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 31, 6, 1, 13, {8: "DayEnergy(MU)"})
+    _insert_cells(
+        conn,
+        31,
+        6,
+        1,
+        14,
+        {
+            1: "State",
+            3: "GNASchedule",
+            9: "T-GNABILATERAL",
+            14: "GDAMSchedule",
+            19: "DAMSchedule",
+            25: "HPDAMSchedule",
+            32: "RTMSchedule",
+            38: "Total(MU)",
+        },
+    )
+    _insert_cells(
+        conn,
+        31,
+        6,
+        1,
+        15,
+        {1: "RAILWAYS_ER\nISTS", 3: "0.15", 9: "0", 14: "0", 19: "0", 25: "0", 32: "0", 38: "0.15"},
+    )
+    _insert_cells(
+        conn,
+        31,
+        6,
+        1,
+        16,
+        {1: "WESTBENGAL", 3: "27.63", 9: "0.11", 14: "-0.24", 19: "-5.28", 25: "0", 32: "-4.77", 38: "17.45"},
+    )
+    _insert_cells(conn, 31, 6, 1, 17, {1: "TOTAL", 3: "27.78", 38: "17.60"})
+    _insert_cells(conn, 31, 6, 1, 18, {1: "8(B). Short-Term Open Access Details"})
+
+    promote_report_to_curated(conn, 31)
+
+    rows = conn.execute(
+        """
+        SELECT entity.EntityName, state.StateName, fact.GNAScheduleMU, fact.TotalMU
+        FROM FactERLDCMarketEnergyDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        LEFT JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 31
+        ORDER BY entity.EntityName
+        """
+    ).fetchall()
+    lineage_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 31
+          AND DestinationTable = 'FactERLDCMarketEnergyDaily'
+        """
+    ).fetchone()[0]
+    assert rows == [
+        ("Railways_ER ISTS", None, 0.15, 0.15),
+        ("WESTBENGAL", "West Bengal", 27.63, 17.45),
+    ]
+    assert lineage_count == 14
+
+    conn.execute(
+        """
+        UPDATE psp_raw_table_cell
+        SET CellText = 'UNVERIFIED', NormalizedText = 'unverified'
+        WHERE ReportDocumentID = 31 AND PageNumber = 6 AND TableIndex = 1
+          AND RowIndex = 14 AND ColumnIndex = 32
+        """
+    )
+    promote_report_to_curated(conn, 31)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM FactERLDCMarketEnergyDaily WHERE ReportDocumentID = 31"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 31
+          AND DestinationTable = 'FactERLDCMarketEnergyDaily'
+        """
+    ).fetchone()[0] == 0
 
 
 def test_erldc_end_to_end_local_pdf_promotion(tmp_path: Path) -> None:

@@ -330,6 +330,8 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactWRLDCVoltageProfile", "'WR:voltage:' || node.NodeName", "JOIN DimVoltageNodes AS node ON node.VoltageNodeID = fact.VoltageNodeID", (), ("NominalVoltageKV",)),
             TableExportSpec("FactWRLDCReservoirDaily", "'WR:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
             TableExportSpec("FactWRLDCMarketEnergyDaily", "'WR:market-participant:' || entity.EntityName || ':market:day-energy'", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID"),
+            TableExportSpec("FactWRLDCMarketPointDaily", "'WR:market-participant:' || entity.EntityName || ':market:point:' || fact.TimeCategory || ':' || fact.Mechanism", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID", (("TimeCategory", "fact.TimeCategory"), ("Mechanism", "fact.Mechanism"))),
+            TableExportSpec("FactWRLDCMarketExtremaDaily", "'WR:market-participant:' || entity.EntityName || ':market:extrema:' || fact.Mechanism", "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID", (("Mechanism", "fact.Mechanism"),)),
             TableExportSpec("FactWRLDCInterRegionalExchange", "'WR:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
         ),
     ),
@@ -354,7 +356,17 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactERLDCReservoirDaily", "'ER:reservoir:' || reservoir.ReservoirName", "JOIN DimReservoirs AS reservoir ON reservoir.ReservoirID = fact.ReservoirID"),
             TableExportSpec("FactERLDCInterRegionalExchange", "'ER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactERLDCInternationalExchange", "'ER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
-            TableExportSpec("FactERLDCStateMarketDaily", "'ER:state:' || state.StateName || ':market:day-energy'", "JOIN DimStates AS state ON state.StateID = fact.StateID"),
+            TableExportSpec(
+                "FactERLDCMarketEnergyDaily",
+                "'ER:market-participant:' || entity.EntityName || ':market:day-energy'",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+            ),
+            TableExportSpec(
+                "FactERLDCMarketExtremaDaily",
+                "'ER:market-participant:' || entity.EntityName || ':market:extrema:' || fact.Mechanism",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                (("Mechanism", "fact.Mechanism"),),
+            ),
         ),
     ),
     "nerldc": RLDCExportConfig(

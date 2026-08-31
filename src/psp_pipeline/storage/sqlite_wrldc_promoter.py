@@ -134,17 +134,110 @@ _NINE_COLUMN_GENERATION_COLUMNS = {
     "NetEnergyMU": 8,
     "AverageMW": 9,
 }
+_RENEWABLE_PAGE_FIVE_COLUMNS = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "MinimumGenerationMW": 7,
+    "MinimumGenerationTime": 8,
+    "ScheduledEnergyMU": 9,
+    "GrossEnergyMU": 10,
+    "NetEnergyMU": 11,
+    "AverageMW": 12,
+}
+_RENEWABLE_PAGE_SIX_COLUMNS = {
+    "InstalledCapacityMW": 5,
+    "EveningPeakMW": 7,
+    "OffPeakMW": 8,
+    "DayPeakMW": 10,
+    "DayPeakTime": 13,
+    "MinimumGenerationMW": 14,
+    "MinimumGenerationTime": 16,
+    "ScheduledEnergyMU": 17,
+    "GrossEnergyMU": 18,
+    "NetEnergyMU": 20,
+    "AverageMW": 23,
+}
+_STATE_SPARSE_GENERATION_COLUMNS = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 5,
+    "DayPeakMW": 7,
+    "DayPeakTime": 9,
+    "MinimumGenerationMW": 11,
+    "MinimumGenerationTime": 14,
+    "GrossEnergyMU": 16,
+    "NetEnergyMU": 18,
+    "AverageMW": 20,
+}
+_REGIONAL_SPARSE_GENERATION_COLUMNS = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 6,
+    "DayPeakTime": 8,
+    "MinimumGenerationMW": 10,
+    "MinimumGenerationTime": 12,
+    "ScheduledEnergyMU": 13,
+    "GrossEnergyMU": 15,
+    "NetEnergyMU": 17,
+    "AverageMW": 19,
+}
+_IPP_JV_GENERATION_COLUMNS = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "MinimumGenerationMW": 7,
+    "MinimumGenerationTime": 8,
+    "ScheduledEnergyMU": 9,
+    "GrossEnergyMU": 10,
+    "NetEnergyMU": 11,
+    "AverageMW": 12,
+}
+_CONVENTIONAL_GENERATION_TEMPLATE_IDS = frozenset(
+    {
+        WRLDC_2025_TEMPLATE.template_id,
+        WRLDC_2026_EARLY_TEMPLATE.template_id,
+    }
+)
+_GENERATION_HEADER_TOKENS = {
+    "InstalledCapacityMW": "instcapacity",
+    "EveningPeakMW": "peakmw",
+    "OffPeakMW": "offpeakmw",
+    "DayPeakMW": "daypeak",
+    "DayPeakTime": "hrs",
+    "MinimumGenerationMW": "mingeneration",
+    "MinimumGenerationTime": "hrs",
+    "ScheduledEnergyMU": "schdmu",
+    "GrossEnergyMU": "grossmu",
+    "NetEnergyMU": "netmu",
+    "AverageMW": "avgmw",
+}
+_WRLDC_MARKET_GEOGRAPHIC_LABELS = frozenset(
+    {
+        "CHHATTISGARH",
+        "GOA",
+        "GUJARAT",
+        "MADHYAPRADESH",
+        "MP",
+        "MAHARASHTRA",
+    }
+)
 
 
 def promote_wrldc_report_to_curated(
     conn: sqlite3.Connection,
     report_document_id: int,
 ) -> None:
-    """Promote stable WRLDC pages one through three with raw-cell lineage.
+    """Promote verified WRLDC PSP facts with raw-cell lineage.
 
     Approved nine- and eleven-column state-generation layouts are supported.
-    IPP and renewable continuation pages remain review-gated until their
-    distinct mappings are verified.
+    The 2025 standard and 2026 early templates also expose an explicitly
+    verified renewable continuation table on pages five and six.
     """
     ensure_curated_sqlite_schema(conn)
     report = _fetch_report(conn, report_document_id)
@@ -172,6 +265,28 @@ def promote_wrldc_report_to_curated(
         template_id,
         mapped_cells,
     )
+    if (
+        template_id in _CONVENTIONAL_GENERATION_TEMPLATE_IDS
+        and not _conventional_generation_scope_is_affected(report)
+    ):
+        _promote_conventional_generation(
+            conn,
+            report_document_id,
+            date_id,
+            region_id,
+            mapped_cells,
+        )
+    if (
+        template_id in WRLDC_OPERATIONAL_TEMPLATE_IDS
+        and not _renewable_scope_is_affected(report)
+    ):
+        _promote_renewable_generation(
+            conn,
+            report_document_id,
+            date_id,
+            region_id,
+            mapped_cells,
+        )
     if template_id in WRLDC_OPERATIONAL_TEMPLATE_IDS:
         _promote_physical_exchanges(
             conn,
@@ -204,6 +319,17 @@ def promote_wrldc_report_to_curated(
             template_id,
             mapped_cells,
         )
+        if not _market_energy_scope_is_affected(report):
+            _promote_market_day_energy(
+                conn,
+                report_document_id,
+                date_id,
+                region_id,
+                mapped_cells,
+            )
+            _promote_market_points_and_extrema(
+                conn, report_document_id, date_id, region_id, mapped_cells
+            )
 
 
 def _scope_is_affected(report: sqlite3.Row) -> bool:
@@ -212,6 +338,33 @@ def _scope_is_affected(report: sqlite3.Row) -> bool:
         return False
     reason = str(report["structure_deviation_reason"] or "")
     return bool(re.search(r"(?:p[1-3]_t|missing_table=p[1-3]_)", reason))
+
+
+def _renewable_scope_is_affected(report: dict[str, object]) -> bool:
+    """Return whether an approved renewable-table page is structurally drifted."""
+
+    if not report["semantic_pass_required"]:
+        return False
+    reason = str(report["structure_deviation_reason"] or "")
+    return bool(re.search(r"(?:p[5-6]_t|missing_table=p[5-6]_)", reason))
+
+
+def _market_energy_scope_is_affected(report: dict[str, object]) -> bool:
+    """Return whether the verified Page 8 day-energy section has drifted."""
+
+    if not report["semantic_pass_required"]:
+        return False
+    reason = str(report["structure_deviation_reason"] or "")
+    return bool(re.search(r"(?:p8_t|missing_table=p8_)", reason))
+
+
+def _conventional_generation_scope_is_affected(report: dict[str, object]) -> bool:
+    """Return whether the verified page-three or page-four grids drifted."""
+
+    if not report["semantic_pass_required"]:
+        return False
+    reason = str(report["structure_deviation_reason"] or "")
+    return bool(re.search(r"(?:p[3-4]_t|missing_table=p[3-4]_)", reason))
 
 
 def _promote_regional_daily(
@@ -280,13 +433,13 @@ def _promote_state_generation(
 ) -> None:
     generation_columns = _generation_columns(template_id)
     capacity_column = generation_columns["InstalledCapacityMW"]
-    for page_no in (2, 3):
+    for page_no in (2,):
         current_state_id: int | None = None
         current_source_id: int | None = None
         for row in _table_rows(conn, report_id, page_no, 1):
             entity_cell = row.get(1)
             label = _clean_label(entity_cell[1]) if entity_cell else ""
-            state_id = _resolve_state_id(conn, report_id, label, record=False)
+            state_id = _resolve_state_id(conn, report_id, label)
             if state_id is not None and _cell_float(row, capacity_column) is None:
                 current_state_id = state_id
                 current_source_id = None
@@ -338,6 +491,367 @@ def _promote_state_generation(
                 sources, mapped_cells,
             )
             _validate_average_mw(conn, report_id, label, values)
+
+
+def _promote_conventional_generation(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote verified 2025/2026 conventional grids from pages three and four.
+
+    These three publisher layouts deliberately use separate column maps.  A
+    complete two-row header contract is required before each block is read so
+    a later layout revision cannot silently shift source values.
+    """
+
+    page_three_rows = _table_rows(conn, report_id, 3, 1)
+    header_indexes = _station_header_indexes(page_three_rows)
+    if len(header_indexes) >= 2:
+        state_header_index, regional_header_index = header_indexes[:2]
+        state_id = _preceding_state_id(
+            conn,
+            report_id,
+            page_three_rows[:state_header_index],
+        )
+        if (
+            state_id is not None
+            and _generation_header_matches(
+                page_three_rows,
+                state_header_index,
+                _STATE_SPARSE_GENERATION_COLUMNS,
+            )
+        ):
+            _promote_conventional_block(
+                conn,
+                report_id,
+                date_id,
+                region_id,
+                page_three_rows[state_header_index + 2:regional_header_index],
+                _STATE_SPARSE_GENERATION_COLUMNS,
+                state_id,
+                f"state_generation_{state_id}",
+                mapped_cells,
+            )
+        if _generation_header_matches(
+            page_three_rows,
+            regional_header_index,
+            _REGIONAL_SPARSE_GENERATION_COLUMNS,
+        ):
+            _promote_conventional_block(
+                conn,
+                report_id,
+                date_id,
+                region_id,
+                page_three_rows[regional_header_index + 2:],
+                _REGIONAL_SPARSE_GENERATION_COLUMNS,
+                None,
+                "regional_generation_isgs",
+                mapped_cells,
+            )
+
+    page_four_rows = _table_rows(conn, report_id, 4, 1)
+    page_four_headers = _station_header_indexes(page_four_rows)
+    if page_four_headers:
+        header_index = page_four_headers[0]
+        if _generation_header_matches(
+            page_four_rows,
+            header_index,
+            _IPP_JV_GENERATION_COLUMNS,
+        ):
+            _promote_conventional_block(
+                conn,
+                report_id,
+                date_id,
+                region_id,
+                page_four_rows[header_index + 2:],
+                _IPP_JV_GENERATION_COLUMNS,
+                None,
+                "regional_generation_ipp_jv",
+                mapped_cells,
+            )
+
+
+def _station_header_indexes(rows: list[dict[int, tuple[int, str]]]) -> list[int]:
+    """Return row indexes whose first cell is the published station header."""
+
+    return [
+        index
+        for index, row in enumerate(rows)
+        if re.sub(r"[^a-z]", "", _clean_label(row.get(1, (0, ""))[1]).lower())
+        == "stationconstituents"
+    ]
+
+
+def _preceding_state_id(
+    conn: sqlite3.Connection,
+    report_id: int,
+    rows: list[dict[int, tuple[int, str]]],
+) -> int | None:
+    """Resolve the closest published state heading before a generation grid."""
+
+    for row in reversed(rows):
+        label = _clean_label(row.get(1, (0, ""))[1])
+        if not label:
+            continue
+        state_id = _resolve_state_id(conn, report_id, label, record=False)
+        if state_id is not None:
+            return state_id
+    return None
+
+
+def _generation_header_matches(
+    rows: list[dict[int, tuple[int, str]]],
+    header_index: int,
+    columns: dict[str, int],
+) -> bool:
+    """Validate a full two-row generation header against its exact column map."""
+
+    if header_index + 1 >= len(rows):
+        return False
+    header_row = rows[header_index]
+    detail_row = rows[header_index + 1]
+    for field_name, column_no in columns.items():
+        expected = _GENERATION_HEADER_TOKENS[field_name]
+        header_text = " ".join(
+            cell[1]
+            for row in (header_row, detail_row)
+            if (cell := row.get(column_no))
+        )
+        normalized = re.sub(r"[^a-z]", "", header_text.lower())
+        if expected not in normalized:
+            return False
+    return True
+
+
+def _promote_conventional_block(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    rows: list[dict[int, tuple[int, str]]],
+    columns: dict[str, int],
+    state_id: int | None,
+    section_name: str,
+    mapped_cells: set[int],
+) -> None:
+    """Persist one header-validated conventional generation table block."""
+
+    for row in rows:
+        entity_cell = row.get(1)
+        label = _clean_label(entity_cell[1]) if entity_cell else ""
+        if not label:
+            continue
+        values, sources = _generation_values(row, columns)
+        capacity = values["InstalledCapacityMW"]
+        if capacity is None:
+            continue
+        is_total = _is_total_row(label)
+        try:
+            identity = resolve_generation_identity(
+                conn,
+                "wrldc",
+                label,
+                state_id,
+                region_id,
+                None,
+                float(capacity),
+                is_total,
+            )
+        except DimensionResolutionError as error:
+            record_resolution_issue(
+                conn,
+                report_id,
+                "wrldc",
+                "conventional_generation_entity",
+                label,
+                str(error),
+            )
+            continue
+        entity_id = _get_or_create_grid_entity(
+            conn,
+            label,
+            "generation_aggregate" if is_total else "generating_entity",
+            state_id,
+            region_id,
+            None,
+            float(capacity),
+            is_total,
+            identity,
+        )
+        _insert_fact(
+            conn,
+            "FactWRLDCGenerationDaily",
+            {
+                "ReportDocumentID": report_id,
+                "DateID": date_id,
+                "EntityID": entity_id,
+                "StateID": state_id,
+                "GenerationSourceID": None,
+                "StationID": identity.station_id,
+                "GeneratingUnitID": identity.generating_unit_id,
+                "AggregateID": identity.aggregate_id,
+                "IsTotalRow": int(is_total),
+                "GenerationGrain": identity.entity_type,
+                "SectionName": section_name,
+                **values,
+            },
+        )
+        if entity_cell:
+            mapped_cells.add(entity_cell[0])
+        _write_lineage(
+            conn,
+            report_id,
+            "FactWRLDCGenerationDaily",
+            f"report={report_id};date={date_id};entity={entity_id};section={section_name}",
+            sources,
+            mapped_cells,
+        )
+        _validate_average_mw(conn, report_id, label, values)
+
+
+def _promote_renewable_generation(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote the verified 2025/2026 renewable station continuation table.
+
+    Page five is a dense twelve-column table.  Page six continues the same
+    table with sparse raw-cell coordinates, then changes to the regional
+    generation summary.  The published ``TOTAL`` row is retained as an
+    aggregate; no source type is inferred from abbreviated station suffixes.
+    """
+
+    page_five_started = False
+    for page_no, columns in (
+        (5, _RENEWABLE_PAGE_FIVE_COLUMNS),
+        (6, _RENEWABLE_PAGE_SIX_COLUMNS),
+    ):
+        for row in _table_rows(conn, report_id, page_no, 1):
+            entity_cell = row.get(1)
+            label = _clean_label(entity_cell[1]) if entity_cell else ""
+            normalized = re.sub(r"[^a-z]", "", label.lower())
+            if page_no == 5:
+                if normalized == "renewable":
+                    page_five_started = True
+                    continue
+                if not page_five_started:
+                    continue
+            elif normalized == "total":
+                _promote_renewable_row(
+                    conn,
+                    report_id,
+                    date_id,
+                    region_id,
+                    label,
+                    entity_cell,
+                    row,
+                    columns,
+                    mapped_cells,
+                )
+                return
+
+            _promote_renewable_row(
+                conn,
+                report_id,
+                date_id,
+                region_id,
+                label,
+                entity_cell,
+                row,
+                columns,
+                mapped_cells,
+            )
+
+
+def _promote_renewable_row(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    label: str,
+    entity_cell: tuple[int, str] | None,
+    row: dict[int, tuple[int, str]],
+    columns: dict[str, int],
+    mapped_cells: set[int],
+) -> None:
+    """Persist one renewable station or the published renewable total row."""
+
+    if not label:
+        return
+    values, sources = _generation_values(row, columns)
+    capacity = values["InstalledCapacityMW"]
+    if capacity is None:
+        return
+    is_total = _is_total_row(label)
+    source_id = _source_id(conn, label)
+    try:
+        identity = resolve_generation_identity(
+            conn,
+            "wrldc",
+            label,
+            None,
+            region_id,
+            source_id,
+            float(capacity),
+            is_total,
+        )
+    except DimensionResolutionError as error:
+        record_resolution_issue(
+            conn,
+            report_id,
+            "wrldc",
+            "renewable_generation_entity",
+            label,
+            str(error),
+        )
+        return
+    entity_id = _get_or_create_grid_entity(
+        conn,
+        label,
+        "generation_aggregate" if is_total else "generating_entity",
+        None,
+        region_id,
+        source_id,
+        float(capacity),
+        is_total,
+        identity,
+    )
+    section_name = "renewable_generation"
+    _insert_fact(
+        conn,
+        "FactWRLDCGenerationDaily",
+        {
+            "ReportDocumentID": report_id,
+            "DateID": date_id,
+            "EntityID": entity_id,
+            "StateID": None,
+            "GenerationSourceID": source_id,
+            "StationID": identity.station_id,
+            "GeneratingUnitID": identity.generating_unit_id,
+            "AggregateID": identity.aggregate_id,
+            "IsTotalRow": int(is_total),
+            "GenerationGrain": identity.entity_type,
+            "SectionName": section_name,
+            **values,
+        },
+    )
+    if entity_cell:
+        mapped_cells.add(entity_cell[0])
+    _write_lineage(
+        conn,
+        report_id,
+        "FactWRLDCGenerationDaily",
+        f"report={report_id};date={date_id};entity={entity_id};section={section_name}",
+        sources,
+        mapped_cells,
+    )
+    _validate_average_mw(conn, report_id, label, values)
 
 
 def _fetch_report(conn: sqlite3.Connection, report_id: int) -> dict[str, object] | None:
@@ -416,6 +930,9 @@ def _clear_wrldc_facts(conn: sqlite3.Connection, report_id: int) -> None:
         "FactWRLDCFrequencyDaily",
         "FactWRLDCVoltageProfile",
         "FactWRLDCReservoirDaily",
+        "FactWRLDCMarketEnergyDaily",
+        "FactWRLDCMarketPointDaily",
+        "FactWRLDCMarketExtremaDaily",
         "FactWRLDCInterRegionalExchange",
     ):
         conn.execute(f"DELETE FROM {table_name} WHERE ReportDocumentID = ?", (report_id,))
@@ -582,6 +1099,277 @@ def _clean_label(value: str) -> str:
 
 def _is_total_row(value: str) -> bool:
     return re.sub(r"[^a-z]", "", value.lower()).startswith(("total", "subtotal"))
+
+
+def _promote_market_day_energy(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote the verified WRLDC Page 8 day-energy market matrix.
+
+    The 2025 and 2026 reports use the same seven MU measures but shift the
+    HP-DAM, RTM, and total columns. Header-derived columns preserve that
+    published geometry without treating the separate MW snapshots or extrema
+    blocks as daily energy values.
+    """
+
+    rows = _table_rows(conn, report_id, 8, 1)
+    for index, row in enumerate(rows[:-1]):
+        row_text = " ".join(text for _, text in row.values())
+        if "dayenergy" not in re.sub(r"[^a-z]", "", row_text.lower()):
+            continue
+        columns = _market_day_energy_columns(rows[index + 1])
+        if columns is None:
+            return
+        for data_row in rows[index + 2:]:
+            label_cell = data_row.get(1)
+            label = _clean_label(label_cell[1]) if label_cell else ""
+            if _is_total_row(label):
+                break
+            if not label:
+                continue
+            values, sources = _values(data_row, columns)
+            if not any(value is not None for value in values.values()):
+                continue
+            state_id = _market_state_id(conn, report_id, label)
+            entity_id = _market_participant_entity_id(
+                conn,
+                label,
+                state_id,
+                region_id,
+            )
+            _insert_fact(
+                conn,
+                "FactWRLDCMarketEnergyDaily",
+                {
+                    "ReportDocumentID": report_id,
+                    "DateID": date_id,
+                    "EntityID": entity_id,
+                    "StateID": state_id,
+                    **values,
+                },
+            )
+            if label_cell:
+                mapped_cells.add(label_cell[0])
+            _write_lineage(
+                conn,
+                report_id,
+                "FactWRLDCMarketEnergyDaily",
+                f"report={report_id};date={date_id};entity={entity_id}",
+                sources,
+                mapped_cells,
+            )
+        return
+
+
+def _market_day_energy_columns(
+    header_row: dict[int, tuple[int, str]],
+) -> dict[str, int] | None:
+    """Resolve the explicit Page 8 Day Energy headers to their raw columns."""
+
+    expected = {
+        "isgsgnaschedule": "GNAScheduleMU",
+        "tgnabilateralmw": "TGNABilateralMU",
+        "gdamschedule": "GDAMScheduleMU",
+        "damschedule": "DAMScheduleMU",
+        "hpdamschedule": "HPDAMScheduleMU",
+        "rtmschedule": "RTMScheduleMU",
+        "totalmu": "TotalMU",
+    }
+    columns: dict[str, int] = {}
+    for column, (_, text) in header_row.items():
+        normalized = re.sub(r"[^a-z]", "", text.lower())
+        field_name = expected.get(normalized)
+        if field_name:
+            columns[field_name] = column
+    return columns if len(columns) == len(expected) else None
+
+
+def _promote_market_points_and_extrema(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote header-derived WRLDC market snapshots and extrema by epoch."""
+
+    for page_no in (7, 8):
+        rows = _table_rows(conn, report_id, page_no, 1)
+        _promote_market_points_from_rows(
+            conn, report_id, date_id, region_id, mapped_cells, rows
+        )
+        _promote_market_extrema_from_rows(
+            conn, report_id, date_id, region_id, mapped_cells, rows
+        )
+
+
+def _promote_market_points_from_rows(
+    conn: sqlite3.Connection, report_id: int, date_id: int, region_id: int,
+    mapped_cells: set[int], rows: list[dict[int, tuple[int, str]]],
+) -> None:
+    """Promote one 03:00 or 19:00 market matrix after a complete header check."""
+
+    for index, row in enumerate(rows[:-1]):
+        heading = " ".join(text for _, text in row.values()).lower()
+        time_category = "off_peak" if "off-peakhours(03:00)" in heading else (
+            "peak" if "peakhours(19:00)" in heading else None
+        )
+        if time_category is None:
+            continue
+        mechanisms = _market_mechanism_columns(rows[index + 1])
+        if len(mechanisms) != 13:
+            continue
+        for data_row in rows[index + 2:]:
+            label_cell = data_row.get(1)
+            label = _clean_label(label_cell[1]) if label_cell else ""
+            if _is_total_row(label) or not label:
+                break
+            state_id = _market_state_id(conn, report_id, label)
+            entity_id = _market_participant_entity_id(conn, label, state_id, region_id)
+            for mechanism, column in mechanisms.items():
+                value, raw_id = _value_and_raw(data_row, column)
+                if value is None or raw_id is None:
+                    continue
+                _insert_fact(conn, "FactWRLDCMarketPointDaily", {
+                    "ReportDocumentID": report_id, "DateID": date_id,
+                    "EntityID": entity_id, "StateID": state_id,
+                    "TimeCategory": time_category, "Mechanism": mechanism,
+                    "ClearedMW": value,
+                })
+                _write_lineage(conn, report_id, "FactWRLDCMarketPointDaily",
+                    f"report={report_id};date={date_id};entity={entity_id};time={time_category};mechanism={mechanism}",
+                    {"ClearedMW": raw_id}, mapped_cells)
+        return
+
+
+def _promote_market_extrema_from_rows(
+    conn: sqlite3.Connection, report_id: int, date_id: int, region_id: int,
+    mapped_cells: set[int], rows: list[dict[int, tuple[int, str]]],
+) -> None:
+    """Promote a published Maximum/Minimum market matrix only when complete."""
+
+    for index, row in enumerate(rows[:-1]):
+        mechanisms = _market_mechanism_columns(row)
+        if len(mechanisms) != 7:
+            continue
+        pairs = _market_extrema_columns(mechanisms, rows[index + 1])
+        if pairs is None:
+            continue
+        for data_row in rows[index + 2:]:
+            label_cell = data_row.get(1)
+            label = _clean_label(label_cell[1]) if label_cell else ""
+            if _is_total_row(label) or not label:
+                break
+            state_id = _market_state_id(conn, report_id, label)
+            entity_id = _market_participant_entity_id(conn, label, state_id, region_id)
+            for mechanism, (maximum_col, minimum_col) in pairs.items():
+                maximum, maximum_raw = _value_and_raw(data_row, maximum_col)
+                minimum, minimum_raw = _value_and_raw(data_row, minimum_col)
+                if None in (maximum, minimum, maximum_raw, minimum_raw):
+                    continue
+                _insert_fact(conn, "FactWRLDCMarketExtremaDaily", {
+                    "ReportDocumentID": report_id, "DateID": date_id,
+                    "EntityID": entity_id, "StateID": state_id, "Mechanism": mechanism,
+                    "MaximumMW": maximum, "MinimumMW": minimum,
+                })
+                _write_lineage(conn, report_id, "FactWRLDCMarketExtremaDaily",
+                    f"report={report_id};date={date_id};entity={entity_id};mechanism={mechanism}",
+                    {"MaximumMW": maximum_raw, "MinimumMW": minimum_raw}, mapped_cells)
+        return
+
+
+def _market_mechanism_columns(row: dict[int, tuple[int, str]]) -> dict[str, int]:
+    """Resolve the 13 published market mechanisms from a header row."""
+
+    names = {
+        "isgsgnaschedule": "GNASchedule",
+        "tgnabilateralmw": "TGNABilateral", "iexgdammw": "IEXGDAM",
+        "iexdammw": "IEXDAM", "iexhpdammw": "IEXHPDAM", "iexrtmmw": "IEXRTM",
+        "pxilgdammw": "PXILGDAM", "pxildammw": "PXILDAM", "pxilhpdammw": "PXILHPDAM",
+        "pxirtmmw": "PXILRTM", "hpxgdammw": "HPXGDAM", "hpxdammw": "HPXDAM",
+        "hpxhpdammw": "HPXHPDAM", "hpxrtmmw": "HPXRTM",
+    }
+    result = {}
+    for column, (_, text) in row.items():
+        name = names.get(re.sub(r"[^a-z]", "", text.lower()))
+        if name:
+            result[name] = column
+    return result
+
+
+def _market_extrema_columns(
+    mechanisms: dict[str, int], row: dict[int, tuple[int, str]],
+) -> dict[str, tuple[int, int]] | None:
+    """Find each extrema pair within its published mechanism header band."""
+
+    columns = sorted(mechanisms.items(), key=lambda item: item[1])
+    pairs: dict[str, tuple[int, int]] = {}
+    for index, (mechanism, start) in enumerate(columns):
+        end = columns[index + 1][1] if index + 1 < len(columns) else max(row) + 1
+        maximum = [column for column in range(start, end) if _clean_label(row.get(column, (0, ""))[1]).lower() == "maximum"]
+        minimum = [column for column in range(start, end) if _clean_label(row.get(column, (0, ""))[1]).lower() == "minimum"]
+        if len(maximum) != 1 or len(minimum) != 1:
+            return None
+        pairs[mechanism] = (maximum[0], minimum[0])
+    return pairs
+
+
+def _value_and_raw(row: dict[int, tuple[int, str]], column: int) -> tuple[float | None, int | None]:
+    """Read one native numeric cell and retain its raw identity."""
+
+    raw = row.get(column)
+    return (_float(raw[1]), raw[0]) if raw else (None, None)
+
+
+def _market_participant_entity_id(
+    conn: sqlite3.Connection,
+    label: str,
+    state_id: int | None,
+    region_id: int,
+) -> int:
+    """Resolve one published market participant without forcing a state alias."""
+
+    entity_name = re.sub(r"\s+", " ", label).strip()
+    row = conn.execute(
+        """
+        SELECT EntityID FROM DimGridEntities
+        WHERE EntityName = ? AND EntityType = 'market_participant'
+          AND StateID IS ? AND RegionID = ?
+        """,
+        (entity_name, state_id, region_id),
+    ).fetchone()
+    if row:
+        return int(row[0])
+    cursor = conn.execute(
+        """
+        INSERT INTO DimGridEntities(EntityName, EntityType, StateID, RegionID)
+        VALUES (?, 'market_participant', ?, ?)
+        """,
+        (entity_name, state_id, region_id),
+    )
+    return int(cursor.lastrowid)
+
+
+def _market_state_id(
+    conn: sqlite3.Connection,
+    report_id: int,
+    label: str,
+) -> int | None:
+    """Resolve only geographical Page 8 labels as states.
+
+    The WRLDC state-alias registry also contains commercial participants for
+    other legacy tables. This market table keeps those participants at the
+    entity grain and assigns ``StateID`` only to published geographical rows.
+    """
+
+    normalized = re.sub(r"[^A-Z]", "", label.upper())
+    if normalized not in _WRLDC_MARKET_GEOGRAPHIC_LABELS:
+        return None
+    return _resolve_state_id(conn, report_id, label, record=False)
 
 
 def _promote_physical_exchanges(

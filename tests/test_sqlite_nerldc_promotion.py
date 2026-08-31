@@ -42,18 +42,20 @@ def test_nerldc_2025_local_fixture_promotes_core_curated_facts(
             (SELECT COUNT(*) FROM FactNERLDCRegionalDaily),
             (SELECT COUNT(*) FROM FactNERLDCStateDaily),
             (SELECT COUNT(*) FROM FactNERLDCGenerationDaily),
-            (SELECT COUNT(*) FROM FactNERLDCFrequencyDaily),
-            (SELECT COUNT(*) FROM FactNERLDCVoltageProfile),
-            (SELECT COUNT(*) FROM FactNERLDCInterRegionalExchange),
-            (SELECT COUNT(*) FROM FactNERLDCInternationalExchange),
+                (SELECT COUNT(*) FROM FactNERLDCFrequencyDaily),
+                (SELECT COUNT(*) FROM FactNERLDCVoltageProfile),
+                (SELECT COUNT(*) FROM FactNERLDCReservoirDaily),
+                (SELECT COUNT(*) FROM FactNERLDCInterRegionalExchange),
+                (SELECT COUNT(*) FROM FactNERLDCInternationalExchange),
             (SELECT COUNT(*) FROM curated_field_lineage)
         """
     ).fetchone()
     assert counts[0:4] == (1, 7, 44, 1)
     assert counts[4] >= 20
-    assert counts[5] >= 10
-    assert counts[6] == 1
-    assert counts[7] > 600
+    assert counts[5] == 9
+    assert counts[6] >= 10
+    assert counts[7] == 1
+    assert counts[8] > 600
     state_names = conn.execute(
         """
         SELECT s.StateName
@@ -75,11 +77,16 @@ def test_nerldc_2025_local_fixture_promotes_core_curated_facts(
 
 
 @pytest.mark.parametrize(
-    ("filename", "report_date", "has_regional_schedule_table"),
+    (
+        "filename",
+        "report_date",
+        "has_regional_schedule_table",
+        "expected_reservoir_count",
+    ),
     [
-        ("NER-PSP-REPORT-DATED-01-04-2023.pdf", date(2023, 4, 1), True),
-        ("NER-PSP-REPORT-DATED-01-01-2024.pdf", date(2024, 1, 1), False),
-        ("NER-PSP-REPORT-DATED-01-01-2026.pdf", date(2026, 1, 1), True),
+        ("NER-PSP-REPORT-DATED-01-04-2023.pdf", date(2023, 4, 1), True, 9),
+        ("NER-PSP-REPORT-DATED-01-01-2024.pdf", date(2024, 1, 1), False, 9),
+        ("NER-PSP-REPORT-DATED-01-01-2026.pdf", date(2026, 1, 1), True, 10),
     ],
 )
 def test_nerldc_nine_column_layouts_promote_generation_and_operational_facts(
@@ -87,6 +94,7 @@ def test_nerldc_nine_column_layouts_promote_generation_and_operational_facts(
     filename: str,
     report_date: date,
     has_regional_schedule_table: bool,
+    expected_reservoir_count: int,
 ) -> None:
     """The approved nine-column families retain generation and operational facts."""
 
@@ -125,6 +133,15 @@ def test_nerldc_nine_column_layouts_promote_generation_and_operational_facts(
         assert counts[2] == 44
     assert counts[4] >= 20
     assert counts[5] == 10
+    reservoir_count = conn.execute(
+        "SELECT COUNT(*) FROM FactNERLDCReservoirDaily"
+    ).fetchone()[0]
+    reservoir_lineage_count = conn.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage "
+        "WHERE DestinationTable = 'FactNERLDCReservoirDaily'"
+    ).fetchone()[0]
+    assert reservoir_count == expected_reservoir_count
+    assert reservoir_lineage_count >= 60
 
 
 def test_nerldc_2026_promotes_regional_schedule_ui_and_rras(

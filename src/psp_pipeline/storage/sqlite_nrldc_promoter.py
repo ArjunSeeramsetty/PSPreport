@@ -22,6 +22,7 @@ from psp_pipeline.storage.sqlite_dimensions import (
     resolve_generation_identity,
     resolve_state_id,
 )
+from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
 
 
 NR_REGION_NAME = "Northern Region"
@@ -156,6 +157,97 @@ _GENERATION_COLUMNS = {
         "AverageMW": 11,
     },
 }
+_NRLDC_2026_RAW_CONTINUATION_DENSE_COLUMNS = {
+    "InstalledCapacityMW": 2,
+    "DeclaredCapacityMW": 3,
+    "EveningPeakMW": 4,
+    "OffPeakMW": 5,
+    "DayPeakMW": 6,
+    "DayPeakTime": 7,
+    "MinimumGenerationMW": 8,
+    "MinimumGenerationTime": 9,
+    "ScheduledEnergyMU": 10,
+    "GrossEnergyMU": 11,
+    "NetEnergyMU": 12,
+    "AverageMW": 13,
+    "UIMU": 14,
+}
+_NRLDC_2026_RAW_CONTINUATION_SPARSE_COLUMNS = {
+    "InstalledCapacityMW": 3,
+    "DeclaredCapacityMW": 4,
+    "EveningPeakMW": 6,
+    "OffPeakMW": 8,
+    "DayPeakMW": 10,
+    "DayPeakTime": 12,
+    "MinimumGenerationMW": 14,
+    "MinimumGenerationTime": 15,
+    "ScheduledEnergyMU": 17,
+    "GrossEnergyMU": 18,
+    "NetEnergyMU": 21,
+    "AverageMW": 22,
+    "UIMU": 23,
+}
+_MARKET_DAY_ENERGY_PAGE = {
+    NRLDC_2025_TEMPLATE.template_id: 11,
+    NRLDC_2026_TEMPLATE.template_id: 12,
+}
+_MARKET_DAY_ENERGY_COLUMNS = {
+    "GNAScheduleMU": 4,
+    "TGNABilateralMU": 7,
+    "GDAMScheduleMU": 10,
+    "DAMScheduleMU": 15,
+    "RTMScheduleMU": 19,
+    "TotalMU": 23,
+}
+_MARKET_POINT_PAGE = NRLDC_2026_TEMPLATE.template_id
+_MARKET_OFF_PEAK_COLUMNS = {
+    "TGNABilateralMW": 2,
+    "IEXGDAMMW": 4,
+    "IEXDAMMW": 5,
+    "IEXRTMMW": 7,
+    "PXILGDAMMW": 8,
+    "PXILDAMMW": 10,
+    "PXIRTMMW": 11,
+}
+_MARKET_PEAK_COLUMNS = {
+    "TGNABilateralMW": 13,
+    "IEXGDAMMW": 14,
+    "IEXDAMMW": 16,
+    "IEXRTMMW": 18,
+    "PXILGDAMMW": 20,
+    "PXILDAMMW": 22,
+    "PXIRTMMW": 24,
+}
+_MARKET_EXTREMA_FIRST_BLOCK = {
+    "GNA": (2, 5),
+    "T_GNA_BILATERAL": (8, 12),
+    "IEX_GDAM": (16, 20),
+    "PXIL_GDAM": (22, 25),
+}
+_MARKET_EXTREMA_SECOND_BLOCK = {
+    "IEX_DAM": (3, 6),
+    "PXIL_DAM": (9, 11),
+    "IEX_RTM": (14, 17),
+    "PXIL_RTM": (21, 24),
+}
+_PAGE_ELEVEN_24_COLUMN_VOLTAGE_COLUMNS = {
+    "MaximumKV": 3,
+    "MinimumKV": 9,
+    "LowCriticalPct": 15,
+    "LowWarningPct": 17,
+    "HighWarningPct": 19,
+    "HighCriticalPct": 21,
+    "VoltageDeviationIndexPct": 23,
+}
+_PAGE_ELEVEN_28_COLUMN_VOLTAGE_COLUMNS = {
+    "MaximumKV": 3,
+    "MinimumKV": 10,
+    "LowCriticalPct": 18,
+    "LowWarningPct": 20,
+    "HighWarningPct": 22,
+    "HighCriticalPct": 24,
+    "VoltageDeviationIndexPct": 27,
+}
 
 
 def promote_nrldc_report_to_curated(
@@ -169,6 +261,7 @@ def promote_nrldc_report_to_curated(
         _record_unrecognized_report,
     )
 
+    ensure_curated_sqlite_schema(conn)
     report = _fetch_report(conn, report_document_id)
     if not report or report["rldc"] != "nrldc":
         return
@@ -203,12 +296,43 @@ def promote_nrldc_report_to_curated(
     validation_failures += _promote_spatial_continuation_generation(
         conn, report_document_id, date_id, region_id, template_id
     )
+    validation_failures += _promote_2026_raw_continuation_generation(
+        conn,
+        report_document_id,
+        date_id,
+        region_id,
+        template_id,
+        mapped_cells,
+    )
     _promote_frequency_daily(conn, report_document_id, date_id, region_id, mapped_cells)
     _promote_voltage_profiles(conn, report_document_id, date_id, region_id, mapped_cells)
     _promote_reservoirs(conn, report_document_id, date_id, region_id, mapped_cells)
     _promote_physical_exchanges(conn, report_document_id, date_id, mapped_cells)
     _promote_schedule_exchanges(conn, report_document_id, date_id, mapped_cells)
     _promote_nepal_exchanges(conn, report_document_id, date_id, mapped_cells)
+    if not _market_scope_is_affected(report, template_id):
+        _promote_market_day_energy(
+            conn,
+            report_document_id,
+            date_id,
+            template_id,
+            mapped_cells,
+        )
+    if not _market_point_scope_is_affected(report, template_id):
+        _promote_2026_market_point_in_time(
+            conn,
+            report_document_id,
+            date_id,
+            template_id,
+            mapped_cells,
+        )
+    if not _market_extrema_scope_is_affected(report, template_id):
+        _promote_2026_market_extrema(
+            conn,
+            report_document_id,
+            date_id,
+            mapped_cells,
+        )
     _record_initial_coverage(
         conn, report_document_id, template_id, mapped_cells, validation_failures
     )
@@ -226,6 +350,49 @@ def _has_curated_scope_deviation(report: sqlite3.Row) -> bool:
         return False
     reason = str(report.get("structure_deviation_reason") or "")
     return bool(re.search(r"(?:p[1-4]_t|missing_table=p[1-4]_)", reason))
+
+
+def _market_scope_is_affected(
+    report: Mapping[str, object],
+    template_id: str,
+) -> bool:
+    """Block market promotion only when its verified page has structural drift."""
+
+    if not report["semantic_pass_required"]:
+        return False
+    page_no = _MARKET_DAY_ENERGY_PAGE.get(template_id)
+    if page_no is None:
+        return True
+    reason = str(report.get("structure_deviation_reason") or "")
+    return bool(re.search(rf"(?:p{page_no}_t|missing_table=p{page_no}_)", reason))
+
+
+def _market_point_scope_is_affected(
+    report: Mapping[str, object],
+    template_id: str,
+) -> bool:
+    """Block point-in-time promotion until its verified 2026 layout is stable."""
+
+    if template_id != _MARKET_POINT_PAGE:
+        return True
+    if not report["semantic_pass_required"]:
+        return False
+    reason = str(report.get("structure_deviation_reason") or "")
+    return bool(re.search(r"(?:p11_t|missing_table=p11_)", reason))
+
+
+def _market_extrema_scope_is_affected(
+    report: Mapping[str, object],
+    template_id: str,
+) -> bool:
+    """Block Section 7(B) promotion until its verified page-12 layout is stable."""
+
+    if template_id != _MARKET_POINT_PAGE:
+        return True
+    if not report["semantic_pass_required"]:
+        return False
+    reason = str(report.get("structure_deviation_reason") or "")
+    return bool(re.search(r"(?:p12_t|missing_table=p12_)", reason))
 
 
 def _clear_nrldc_curated_report(
@@ -270,11 +437,203 @@ def _clear_nrldc_curated_report(
         "FactNRLDCInterRegionalExchange",
         "FactNRLDCInterRegionalScheduleExchange",
         "FactNRLDCInternationalExchange",
+        "FactNRLDCStateMarketDaily",
+        "FactNRLDCStateMarketPointDaily",
+        "FactNRLDCStateMarketExtremaDaily",
     ):
         conn.execute(
             f"DELETE FROM {table_name} WHERE ReportDocumentID = ?",
             (report_document_id,),
         )
+
+
+def _promote_market_day_energy(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    template_id: str,
+    mapped_cells: set[int],
+) -> None:
+    """Promote the fixture-verified Section 7(A) state Day Energy matrix.
+
+    The contract is shared by the 2025 and 2026 templates; only the page
+    number shifts.  Peak/off-peak and Section 7(B) extrema have separate
+    grains and are intentionally not handled here.
+    """
+
+    page_no = _MARKET_DAY_ENERGY_PAGE.get(template_id)
+    if page_no is None:
+        return
+    in_day_energy = False
+    for row in _table_rows(conn, report_id, page_no, 1):
+        label_cell = row.get(1)
+        label = _clean_label(label_cell[1]) if label_cell else ""
+        normalized = re.sub(r"[^a-z0-9]", "", label.lower())
+        day_energy_header = "dayenergy" in re.sub(
+            r"[^a-z]", "", str(row.get(4, (0, ""))[1]).lower()
+        )
+        if normalized == "state" and day_energy_header:
+            in_day_energy = True
+            continue
+        if in_day_energy and normalized.startswith("7b"):
+            break
+        if not in_day_energy or _is_total_row(label):
+            continue
+        state_id = _resolve_state_id(conn, report_id, label, record=False)
+        if state_id is None:
+            continue
+        values, sources = _mapped_values(row, _MARKET_DAY_ENERGY_COLUMNS)
+        if not any(value is not None for value in values.values()):
+            continue
+        columns = list(values)
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO FactNRLDCStateMarketDaily(
+                ReportDocumentID, DateID, StateID, {', '.join(columns)}
+            ) VALUES (?, ?, ?, {', '.join('?' for _ in columns)})
+            """,
+            (report_id, date_id, state_id, *(values[column] for column in columns)),
+        )
+        if label_cell:
+            mapped_cells.add(label_cell[0])
+        _write_lineage(
+            conn,
+            report_id,
+            "FactNRLDCStateMarketDaily",
+            f"report={report_id};date={date_id};state={state_id}",
+            sources,
+            mapped_cells,
+        )
+
+
+def _promote_2026_market_point_in_time(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    template_id: str,
+    mapped_cells: set[int],
+) -> None:
+    """Promote the verified 03:00 and 19:00 Section 7(A) market snapshots."""
+
+    if template_id != _MARKET_POINT_PAGE:
+        return
+    in_section = False
+    for row in _table_rows(conn, report_id, 11, 1):
+        label_cell = row.get(1)
+        label = _clean_label(label_cell[1]) if label_cell else ""
+        normalized = re.sub(r"[^a-z0-9]", "", label.lower())
+        if normalized.startswith("7ashorttermopenaccessdetails"):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if normalized == "state":
+            continue
+        if _is_total_row(label):
+            break
+        state_id = _resolve_state_id(conn, report_id, label, record=False)
+        if state_id is None:
+            continue
+        for time_category, columns in (
+            ("off_peak", _MARKET_OFF_PEAK_COLUMNS),
+            ("peak", _MARKET_PEAK_COLUMNS),
+        ):
+            values, sources = _mapped_values(row, columns)
+            if not any(value is not None for value in values.values()):
+                continue
+            names = list(values)
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO FactNRLDCStateMarketPointDaily(
+                    ReportDocumentID, DateID, StateID, TimeCategory,
+                    {', '.join(names)}
+                ) VALUES (?, ?, ?, ?, {', '.join('?' for _ in names)})
+                """,
+                (
+                    report_id,
+                    date_id,
+                    state_id,
+                    time_category,
+                    *(values[name] for name in names),
+                ),
+            )
+            if label_cell:
+                mapped_cells.add(label_cell[0])
+            _write_lineage(
+                conn,
+                report_id,
+                "FactNRLDCStateMarketPointDaily",
+                f"report={report_id};date={date_id};state={state_id};time={time_category}",
+                sources,
+                mapped_cells,
+            )
+
+
+def _promote_2026_market_extrema(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    mapped_cells: set[int],
+) -> None:
+    """Promote Section 7(B) 24-hour market maximum and minimum MW pairs."""
+
+    in_section = False
+    columns: dict[str, tuple[int, int]] | None = None
+    for row in _table_rows(conn, report_id, 12, 1):
+        label_cell = row.get(1)
+        label = _clean_label(label_cell[1]) if label_cell else ""
+        normalized = re.sub(r"[^a-z0-9]", "", label.lower())
+        if normalized.startswith("7bshorttermopenaccessdetails"):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if normalized.startswith("8majorreservoir"):
+            break
+        if normalized == "state":
+            if 2 in row and "gna" in row[2][1].lower():
+                columns = _MARKET_EXTREMA_FIRST_BLOCK
+            elif (
+                3 in row
+                and "iexd" in re.sub(r"[^a-z]", "", row[3][1].lower())
+            ):
+                columns = _MARKET_EXTREMA_SECOND_BLOCK
+            continue
+        if columns is None or _is_total_row(label):
+            continue
+        state_id = _resolve_state_id(conn, report_id, label, record=False)
+        if state_id is None:
+            continue
+        for mechanism, (maximum_column, minimum_column) in columns.items():
+            maximum_raw = row.get(maximum_column)
+            minimum_raw = row.get(minimum_column)
+            maximum = _to_float(maximum_raw[1]) if maximum_raw else None
+            minimum = _to_float(minimum_raw[1]) if minimum_raw else None
+            if maximum is None and minimum is None:
+                continue
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO FactNRLDCStateMarketExtremaDaily(
+                    ReportDocumentID, DateID, StateID, Mechanism, MaximumMW, MinimumMW
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (report_id, date_id, state_id, mechanism, maximum, minimum),
+            )
+            if label_cell:
+                mapped_cells.add(label_cell[0])
+            sources: dict[str, int] = {}
+            if maximum_raw and maximum is not None:
+                sources["MaximumMW"] = maximum_raw[0]
+            if minimum_raw and minimum is not None:
+                sources["MinimumMW"] = minimum_raw[0]
+            _write_lineage(
+                conn,
+                report_id,
+                "FactNRLDCStateMarketExtremaDaily",
+                f"report={report_id};date={date_id};state={state_id};mechanism={mechanism}",
+                sources,
+                mapped_cells,
+            )
 
 
 def repromote_nrldc_reports(conn: sqlite3.Connection) -> dict[str, int]:
@@ -769,6 +1128,141 @@ def _promote_spatial_continuation_generation(
     return validation_failures
 
 
+def _promote_2026_raw_continuation_generation(
+    conn: sqlite3.Connection,
+    report_id: int,
+    date_id: int,
+    region_id: int,
+    template_id: str,
+    mapped_cells: set[int],
+) -> int:
+    """Attach raw-cell lineage to complete 2026 renewable continuation rows.
+
+    LiteParse remains the source for line-wrapped or collapsed continuation
+    rows.  This pass accepts only rows with a published capacity in the
+    verified native grid, retaining the same fact grain while making their
+    exact raw cells auditable in the coverage gate.
+    """
+
+    if template_id != NRLDC_2026_TEMPLATE.template_id:
+        return 0
+
+    validation_failures = 0
+    active_source_id: int | None = None
+    for page_no, columns in (
+        (7, _NRLDC_2026_RAW_CONTINUATION_DENSE_COLUMNS),
+        (8, _NRLDC_2026_RAW_CONTINUATION_DENSE_COLUMNS),
+        (9, _NRLDC_2026_RAW_CONTINUATION_SPARSE_COLUMNS),
+    ):
+        for row in _table_rows(conn, report_id, page_no, 1):
+            label_cell = row.get(1)
+            label = _clean_label(label_cell[1]) if label_cell else ""
+            normalized = re.sub(r"[^a-z]", "", label.lower())
+            if normalized.startswith("summarysection"):
+                return validation_failures
+            heading_source_id = _continuation_heading_source_id(conn, normalized)
+            if heading_source_id is not None or normalized in {
+                "ipp",
+                "hybridipp",
+                "bess",
+            }:
+                active_source_id = heading_source_id
+                continue
+
+            values, sources = _generation_values(row, columns)
+            capacity = values["InstalledCapacityMW"]
+            if not label or capacity is None:
+                continue
+            is_total = _is_total_row(label)
+            source_id = _generation_source_id(conn, label) or active_source_id
+            try:
+                identity = resolve_generation_identity(
+                    conn,
+                    "nrldc",
+                    label,
+                    None,
+                    region_id,
+                    source_id,
+                    float(capacity),
+                    is_total,
+                )
+            except DimensionResolutionError as error:
+                record_resolution_issue(
+                    conn,
+                    report_id,
+                    "nrldc",
+                    "continuation_generation_entity",
+                    label,
+                    str(error),
+                )
+                continue
+            entity_id = _get_or_create_grid_entity(
+                conn,
+                label,
+                "generation_aggregate" if is_total else "generating_entity",
+                None,
+                region_id,
+                source_id,
+                float(capacity),
+                is_total,
+                identity,
+            )
+            section_name = f"continuation_spatial_p{page_no}"
+            names = list(values)
+            conn.execute(
+                f"""
+                INSERT OR REPLACE INTO FactNRLDCGenerationDaily(
+                    ReportDocumentID, DateID, EntityID, StateID, GenerationSourceID,
+                    StationID, GeneratingUnitID, AggregateID, IsTotalRow,
+                    GenerationGrain, SectionName, {', '.join(names)}
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?,
+                    {', '.join('?' for _ in names)})
+                """,
+                (
+                    report_id,
+                    date_id,
+                    entity_id,
+                    source_id,
+                    identity.station_id,
+                    identity.generating_unit_id,
+                    identity.aggregate_id,
+                    int(is_total),
+                    identity.entity_type,
+                    section_name,
+                    *(values[name] for name in names),
+                ),
+            )
+            if label_cell:
+                mapped_cells.add(label_cell[0])
+            _write_lineage(
+                conn,
+                report_id,
+                "FactNRLDCGenerationDaily",
+                f"report={report_id};date={date_id};entity={entity_id};section={section_name}",
+                sources,
+                mapped_cells,
+            )
+            net_energy = values["NetEnergyMU"]
+            average_mw = values["AverageMW"]
+            if net_energy is not None and average_mw is not None:
+                expected_average = float(net_energy) * 1000.0 / 24.0
+                tolerance = max(5.0, abs(expected_average) * 0.01)
+                if abs(float(average_mw) - expected_average) > tolerance:
+                    validation_failures += 1
+    return validation_failures
+
+
+def _continuation_heading_source_id(
+    conn: sqlite3.Connection,
+    normalized_label: str,
+) -> int | None:
+    """Resolve only explicit continuation source headings, never suffix hints."""
+
+    if normalized_label == "solaripp":
+        return _generation_source_id(conn, "solar")
+    return None
+
+
 _NRLDC_CONTINUATION_COLUMN_CENTERS = {
     "InstalledCapacityMW": 121.0,
     "DeclaredCapacityMW": 165.0,
@@ -918,16 +1412,10 @@ def _promote_voltage_profiles(
             }
             maximum_time_column, minimum_time_column = 4, 12
         else:
-            columns = {
-                "MaximumKV": 3,
-                "MinimumKV": 10,
-                "LowCriticalPct": 18,
-                "LowWarningPct": 20,
-                "HighWarningPct": 22,
-                "HighCriticalPct": 24,
-                "VoltageDeviationIndexPct": 27,
-            }
-            maximum_time_column, minimum_time_column = 6, 14
+            layout = _page_eleven_voltage_layout(row)
+            if layout is None:
+                continue
+            columns, maximum_time_column, minimum_time_column = layout
         maximum = _cell_float(row, columns["MaximumKV"])
         minimum = _cell_float(row, columns["MinimumKV"])
         if maximum is None or minimum is None:
@@ -969,6 +1457,24 @@ def _promote_voltage_profiles(
             sources,
             mapped_cells,
         )
+
+
+def _page_eleven_voltage_layout(
+    row: dict[int, tuple[int, str]],
+) -> tuple[dict[str, int], int, int] | None:
+    """Return the verified Page 11 voltage map for one printed node row.
+
+    A 24-column continuation uses minimum voltage at column nine.  Later
+    reports retain the established 28-column geometry with minimum voltage at
+    column ten.  Both maps require their distinguishing minimum-value column
+    to contain a numeric value before a fact can be emitted.
+    """
+
+    if _cell_float(row, 9) is not None and _cell_float(row, 10) is None:
+        return _PAGE_ELEVEN_24_COLUMN_VOLTAGE_COLUMNS, 6, 12
+    if _cell_float(row, 10) is not None:
+        return _PAGE_ELEVEN_28_COLUMN_VOLTAGE_COLUMNS, 6, 14
+    return None
 
 
 def _promote_reservoirs(

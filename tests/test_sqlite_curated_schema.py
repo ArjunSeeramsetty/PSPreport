@@ -125,3 +125,78 @@ def test_curated_lineage_migrates_legacy_rows_for_raw_line_provenance() -> None:
     ).fetchone()
     assert "RawLineID" in columns
     assert preserved == (99, None, "FactLegacy")
+
+
+def test_erldc_dimension_backfill_coalesces_legacy_state_null_entities() -> None:
+    """ERLDC backfill merges a legacy entity when its canonical identity exists."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    conn.executescript(
+        """
+        CREATE TABLE psp_report_document (
+            id INTEGER PRIMARY KEY,
+            rldc TEXT NOT NULL
+        );
+        INSERT INTO psp_report_document(id, rldc) VALUES (41, 'erldc');
+        """
+    )
+    east_region_id = conn.execute(
+        "SELECT RegionID FROM DimRegions WHERE RegionName = 'Eastern Region'"
+    ).fetchone()[0]
+    sikkim_state_id = conn.execute(
+        "SELECT StateID FROM DimStates WHERE StateName = 'Sikkim'"
+    ).fetchone()[0]
+    conn.execute("INSERT INTO DimDates(ActualDate) VALUES ('2026-01-01')")
+    date_id = conn.execute(
+        "SELECT DateID FROM DimDates WHERE ActualDate = '2026-01-01'"
+    ).fetchone()[0]
+    canonical_entity_id = conn.execute(
+        """
+        INSERT INTO DimGridEntities(EntityName, EntityType, StateID, RegionID)
+        VALUES ('CHUZACHEN(2*55)', 'generating_entity', ?, ?)
+        """,
+        (sikkim_state_id, east_region_id),
+    ).lastrowid
+    legacy_entity_id = conn.execute(
+        """
+        INSERT INTO DimGridEntities(EntityName, EntityType, StateID, RegionID)
+        VALUES ('CHUZACHEN(2*55)', 'generating_entity', NULL, ?)
+        """,
+        (east_region_id,),
+    ).lastrowid
+    conn.execute(
+        """
+        INSERT INTO FactERLDCGenerationDaily(
+            ReportDocumentID, DateID, EntityID, AggregateID, SectionName
+        ) VALUES (41, ?, ?, ?, 'state_generation')
+        """,
+        (date_id, legacy_entity_id, legacy_entity_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO curated_field_lineage(
+            ReportDocumentID, DestinationTable, DestinationKey,
+            DestinationColumn, RawCellID, ExtractionMethod, Confidence, CreatedAt
+        ) VALUES (
+            41, 'FactERLDCGenerationDaily', ?, 'NetEnergyMU', 1,
+            'pdfplumber', 1.0, '2026-01-02T00:00:00+00:00'
+        )
+        """,
+        (f"report=41;date={date_id};entity={legacy_entity_id};section=state_generation",),
+    )
+
+    ensure_curated_sqlite_schema(conn)
+
+    fact_entity_id = conn.execute(
+        "SELECT EntityID FROM FactERLDCGenerationDaily WHERE ReportDocumentID = 41"
+    ).fetchone()[0]
+    lineage_key = conn.execute(
+        "SELECT DestinationKey FROM curated_field_lineage "
+        "WHERE ReportDocumentID = 41"
+    ).fetchone()[0]
+    assert fact_entity_id == canonical_entity_id
+    assert conn.execute(
+        "SELECT 1 FROM DimGridEntities WHERE EntityID = ?", (legacy_entity_id,)
+    ).fetchone() is None
+    assert f"entity={canonical_entity_id};" in lineage_key

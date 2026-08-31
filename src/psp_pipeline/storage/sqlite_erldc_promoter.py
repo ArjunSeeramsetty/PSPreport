@@ -18,6 +18,10 @@ from psp_pipeline.storage.sqlite_erldc_enrichment import (
     transmission_location,
     voltage_node_location,
 )
+from psp_pipeline.parsing.rldc.spatial_rows import (
+    SpatialTextItem,
+    reconstruct_generation_rows,
+)
 
 
 ERLDC_FLAT_TEMPLATE_IDS = frozenset({
@@ -36,8 +40,68 @@ _STATE_ALIASES = {
     "JHARKHAND": "Jharkhand",
     "SIKKIM": "Sikkim",
     "DVC": "DVC",
-    "RAILWAYS_ERISTS": "Railways_ER ISTS",
 }
+_ERLDC_MARKET_GEOGRAPHIC_LABELS = frozenset({
+    "BIHAR",
+    "JHARKHAND",
+    "ODISHA",
+    "SIKKIM",
+    "WESTBENGAL",
+})
+_ERLDC_MARKET_PARTICIPANT_ALIASES = {
+    "RAILWAYSERISTS": "Railways_ER ISTS",
+}
+_ERLDC_REGIONAL_GENERATION_SPATIAL_CENTERS = {
+    "InstalledCapacityMW": 157.9,
+    "EveningPeakMW": 209.7,
+    "OffPeakMW": 261.4,
+    "DayPeakMW": 311.6,
+    "DayPeakTime": 359.8,
+    "MinimumGenerationMW": 408.6,
+    "MinimumGenerationTime": 456.9,
+    "ScheduledEnergyMU": 504.0,
+    "GrossEnergyMU": 546.1,
+    "NetEnergyMU": 588.2,
+    "AverageMW": 629.7,
+}
+_ERLDC_MARKET_EXTREMA_SPATIAL_TABLES = (
+    (
+        (320.0, 455.0),
+        {
+            "GNAScheduleMaximumMW": 76.0,
+            "GNAScheduleMinimumMW": 118.0,
+            "TGNABilateralMaximumMW": 172.0,
+            "TGNABilateralMinimumMW": 214.0,
+            "IEXGDAMMaximumMW": 249.0,
+            "IEXGDAMMinimumMW": 298.0,
+            "PXILGDAMMaximumMW": 340.0,
+            "PXILGDAMMinimumMW": 382.0,
+            "HPXGDAMMaximumMW": 424.0,
+            "HPXGDAMMinimumMW": 466.0,
+            "IEXDAMMaximumMW": 501.0,
+            "IEXDAMMinimumMW": 540.0,
+            "PXILDAMMaximumMW": 592.0,
+            "PXILDAMMinimumMW": 634.0,
+        },
+    ),
+    (
+        (455.0, 575.0),
+        {
+            "HPXDAMMaximumMW": 88.0,
+            "HPXDAMMinimumMW": 130.0,
+            "IEXHPDAMMaximumMW": 172.0,
+            "IEXHPDAMMinimumMW": 214.0,
+            "PXILHPDAMMaximumMW": 256.0,
+            "PXILHPDAMMinimumMW": 298.0,
+            "HPXHPDAMMaximumMW": 340.0,
+            "HPXHPDAMMinimumMW": 382.0,
+            "IEXRTMMaximumMW": 417.0,
+            "IEXRTMMinimumMW": 458.0,
+            "PXILRTMMaximumMW": 508.0,
+            "PXILRTMMinimumMW": 550.0,
+        },
+    ),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +139,8 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
         "FactERLDCVoltageProfile",
         "FactERLDCInterRegionalExchange",
         "FactERLDCInternationalExchange",
+        "FactERLDCMarketEnergyDaily",
+        "FactERLDCMarketExtremaDaily",
     ):
         conn.execute(f"DELETE FROM {table} WHERE ReportDocumentID = ?", (report_id,))
     if report[2] in ERLDC_SPLIT_TEMPLATE_IDS:
@@ -163,6 +229,35 @@ def _lineage(conn: sqlite3.Connection, report: int, table: str, key: str, source
     now = datetime.now(timezone.utc).isoformat()
     for column, raw_id in sources.items():
         conn.execute("INSERT OR IGNORE INTO curated_field_lineage(ReportDocumentID, DestinationTable, DestinationKey, DestinationColumn, RawCellID, ExtractionMethod, Confidence, CreatedAt) VALUES (?, ?, ?, ?, ?, 'pdfplumber', 1.0, ?)", (report, table, key, column, raw_id, now))
+
+
+def _spatial_lineage(
+    conn: sqlite3.Connection,
+    report: int,
+    table: str,
+    key: str,
+    sources: dict[str, int],
+) -> None:
+    """Record LiteParse text-item provenance for reconstructed measurements."""
+
+    now = datetime.now(timezone.utc).isoformat()
+    for column, raw_text_item_id in sources.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO curated_field_lineage("
+            "ReportDocumentID, DestinationTable, DestinationKey, DestinationColumn, "
+            "RawTextItemID, ExtractionMethod, Confidence, CreatedAt"
+            ") VALUES (?, ?, ?, ?, ?, 'liteparse', 1.0, ?)",
+            (report, table, key, column, raw_text_item_id, now),
+        )
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    """Return whether an optional raw staging table is available."""
+
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone() is not None
 
 
 def _regional(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:
@@ -1146,10 +1241,22 @@ def _promote_2025_flat_regional_generation(
                 continue
             if normalized_label.startswith("4(a)interregionalexchanges"):
                 return
+            if _is_regional_generation_summary_label(label):
+                return
             if _is_generation_header(label) or not label:
                 continue
             capacity, _ = _number(row, columns["InstalledCapacityMW"])
             if capacity is None:
+                if _looks_like_collapsed_generation_row(label):
+                    _promote_2025_flat_spatial_regional_generation_row(
+                        conn,
+                        report,
+                        date_id,
+                        region_id,
+                        label,
+                        owner_group,
+                    )
+                    continue
                 if not _is_total_generation_row(label):
                     owner_group = _regional_owner_key(label)
                 continue
@@ -1165,6 +1272,146 @@ def _promote_2025_flat_regional_generation(
                 row,
                 columns,
             )
+
+
+def _is_regional_generation_summary_label(value: str) -> bool:
+    """Return whether a Page 4 regional summary closes generation rows.
+
+    These labels share the same sparse columns as station rows but summarize
+    the whole regional balance, not an owner-scoped generating asset.  They
+    must terminate the owner context before exchange or demand values can be
+    mistaken for generation facts.
+    """
+
+    normalized = re.sub(r"[^a-z]", "", value.lower())
+    return normalized.startswith(
+        (
+            "totalisgs",
+            "totalstate",
+            "totalcpp",
+            "renewableother",
+            "netexchange",
+            "regionaltotal",
+        )
+    )
+
+
+def _promote_2025_flat_spatial_regional_generation_row(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    collapsed_label: str,
+    owner_group: str | None,
+) -> None:
+    """Promote one fully reconstructed Page 3 station with text-item lineage."""
+
+    if owner_group is None or not _table_exists(conn, "psp_raw_text_item"):
+        return
+    items = [
+        SpatialTextItem(int(raw_id), int(page_no), str(text), float(x), float(y))
+        for raw_id, page_no, text, x, y in conn.execute(
+            """
+            SELECT id, page_no, item_text, x, y
+            FROM psp_raw_text_item
+            WHERE report_document_id = ? AND page_no = 3
+              AND extraction_method = 'liteparse' AND x IS NOT NULL AND y IS NOT NULL
+            ORDER BY item_no
+            """,
+            (report,),
+        )
+    ]
+    expected_label = _collapsed_station_label(collapsed_label)
+    for spatial_row in reconstruct_generation_rows(
+        items,
+        column_centers=_ERLDC_REGIONAL_GENERATION_SPATIAL_CENTERS,
+        label_x_max=125.0,
+        minimum_value_count=len(_ERLDC_REGIONAL_GENERATION_SPATIAL_CENTERS),
+    ):
+        if _compact_spatial_label(spatial_row.label) != _compact_spatial_label(expected_label):
+            continue
+        if set(spatial_row.values) != set(_ERLDC_REGIONAL_GENERATION_SPATIAL_CENTERS):
+            return
+        values: dict[str, float | str] = {}
+        for name, value in spatial_row.values.items():
+            parsed = _time(value) if name.endswith("Time") else _spatial_number(value)
+            if parsed is None:
+                return
+            values[name] = parsed
+        capacity = values["InstalledCapacityMW"]
+        if not isinstance(capacity, float):
+            return
+        try:
+            identity = resolve_generation_identity(
+                conn, "erldc", expected_label, None, region_id, None, capacity, False
+            )
+        except DimensionResolutionError as error:
+            record_resolution_issue(
+                conn, report, "erldc", "spatial_generation_entity", expected_label, str(error)
+            )
+            return
+        entity_id = _get_or_create_grid_entity(
+            conn, expected_label, "generating_entity", None, region_id, None,
+            capacity, False, identity,
+        )
+        section = f"regional_entities_generation:{owner_group}"
+        names = list(values)
+        conn.execute(
+            "INSERT OR REPLACE INTO FactERLDCGenerationDaily("
+            "ReportDocumentID, DateID, EntityID, StateID, StationID, GeneratingUnitID, "
+            "AggregateID, IsTotalRow, GenerationGrain, SectionName, "
+            f"{', '.join(names)}) VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, "
+            f"{', '.join('?' for _ in names)})",
+            (
+                report, date_id, entity_id, identity.station_id, identity.generating_unit_id,
+                identity.aggregate_id, identity.entity_type, section,
+                *(values[name] for name in names),
+            ),
+        )
+        _spatial_lineage(
+            conn,
+            report,
+            "FactERLDCGenerationDaily",
+            f"report={report};date={date_id};entity={entity_id};section={section}",
+            spatial_row.value_item_ids,
+        )
+        _validate_generation_average(conn, report, expected_label, values)
+        return
+
+
+def _collapsed_station_label(value: str) -> str:
+    """Keep the station identifier before metrics collapsed into column one."""
+
+    match = re.match(r"^(.*?\))", value)
+    return match.group(1).strip() if match else value.strip()
+
+
+def _compact_spatial_label(value: str) -> str:
+    """Normalize station labels for exact spatial/native matching."""
+
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _spatial_number(value: str) -> float | None:
+    """Convert one LiteParse numeric token without inferring missing values."""
+
+    try:
+        return float(value.replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def _looks_like_collapsed_generation_row(value: str) -> bool:
+    """Return whether a wrapped station row has collapsed into its label cell.
+
+    The source row cannot be safely promoted without spatial reconstruction,
+    but it also cannot replace the preceding owner context for a valid
+    continuation on the next page.  Owner headings never carry a run of daily
+    measurements, unlike these collapsed station rows.
+    """
+
+    measurements = re.findall(r"[-+]?\d+(?:\.\d+)?", value)
+    return len(measurements) >= 5
 
 
 def _regional_owner_key(value: str) -> str:
@@ -1326,6 +1573,7 @@ def _promote_2025_flat_operational_sections(
     _promote_2025_flat_voltage_profiles(conn, report, date_id, region_id)
     _promote_2025_flat_country_exchanges(conn, report, date_id)
     _promote_2025_flat_market_day_energy(conn, report, date_id)
+    _promote_2025_flat_market_extrema(conn, report, date_id)
 
 
 def _promote_2025_flat_market_day_energy(
@@ -1333,71 +1581,259 @@ def _promote_2025_flat_market_day_energy(
     report: int,
     date_id: int,
 ) -> None:
-    """Promote the ERLDC Page 6 Day-Energy market matrix."""
+    """Promote the header-verified ERLDC Page 6 day-energy market matrix."""
+
     rows = _rows(conn, report, 6)
-    in_section = False
-    fields = {
-        "GNAScheduleMU": 3,
-        "TGNABilateralMU": 9,
-        "GDAMScheduleMU": 14,
-        "DAMScheduleMU": 19,
-        "HPDAMScheduleMU": 25,
-        "RTMScheduleMU": 32,
-        "TotalMU": 38,
-    }
-    for row in rows:
-        label_cell = row.get(1)
-        label = label_cell[1].strip() if label_cell else ""
-        compact_label = _compact_text(label)
-
-        if "dayenergy(mu)" in _compact_text(row.get(8, (0, ""))[1]):
-            in_section = True
+    for index, row in enumerate(rows[:-1]):
+        if not any(
+            _compact_text(text) == "dayenergy(mu)"
+            for _, text in row.values()
+        ):
             continue
-        if in_section and compact_label.startswith("8(b)"):
+        fields = _market_day_energy_columns(rows[index + 1])
+        if fields is None:
             return
-        if not in_section:
-            continue
-        if not compact_label or compact_label == "total":
-            continue
+        for data_row in rows[index + 2:]:
+            label_cell = data_row.get(1)
+            label = label_cell[1].strip() if label_cell else ""
+            compact_label = _compact_text(label)
+            if compact_label.startswith("8(b)") or compact_label == "total":
+                return
+            if not compact_label:
+                continue
 
-        state_name = _STATE_ALIASES.get(compact_label.upper())
-        if not state_name:
-            continue
+            state_id = _market_state_id(conn, label)
+            entity_id = _market_participant_entity_id(conn, label, state_id)
+            values: dict[str, float] = {}
+            sources: dict[str, int] = {}
+            for name, col in fields.items():
+                value, raw = _number(data_row, col)
+                if value is not None:
+                    values[name] = value
+                if raw is not None:
+                    sources[name] = raw
+            if not values:
+                continue
 
-        state_row = conn.execute(
-            "SELECT StateID FROM DimStates WHERE StateName = ?", (state_name,)
-        ).fetchone()
-        if not state_row:
-            continue
-        state_id = state_row[0]
+            names = ", ".join(values)
+            placeholders = ", ".join("?" for _ in values)
+            conn.execute(
+                "INSERT OR REPLACE INTO FactERLDCMarketEnergyDaily("
+                f"ReportDocumentID, DateID, EntityID, StateID, {names}) "
+                f"VALUES (?, ?, ?, ?, {placeholders})",
+                (report, date_id, entity_id, state_id, *values.values()),
+            )
+            _lineage(
+                conn,
+                report,
+                "FactERLDCMarketEnergyDaily",
+                f"report={report};date={date_id};entity={entity_id}",
+                sources,
+            )
+        return
 
-        values: dict[str, float] = {}
-        sources: dict[str, int] = {}
-        for name, col in fields.items():
-            value, raw = _number(row, col)
-            if value is not None:
-                values[name] = value
-            if raw is not None:
-                sources[name] = raw
 
-        if not values:
-            continue
+def _promote_2025_flat_market_extrema(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+) -> None:
+    """Promote complete ERLDC Page 6 market extrema pairs from spatial items.
 
-        names = ", ".join(values)
-        placeholders = ", ".join("?" for _ in values)
-        conn.execute(
-            "INSERT OR REPLACE INTO FactERLDCStateMarketDaily("
-            f"ReportDocumentID, DateID, StateID, {names}) "
-            f"VALUES (?, ?, ?, {placeholders})",
-            (report, date_id, state_id, *values.values()),
+    The native table merges the final West Bengal, Jharkhand, and Railways
+    rows. Promotion is therefore conditional on both the published Section
+    8(B) headers and a complete LiteParse reconstruction for each mechanism.
+    The publisher labels both HPX RTM columns as ``Minimum``; that ambiguous
+    pair is intentionally outside this contract.
+    """
+
+    if not _market_extrema_headers_are_verified(_rows(conn, report, 6)):
+        return
+    if not _table_exists(conn, "psp_raw_text_item"):
+        return
+    items = [
+        SpatialTextItem(int(raw_id), int(page_no), str(text), float(x), float(y))
+        for raw_id, page_no, text, x, y in conn.execute(
+            """
+            SELECT id, page_no, item_text, x, y
+            FROM psp_raw_text_item
+            WHERE report_document_id = ? AND page_no = 6
+              AND extraction_method = 'liteparse' AND x IS NOT NULL AND y IS NOT NULL
+            ORDER BY item_no
+            """,
+            (report,),
         )
-        _lineage(
-            conn,
-            report,
-            "FactERLDCStateMarketDaily",
-            f"report={report};date={date_id};state={state_id}",
-            sources,
-        )
+    ]
+    for (lower_y, upper_y), centers in _ERLDC_MARKET_EXTREMA_SPATIAL_TABLES:
+        table_items = [item for item in items if lower_y < item.y < upper_y]
+        for spatial_row in reconstruct_generation_rows(
+            table_items,
+            column_centers=centers,
+            label_x_max=65.0,
+            minimum_value_count=len(centers),
+        ):
+            if set(spatial_row.values) != set(centers):
+                continue
+            state_id = _market_state_id(conn, spatial_row.label)
+            entity_id = _market_participant_entity_id(conn, spatial_row.label, state_id)
+            for mechanism in _market_extrema_mechanisms(centers):
+                maximum_name = f"{mechanism}MaximumMW"
+                minimum_name = f"{mechanism}MinimumMW"
+                maximum = _spatial_number(spatial_row.values[maximum_name])
+                minimum = _spatial_number(spatial_row.values[minimum_name])
+                if maximum is None or minimum is None:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO FactERLDCMarketExtremaDaily("
+                    "ReportDocumentID, DateID, EntityID, StateID, Mechanism, MaximumMW, MinimumMW"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        report,
+                        date_id,
+                        entity_id,
+                        state_id,
+                        mechanism,
+                        maximum,
+                        minimum,
+                    ),
+                )
+                _spatial_lineage(
+                    conn,
+                    report,
+                    "FactERLDCMarketExtremaDaily",
+                    f"report={report};date={date_id};entity={entity_id};mechanism={mechanism}",
+                    {
+                        "MaximumMW": spatial_row.value_item_ids[maximum_name],
+                        "MinimumMW": spatial_row.value_item_ids[minimum_name],
+                    },
+                )
+
+
+def _market_extrema_headers_are_verified(
+    rows: list[dict[int, tuple[int, str]]],
+) -> bool:
+    """Require published Section 8(B) labels before accepting spatial values."""
+
+    expected_headers = (
+        (
+            {
+                2: "gnaschedule", 7: "tgnabilateralmw", 12: "iexgdammw",
+                18: "pxilgdammw", 24: "hpxgdammw", 31: "iexdammw", 37: "pxildammw",
+            },
+            {2: 4, 7: 10, 12: 16, 18: 21, 24: 27, 31: 35, 37: 40},
+        ),
+        (
+            {
+                2: "hpxdammw", 7: "iexhpdammw", 12: "pxilhpdammw",
+                18: "hpxhpdammw", 24: "iexrtmmw", 31: "pxilrtmmw",
+            },
+            {2: 4, 7: 10, 12: 16, 18: 21, 24: 27, 31: 35},
+        ),
+    )
+    for expected, pairs in expected_headers:
+        for index, row in enumerate(rows[:-1]):
+            if not all(
+                _market_extrema_header_text(row.get(column, (0, ""))[1]) == label
+                for column, label in expected.items()
+            ):
+                continue
+            maximum_minimum = rows[index + 1]
+            if all(
+                _market_extrema_header_text(
+                    maximum_minimum.get(column, (0, ""))[1]
+                ) == "maximum"
+                and _market_extrema_header_text(
+                    maximum_minimum.get(pairs[column], (0, ""))[1]
+                ) == "minimum"
+                for column in pairs
+            ):
+                break
+        else:
+            return False
+    return True
+
+
+def _market_extrema_header_text(value: str) -> str:
+    """Normalize punctuation variants used in Page 6 market headers."""
+
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _market_extrema_mechanisms(centers: dict[str, float]) -> tuple[str, ...]:
+    """Return fully specified mechanism names from one spatial table contract."""
+
+    return tuple(
+        name.removesuffix("MaximumMW")
+        for name in centers
+        if name.endswith("MaximumMW") and f"{name.removesuffix('MaximumMW')}MinimumMW" in centers
+    )
+
+
+def _market_day_energy_columns(
+    header_row: dict[int, tuple[int, str]],
+) -> dict[str, int] | None:
+    """Resolve the published ERLDC Page 6 day-energy columns by header."""
+
+    expected = {
+        "gnaschedule": "GNAScheduleMU",
+        "tgnabilateral": "TGNABilateralMU",
+        "gdamschedule": "GDAMScheduleMU",
+        "damschedule": "DAMScheduleMU",
+        "hpdamschedule": "HPDAMScheduleMU",
+        "rtmschedule": "RTMScheduleMU",
+        "totalmu": "TotalMU",
+    }
+    columns: dict[str, int] = {}
+    for column, (_, text) in header_row.items():
+        field_name = expected.get(re.sub(r"[^a-z]", "", text.lower()))
+        if field_name:
+            columns[field_name] = column
+    return columns if len(columns) == len(expected) else None
+
+
+def _market_state_id(
+    conn: sqlite3.Connection,
+    label: str,
+) -> int | None:
+    """Resolve only published geographical market participants as states."""
+
+    normalized = re.sub(r"[^A-Z]", "", label.upper())
+    if normalized not in _ERLDC_MARKET_GEOGRAPHIC_LABELS:
+        return None
+    return _state_id(conn, label)
+
+
+def _market_participant_entity_id(
+    conn: sqlite3.Connection,
+    label: str,
+    state_id: int | None,
+) -> int:
+    """Resolve an ERLDC market participant without inventing a state identity."""
+
+    normalized = re.sub(r"[^A-Z0-9]", "", label.upper())
+    entity_name = _ERLDC_MARKET_PARTICIPANT_ALIASES.get(
+        normalized,
+        re.sub(r"\s+", " ", label).strip(),
+    )
+    region = conn.execute(
+        "SELECT RegionID FROM DimRegions WHERE RegionName = 'Eastern Region'"
+    ).fetchone()
+    if region is None:
+        raise RuntimeError("Eastern Region dimension is required for market promotion")
+    existing = conn.execute(
+        "SELECT EntityID FROM DimGridEntities "
+        "WHERE EntityName = ? AND EntityType = 'market_participant' "
+        "AND StateID IS ? AND RegionID = ?",
+        (entity_name, state_id, region[0]),
+    ).fetchone()
+    if existing:
+        return int(existing[0])
+    cursor = conn.execute(
+        "INSERT INTO DimGridEntities(EntityName, EntityType, StateID, RegionID) "
+        "VALUES (?, 'market_participant', ?, ?)",
+        (entity_name, state_id, region[0]),
+    )
+    return int(cursor.lastrowid)
 
 
 def _promote_2025_flat_physical_exchanges(

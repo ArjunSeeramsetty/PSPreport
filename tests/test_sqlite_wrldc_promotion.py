@@ -6,10 +6,16 @@ import sqlite3
 
 from psp_pipeline.storage.sqlite_curated_promoter import promote_report_to_curated
 from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
+from psp_pipeline.storage.sqlite_wrldc_promoter import (
+    _market_day_energy_columns,
+    _market_extrema_columns,
+    _market_mechanism_columns,
+)
 
 
 WRLDC_TEMPLATE_ID = "wrldc_daily_psp_v2025_standard_11_column_generation"
 WRLDC_9_COLUMN_TEMPLATE_ID = "wrldc_daily_psp_v2023_standard_09_column_generation"
+WRLDC_2026_EARLY_TEMPLATE_ID = "wrldc_daily_psp_v2026_early_11_column_generation"
 
 
 def test_wrldc_promotes_regional_state_and_generation_with_lineage() -> None:
@@ -108,6 +114,125 @@ def test_wrldc_promotes_nine_column_generation_without_minimum_fields() -> None:
         """
     ).fetchone()
     assert generation == (500.0, 8.41, 7.16, 298.0, None, None)
+
+
+def test_wrldc_promotes_header_validated_conventional_generation_blocks() -> None:
+    """Page-three and page-four grids retain their distinct verified grains."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (10, 'wrldc', 'WRLDC_PSP_Report_01-01-2026.pdf', '2026-01-01', ?, 0)
+        """,
+        (WRLDC_2026_EARLY_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 10, 3, 1, {1: "MAHARASHTRA"})
+    _insert_cells(conn, 10, 3, 2, {
+        1: "Station/Constituents", 2: "Inst.Capacity", 3: "19:00 PeakMW",
+        5: "03:00 OffPeakMW", 7: "DayPeak(MW)", 9: "Hrs",
+        11: "MinGeneration(MW)", 14: "Hrs", 16: "Gross(MU)",
+        18: "Net(MU)", 20: "AVG.MW",
+    })
+    _insert_cells(conn, 10, 3, 3, {
+        2: "MW", 3: "PeakMW", 5: "OffPeakMW", 7: "MW", 9: "Hrs",
+        11: "MW", 14: "Hrs", 16: "GrossMU", 18: "NetMU", 20: "AvgMW",
+    })
+    _insert_cells(conn, 10, 3, 4, {
+        1: "APML TIRODA(5*660)", 2: "3300", 3: "3051", 5: "1725",
+        7: "3122", 9: "20:11", 11: "1704", 14: "14:36", 16: "58.53",
+        18: "55.43", 20: "2310",
+    })
+    _insert_cells(conn, 10, 3, 5, {
+        1: "TOTAL THERMAL", 2: "3300", 3: "3051", 5: "1725",
+        7: "3122", 9: "20:11", 11: "1704", 14: "14:36", 16: "58.53",
+        18: "55.43", 20: "2310",
+    })
+    _insert_cells(conn, 10, 3, 6, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 10, 3, 7, {1: "ISGS"})
+    _insert_cells(conn, 10, 3, 8, {
+        1: "Station/Constituents", 2: "Inst.Capacity", 3: "19:00 PeakMW",
+        4: "03:00 OffPeakMW", 6: "DayPeak(MW)", 8: "Hrs",
+        10: "MinGeneration(MW)", 12: "Hrs", 13: "DayEnergy",
+        15: "Gross(MU)", 17: "Net(MU)", 19: "AVG.MW",
+    })
+    _insert_cells(conn, 10, 3, 9, {
+        2: "MW", 3: "PeakMW", 4: "OffPeakMW", 6: "MW", 8: "Hrs",
+        10: "MW", 12: "Hrs", 13: "SCHD(MU)", 15: "GrossMU",
+        17: "NetMU", 19: "AvgMW",
+    })
+    _insert_cells(conn, 10, 3, 10, {
+        1: "GADARWARA(2*800)", 2: "1600", 3: "1484", 4: "865",
+        6: "1532", 8: "19:48", 10: "785", 12: "13:02", 13: "29.05",
+        15: "30.67", 17: "28.49", 19: "1187",
+    })
+    _insert_cells(conn, 10, 4, 1, {1: "IPP/JV"})
+    _insert_cells(conn, 10, 4, 2, {
+        1: "Station/Constituents", 2: "Inst.Capacity", 3: "19:00 PeakMW",
+        4: "03:00 OffPeakMW", 5: "DayPeak(MW)", 6: "Hrs",
+        7: "MinGeneration(MW)", 8: "Hrs", 9: "DayEnergy", 10: "Gross(MU)",
+        11: "Net(MU)", 12: "AVG.MW",
+    })
+    _insert_cells(conn, 10, 4, 3, {
+        2: "MW", 3: "PeakMW", 4: "OffPeakMW", 5: "MW", 6: "Hrs",
+        7: "MW", 8: "Hrs", 9: "SCHD(MU)", 10: "GrossMU", 11: "NetMU",
+        12: "AvgMW",
+    })
+    _insert_cells(conn, 10, 4, 4, {
+        1: "ACBIL", 2: "493", 3: "401", 4: "400", 5: "405", 6: "04:50",
+        7: "391", 8: "16:27", 9: "9.66", 10: "10.97", 11: "9.66", 12: "403",
+    })
+    _insert_cells(conn, 10, 4, 5, {
+        1: "SUB-TOTAL", 2: "493", 3: "401", 4: "400", 5: "405", 6: "04:50",
+        7: "391", 8: "16:27", 9: "9.66", 10: "10.97", 11: "9.66", 12: "403",
+    })
+
+    promote_report_to_curated(conn, 10)
+
+    rows = conn.execute(
+        """
+        SELECT entity.EntityName, state.StateName, fact.SectionName,
+               fact.OffPeakMW, fact.ScheduledEnergyMU, fact.GrossEnergyMU,
+               fact.NetEnergyMU, fact.IsTotalRow
+        FROM FactWRLDCGenerationDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        LEFT JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 10
+        ORDER BY fact.SectionName, fact.IsTotalRow, entity.EntityName
+        """
+    ).fetchall()
+    lineage_count = conn.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage WHERE ReportDocumentID = 10"
+    ).fetchone()[0]
+
+    assert rows == [
+        ("ACBIL", None, "regional_generation_ipp_jv", 400.0, 9.66, 10.97, 9.66, 0),
+        ("SUB-TOTAL", None, "regional_generation_ipp_jv", 400.0, 9.66, 10.97, 9.66, 1),
+        ("GADARWARA(2*800)", None, "regional_generation_isgs", 865.0, 29.05, 30.67, 28.49, 0),
+        ("APML TIRODA(5*660)", "Maharashtra", "state_generation_14", 1725.0, None, 58.53, 55.43, 0),
+        ("TOTAL THERMAL", "Maharashtra", "state_generation_14", 1725.0, None, 58.53, 55.43, 1),
+    ]
+    assert lineage_count == 53
+
+    conn.execute(
+        """
+        UPDATE psp_raw_cell SET cell_text = 'SCHEDULE'
+        WHERE report_document_id = 10 AND page_no = 4 AND row_no = 3 AND col_no = 9
+        """
+    )
+    promote_report_to_curated(conn, 10)
+
+    assert conn.execute(
+        """
+        SELECT COUNT(*) FROM FactWRLDCGenerationDaily
+        WHERE ReportDocumentID = 10 AND SectionName = 'regional_generation_ipp_jv'
+        """
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM FactWRLDCGenerationDaily WHERE ReportDocumentID = 10"
+    ).fetchone()[0] == 3
 
 
 def test_wrldc_promotes_owned_scope_when_drift_is_limited_to_later_pages() -> None:
@@ -351,6 +476,131 @@ def test_wrldc_promotes_2026_operational_tables_with_cell_lineage() -> None:
     ).fetchone()[0] >= 20
 
 
+def test_wrldc_promotes_verified_renewable_continuation_with_cell_lineage() -> None:
+    """The dense and sparse renewable pages share one station-grain contract."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (8, 'wrldc', 'WRLDC_PSP_Report_01-01-2026.pdf', '2026-01-01', ?, 0)
+        """,
+        ("wrldc_daily_psp_v2026_early_11_column_generation",),
+    )
+    _insert_cells(conn, 8, 5, 1, {1: "RENEWABLE"})
+    _insert_cells(conn, 8, 5, 4, {
+        1: "ATHENASOLAR", 2: "250", 3: "0", 4: "0", 5: "197",
+        6: "12:09", 7: "0", 8: "17:27", 9: "1.29", 10: "1.09",
+        11: "1.09", 12: "45",
+    })
+    _insert_cells(conn, 8, 6, 1, {
+        1: "CPTTNPLWIND(DAYAPAR)", 5: "126", 7: "12", 8: "12",
+        10: "24", 13: "05:59", 14: "5", 16: "12:51", 17: "0.27",
+        18: "0.34", 20: "0.34", 23: "14",
+    })
+    _insert_cells(conn, 8, 6, 2, {
+        1: "TOTAL", 5: "16,250.08", 17: "77.84", 18: "78.49",
+        20: "78.49", 23: "3275",
+    })
+    _insert_cells(conn, 8, 6, 3, {1: "REGIONAL GENERATION SUMMARY", 5: "457.38"})
+
+    promote_report_to_curated(conn, 8)
+
+    rows = conn.execute(
+        """
+        SELECT e.EntityName, f.InstalledCapacityMW, f.ScheduledEnergyMU,
+               f.NetEnergyMU, f.AverageMW, f.IsTotalRow
+        FROM FactWRLDCGenerationDaily AS f
+        JOIN DimGridEntities AS e ON e.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = 8 AND f.SectionName = 'renewable_generation'
+        ORDER BY f.IsTotalRow, e.EntityName
+        """
+    ).fetchall()
+    lineage_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 8 AND DestinationTable = 'FactWRLDCGenerationDaily'
+        """
+    ).fetchone()[0]
+
+    assert rows == [
+        ("ATHENASOLAR", 250.0, 1.29, 1.09, 45.0, 0),
+        ("CPTTNPLWIND(DAYAPAR)", 126.0, 0.27, 0.34, 14.0, 0),
+        ("TOTAL", 16250.08, 77.84, 78.49, 3275.0, 1),
+    ]
+    assert lineage_count == 27
+
+
+def test_wrldc_promotes_header_derived_market_day_energy_with_lineage() -> None:
+    """Page 8 day-energy rows preserve their entity grain and shifted headers."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (9, 'wrldc', 'WRLDC_PSP_Report_01-01-2026.pdf', '2026-01-01', ?, 0)
+        """,
+        ("wrldc_daily_psp_v2026_early_11_column_generation",),
+    )
+    _insert_cells(conn, 9, 8, 28, {1: "State", 6: "DayEnergy(MU)"})
+    _insert_cells(conn, 9, 8, 29, {
+        6: "ISGS+GNASchedule", 10: "T-GNABilateral(MW)",
+        14: "GDAMSchedule", 17: "DAMSchedule", 21: "HPDAMSchedule",
+        25: "RTMSchedule", 29: "Total(MU)",
+    })
+    _insert_cells(conn, 9, 8, 30, {
+        1: "AMNSIL", 6: "6.8", 10: "0", 14: "1.39", 17: "3.21",
+        21: "-", 25: "1.78", 29: "13.18",
+    })
+    _insert_cells(conn, 9, 8, 31, {
+        1: "GUJARAT", 6: "151.93", 10: "2.66", 14: "3.79", 17: "36.63",
+        21: "-", 25: "-1.93", 29: "193.08",
+    })
+    _insert_cells(conn, 9, 8, 32, {1: "TOTAL", 6: "158.73", 29: "206.26"})
+
+    promote_report_to_curated(conn, 9)
+
+    rows = conn.execute(
+        """
+        SELECT entity.EntityName, state.StateName, fact.GNAScheduleMU,
+               fact.DAMScheduleMU, fact.RTMScheduleMU, fact.TotalMU
+        FROM FactWRLDCMarketEnergyDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        LEFT JOIN DimStates AS state ON state.StateID = fact.StateID
+        ORDER BY entity.EntityName
+        """
+    ).fetchall()
+    lineage_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 9
+          AND DestinationTable = 'FactWRLDCMarketEnergyDaily'
+        """
+    ).fetchone()[0]
+
+    assert rows == [
+        ("AMNSIL", None, 6.8, 3.21, 1.78, 13.18),
+        ("GUJARAT", "Gujarat", 151.93, 36.63, -1.93, 193.08),
+    ]
+    assert lineage_count == 12
+    assert _market_day_energy_columns({
+        6: (1, "ISGS+GNASchedule"), 10: (2, "T-GNABilateral(MW)"),
+        14: (3, "GDAMSchedule"), 17: (4, "DAMSchedule"),
+        20: (5, "HPDAMSchedule"), 24: (6, "RTMSchedule"),
+        28: (7, "Total(MU)"),
+    }) == {
+        "GNAScheduleMU": 6, "TGNABilateralMU": 10, "GDAMScheduleMU": 14,
+        "DAMScheduleMU": 17, "HPDAMScheduleMU": 20, "RTMScheduleMU": 24,
+        "TotalMU": 28,
+    }
+
+
 def _create_raw_tables(conn: sqlite3.Connection) -> None:
     """Create the immutable raw tables required by curated promotion tests."""
     conn.executescript(
@@ -442,3 +692,48 @@ def _insert_raw_line(
         """,
         (raw_line_id, report_id, page_no, line_no, text),
     )
+
+
+def test_wrldc_market_header_contracts_cover_2025_and_2026_geometries() -> None:
+    """Point and extrema headers resolve by names despite yearly column shifts."""
+
+    point_2025 = _market_mechanism_columns({
+        2: (1, "T-GNA Bilateral (MW)"), 3: (2, "IEX GDAM (MW)"),
+        5: (3, "IEX DAM (MW)"), 6: (4, "IEX HPDAM (MW)"),
+        7: (5, "IEX RTM (MW)"), 9: (6, "PXIL GDAM (MW)"),
+        11: (7, "PXIL DAM (MW)"), 12: (8, "PXIL HPDAM (MW)"),
+        14: (9, "PXI RTM (MW)"), 16: (10, "HPX GDAM (MW)"),
+        17: (11, "HPX DAM (MW)"), 18: (12, "HPX HPDAM (MW)"),
+        20: (13, "HPX RTM (MW)"),
+    })
+    point_2026 = _market_mechanism_columns({
+        2: (1, "T-GNA Bilateral (MW)"), 4: (2, "IEX GDAM (MW)"),
+        6: (3, "IEX DAM (MW)"), 8: (4, "IEX HPDAM (MW)"),
+        11: (5, "IEX RTM (MW)"), 13: (6, "PXIL GDAM (MW)"),
+        16: (7, "PXIL DAM (MW)"), 18: (8, "PXIL HPDAM (MW)"),
+        20: (9, "PXI RTM (MW)"), 23: (10, "HPX GDAM (MW)"),
+        26: (11, "HPX DAM (MW)"), 28: (12, "HPX HPDAM (MW)"),
+        30: (13, "HPX RTM (MW)"),
+    })
+    extrema_headers = _market_mechanism_columns({
+        3: (1, "ISGS+GNA Schedule"), 7: (2, "T-GNA Bilateral (MW)"),
+        12: (3, "IEX GDAM (MW)"), 15: (4, "PXIL GDAM (MW)"),
+        19: (5, "HPX GDAM (MW)"), 23: (6, "IEX DAM (MW)"),
+        27: (7, "PXIL DAM (MW)"),
+    })
+    extrema_pairs = _market_extrema_columns(extrema_headers, {
+        3: (1, "Maximum"), 4: (2, "Minimum"), 7: (3, "Maximum"),
+        9: (4, "Minimum"), 12: (5, "Maximum"), 13: (6, "Minimum"),
+        15: (7, "Maximum"), 17: (8, "Minimum"), 19: (9, "Maximum"),
+        22: (10, "Minimum"), 23: (11, "Maximum"), 25: (12, "Minimum"),
+        27: (13, "Maximum"), 30: (14, "Minimum"),
+    })
+
+    assert len(point_2025) == len(point_2026) == 13
+    assert point_2025["IEXDAM"] == 5
+    assert point_2026["IEXDAM"] == 6
+    assert extrema_pairs == {
+        "GNASchedule": (3, 4), "TGNABilateral": (7, 9),
+        "IEXGDAM": (12, 13), "PXILGDAM": (15, 17),
+        "HPXGDAM": (19, 22), "IEXDAM": (23, 25), "PXILDAM": (27, 30),
+    }

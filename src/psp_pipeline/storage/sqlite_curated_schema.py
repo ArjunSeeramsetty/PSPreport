@@ -1496,6 +1496,44 @@ def _ensure_nrldc_curated_tables(conn: sqlite3.Connection) -> None:
             ScheduleEnergyMU REAL,
             PRIMARY KEY(ReportDocumentID, DateID, ElementID, CounterpartyCountry)
         );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCStateMarketDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            StateID INTEGER NOT NULL,
+            GNAScheduleMU REAL,
+            TGNABilateralMU REAL,
+            GDAMScheduleMU REAL,
+            DAMScheduleMU REAL,
+            RTMScheduleMU REAL,
+            TotalMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, StateID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCStateMarketPointDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            StateID INTEGER NOT NULL,
+            TimeCategory TEXT NOT NULL CHECK(TimeCategory IN ('off_peak', 'peak')),
+            TGNABilateralMW REAL,
+            IEXGDAMMW REAL,
+            IEXDAMMW REAL,
+            IEXRTMMW REAL,
+            PXILGDAMMW REAL,
+            PXILDAMMW REAL,
+            PXIRTMMW REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, StateID, TimeCategory)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactNRLDCStateMarketExtremaDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            StateID INTEGER NOT NULL,
+            Mechanism TEXT NOT NULL,
+            MaximumMW REAL,
+            MinimumMW REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, StateID, Mechanism)
+        );
         """
     )
     _ensure_nrldc_generation_columns(conn)
@@ -1583,6 +1621,18 @@ def _ensure_erldc_curated_tables(conn: sqlite3.Connection) -> None:
             DayPeakMW REAL, DayMinimumMW REAL, AverageMW REAL, NetEnergyMU REAL,
             PRIMARY KEY(ReportDocumentID, DateID, CountryID, CounterpartyCountry)
         );
+        CREATE TABLE IF NOT EXISTS FactERLDCMarketEnergyDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, EntityID INTEGER NOT NULL,
+            StateID INTEGER,
+            GNAScheduleMU REAL, TGNABilateralMU REAL, GDAMScheduleMU REAL, DAMScheduleMU REAL,
+            HPDAMScheduleMU REAL, RTMScheduleMU REAL, TotalMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID)
+        );
+        CREATE TABLE IF NOT EXISTS FactERLDCMarketExtremaDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, EntityID INTEGER NOT NULL,
+            StateID INTEGER, Mechanism TEXT NOT NULL, MaximumMW REAL NOT NULL, MinimumMW REAL NOT NULL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID, Mechanism)
+        );
         """
     )
     _ensure_erldc_generation_columns(conn)
@@ -1644,6 +1694,13 @@ def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
             NominalVoltageKV REAL NOT NULL, MaximumKV REAL, MaximumTime TEXT, MinimumKV REAL,
             MinimumTime TEXT, LowCriticalPct REAL, IEGCBandPct REAL, HighCriticalPct REAL,
             PRIMARY KEY(ReportDocumentID, DateID, VoltageNodeID)
+        );
+        CREATE TABLE IF NOT EXISTS FactNERLDCReservoirDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, ReservoirID INTEGER NOT NULL,
+            MinimumDrawdownLevelM REAL, FullReservoirLevelM REAL, DesignedEnergyMU REAL,
+            CurrentLevelM REAL, CurrentEnergyMU REAL, PreviousYearLevelM REAL,
+            PreviousYearEnergyMU REAL, PreviousDayLevelM REAL, PreviousDayEnergyMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, ReservoirID)
         );
         CREATE TABLE IF NOT EXISTS FactNERLDCInterRegionalExchange (
             ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, ElementID INTEGER NOT NULL,
@@ -1831,6 +1888,32 @@ def _ensure_wrldc_curated_tables(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(ReportDocumentID, DateID, ReservoirID)
         );
 
+        CREATE TABLE IF NOT EXISTS FactWRLDCMarketEnergyDaily (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            StateID INTEGER,
+            GNAScheduleMU REAL,
+            TGNABilateralMU REAL,
+            GDAMScheduleMU REAL,
+            DAMScheduleMU REAL,
+            HPDAMScheduleMU REAL,
+            RTMScheduleMU REAL,
+            TotalMU REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID)
+        );
+        CREATE TABLE IF NOT EXISTS FactWRLDCMarketPointDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, EntityID INTEGER NOT NULL,
+            StateID INTEGER, TimeCategory TEXT NOT NULL CHECK(TimeCategory IN ('off_peak', 'peak')),
+            Mechanism TEXT NOT NULL, ClearedMW REAL NOT NULL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID, TimeCategory, Mechanism)
+        );
+        CREATE TABLE IF NOT EXISTS FactWRLDCMarketExtremaDaily (
+            ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, EntityID INTEGER NOT NULL,
+            StateID INTEGER, Mechanism TEXT NOT NULL, MaximumMW REAL NOT NULL, MinimumMW REAL NOT NULL,
+            PRIMARY KEY(ReportDocumentID, DateID, EntityID, Mechanism)
+        );
+
         CREATE TABLE IF NOT EXISTS FactWRLDCInterRegionalExchange (
             ReportDocumentID INTEGER NOT NULL,
             DateID INTEGER NOT NULL,
@@ -1923,11 +2006,64 @@ def _backfill_erldc_dimension_locations(conn: sqlite3.Connection) -> None:
     for entity_id, name in conn.execute("SELECT DISTINCT e.EntityID, e.EntityName FROM DimGridEntities e JOIN FactERLDCGenerationDaily f ON f.EntityID = e.EntityID JOIN psp_report_document d ON d.id = f.ReportDocumentID WHERE d.rldc = 'erldc'"):
         state_name = erldc_generation_entity_state_name(str(name))
         if state_name:
-            conn.execute("UPDATE DimGridEntities SET StateID = COALESCE(StateID, ?), RegionID = COALESCE(RegionID, ?) WHERE EntityID = ?", (_state_id(conn, state_name), _region_id(conn, "Eastern Region"), entity_id))
+            state_id = _state_id(conn, state_name)
+            region_id = _region_id(conn, "Eastern Region")
+            canonical = conn.execute(
+                "SELECT EntityID FROM DimGridEntities WHERE EntityName = ("
+                "SELECT EntityName FROM DimGridEntities WHERE EntityID = ?) "
+                "AND EntityType = (SELECT EntityType FROM DimGridEntities WHERE EntityID = ?) "
+                "AND StateID = ? AND RegionID = ? AND EntityID <> ?",
+                (entity_id, entity_id, state_id, region_id, entity_id),
+            ).fetchone()
+            if canonical:
+                _merge_erldc_generation_entity(
+                    conn,
+                    source_entity_id=int(entity_id),
+                    canonical_entity_id=int(canonical[0]),
+                )
+                continue
+            conn.execute(
+                "UPDATE DimGridEntities SET StateID = COALESCE(StateID, ?), "
+                "RegionID = COALESCE(RegionID, ?) WHERE EntityID = ?",
+                (state_id, region_id, entity_id),
+            )
     for element_id, name in conn.execute("SELECT DISTINCT e.ElementID, e.ElementName FROM DimTransmissionElements e JOIN FactERLDCInterRegionalExchange f ON f.ElementID = e.ElementID JOIN psp_report_document d ON d.id = f.ReportDocumentID WHERE d.rldc = 'erldc'"):
         meta = erldc_transmission_location(str(name))
         if meta.evidence == "unverified": continue
         conn.execute("UPDATE DimTransmissionElements SET ElementType = COALESCE(ElementType, ?), NominalVoltageKV = COALESCE(NominalVoltageKV, ?), FromRegionID = COALESCE(FromRegionID, ?), ToRegionID = COALESCE(ToRegionID, ?), FromStateID = COALESCE(FromStateID, ?), ToStateID = COALESCE(ToStateID, ?) WHERE ElementID = ?", (meta.element_type, meta.nominal_voltage_kv, _region_id(conn, meta.from_location.region_name), _region_id(conn, meta.to_location.region_name), _state_id(conn, meta.from_location.state_name), _state_id(conn, meta.to_location.state_name), element_id))
+
+
+def _merge_erldc_generation_entity(
+    conn: sqlite3.Connection,
+    source_entity_id: int,
+    canonical_entity_id: int,
+) -> None:
+    """Coalesce a legacy state-null ERLDC entity into its canonical identity."""
+
+    conn.execute(
+        "UPDATE OR REPLACE FactERLDCGenerationDaily SET EntityID = ?, "
+        "AggregateID = CASE WHEN AggregateID = ? THEN ? ELSE AggregateID END "
+        "WHERE EntityID = ?",
+        (
+            canonical_entity_id,
+            source_entity_id,
+            canonical_entity_id,
+            source_entity_id,
+        ),
+    )
+    source_token = f"entity={source_entity_id};"
+    canonical_token = f"entity={canonical_entity_id};"
+    conn.execute(
+        "UPDATE OR REPLACE curated_field_lineage "
+        "SET DestinationKey = REPLACE(DestinationKey, ?, ?) "
+        "WHERE DestinationTable = 'FactERLDCGenerationDaily' "
+        "AND DestinationKey LIKE ?",
+        (source_token, canonical_token, f"%{source_token}%"),
+    )
+    conn.execute(
+        "DELETE FROM DimGridEntities WHERE EntityID = ?",
+        (source_entity_id,),
+    )
 
 
 def _backfill_nerldc_dimension_locations(conn: sqlite3.Connection) -> None:

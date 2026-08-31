@@ -53,6 +53,7 @@ def promote_nerldc_report_to_curated(conn: sqlite3.Connection, report_id: int) -
     _regional_generation(conn, report_id, date_id, region_id)
     _frequency(conn, report_id, date_id, region_id)
     _voltage(conn, report_id, date_id, region_id)
+    _reservoirs(conn, report_id, date_id, region_id)
     _exchanges(conn, report_id, date_id)
 
 
@@ -66,6 +67,7 @@ def _clear(conn: sqlite3.Connection, report_id: int) -> None:
     for table in (
         "FactNERLDCRegionalDaily", "FactNERLDCStateDaily", "FactNERLDCGenerationDaily",
         "FactNERLDCFrequencyDaily", "FactNERLDCVoltageProfile",
+        "FactNERLDCReservoirDaily",
         "FactNERLDCInterRegionalExchange", "FactNERLDCInternationalExchange",
     ):
         conn.execute(f"DELETE FROM {table} WHERE ReportDocumentID = ?", (report_id,))
@@ -423,6 +425,77 @@ def _voltage(conn: sqlite3.Connection, report: int, date_id: int, region_id: int
                 if raw is not None:
                     sources[field] = raw
             _lineage(conn, report, "FactNERLDCVoltageProfile", f"report={report};date={date_id};node={node[0]}", sources)
+
+
+def _reservoirs(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+) -> None:
+    """Promote the verified Page 4/Table 6 NERLDC reservoir status table.
+
+    The 2024 through 2026 reports share eight explicitly headed measures.
+    ``PreviousDayEnergyMU`` is added only where its column heading is present;
+    the 2025 extraction leaves that heading blank and is intentionally not
+    inferred from the numeric cell position.
+    """
+
+    for rows in _all_tables(conn, report):
+        if len(rows) < 3:
+            continue
+        first_header, second_header = rows[0], rows[1]
+        is_reservoir_table = (
+            second_header.get(1, (0, ""))[1].strip().upper() == "RESERVOIR"
+            and "MDDL" in second_header.get(2, (0, ""))[1].upper()
+            and first_header.get(2, (0, ""))[1].strip().upper() == "DESIGNED"
+        )
+        if not is_reservoir_table:
+            continue
+
+        fields = {
+            "MinimumDrawdownLevelM": 2,
+            "FullReservoirLevelM": 3,
+            "DesignedEnergyMU": 4,
+            "CurrentLevelM": 5,
+            "CurrentEnergyMU": 6,
+            "PreviousYearLevelM": 7,
+            "PreviousYearEnergyMU": 8,
+            "PreviousDayLevelM": 9,
+        }
+        if "ENERGY" in second_header.get(10, (0, ""))[1].upper():
+            fields["PreviousDayEnergyMU"] = 10
+
+        for row in rows[2:]:
+            label = row.get(1, (0, ""))[1].strip()
+            if not label or label.upper() == "TOTAL":
+                continue
+            values, sources = _values(row, fields)
+            if not values:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO DimReservoirs(ReservoirName, RegionID) "
+                "VALUES (?, ?)",
+                (label, region_id),
+            )
+            reservoir = conn.execute(
+                "SELECT ReservoirID FROM DimReservoirs WHERE ReservoirName = ?",
+                (label,),
+            ).fetchone()
+            if reservoir is None:
+                continue
+            reservoir_id = int(reservoir[0])
+            _insert(
+                conn,
+                "FactNERLDCReservoirDaily",
+                ("ReportDocumentID", "DateID", "ReservoirID"),
+                (report, date_id, reservoir_id),
+                fields,
+                row,
+                report,
+                f"report={report};date={date_id};reservoir={reservoir_id}",
+            )
+        return
 
 
 def _exchanges(conn: sqlite3.Connection, report: int, date_id: int) -> None:
