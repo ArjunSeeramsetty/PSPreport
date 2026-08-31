@@ -23,6 +23,31 @@ from psp_pipeline.storage.timescale_bootstrap import (
 from psp_pipeline.storage.timescale_loader import load_curated_observations_to_timescale
 
 
+READY_TABLES = (
+    "fact_observation",
+    "fact_observation_dedup",
+    "fact_observation_current",
+    "fact_observation_lineage",
+    "pipeline_run",
+    "ingest_lineage",
+    "reconciliation_result",
+    "canonical_entity",
+    "canonical_entity_alias",
+    "canonical_entity_adjudication",
+    "fact_wide_daily",
+    "fact_wide_daily_current",
+)
+READY_FACT_COLUMNS = (
+    "sys_to",
+    "series_key",
+    "content_hash",
+    "metric_id",
+    "report_document_id",
+    "timeseries_uuid",
+    "canonical_entity_id",
+)
+
+
 def _observation() -> FactObservation:
     now = datetime(2026, 5, 1, tzinfo=timezone.utc)
     return FactObservation(
@@ -79,6 +104,12 @@ def test_greenfield_schema_file_is_the_current_dual_write_contract() -> None:
     assert "fact_observation_current" in script
     assert "fact_observation_lineage" in script
     assert "pipeline_run" in script
+    assert "canonical_entity" in script
+    assert "canonical_entity_alias" in script
+    assert "canonical_entity_adjudication" in script
+    assert "fact_wide_daily" in script
+    assert "fact_wide_daily_current" in script
+    assert "canonical_entity_id" in script
     assert "create_hypertable('fact_observation'" in script
     assert "SET sys_to = ordered_versions.next_system_from" not in script
 
@@ -120,6 +151,28 @@ def test_schema_status_marks_pre_bitemporal_table_as_stale() -> None:
     assert status.ready is False
     assert "sys_to" in status.missing_columns
     assert "metric_id" in status.missing_columns
+    assert "canonical_entity_id" in status.missing_columns
+
+
+def test_schema_status_requires_identity_and_wide_fact_tables() -> None:
+    """Greenfield readiness includes canonical identity and wide-fact tables."""
+
+    status = schema_status_from_inventory(
+        present_tables=(
+            "fact_observation",
+            "fact_observation_dedup",
+            "fact_observation_current",
+            "fact_observation_lineage",
+            "pipeline_run",
+            "ingest_lineage",
+            "reconciliation_result",
+        ),
+        fact_columns=READY_FACT_COLUMNS,
+        hypertable_present=True,
+    )
+    assert status.ready is False
+    assert "canonical_entity" in status.missing_tables
+    assert "fact_wide_daily" in status.missing_tables
 
 
 def test_apply_greenfield_schema_rejects_incremental_migration_files(
@@ -159,23 +212,8 @@ def test_bootstrap_recreates_schema_then_backfills(tmp_path, monkeypatch) -> Non
     observation = _observation()
     events: list[str] = []
     ready = schema_status_from_inventory(
-        present_tables=(
-            "fact_observation",
-            "fact_observation_dedup",
-            "fact_observation_current",
-            "fact_observation_lineage",
-            "pipeline_run",
-            "ingest_lineage",
-            "reconciliation_result",
-        ),
-        fact_columns=(
-            "sys_to",
-            "series_key",
-            "content_hash",
-            "metric_id",
-            "report_document_id",
-            "timeseries_uuid",
-        ),
+        present_tables=READY_TABLES,
+        fact_columns=READY_FACT_COLUMNS,
         hypertable_present=True,
     )
     inspections = [ready]
@@ -242,23 +280,8 @@ def test_bootstrap_applies_schema_without_drop_when_database_is_empty(
         hypertable_present=False,
     )
     ready = schema_status_from_inventory(
-        present_tables=(
-            "fact_observation",
-            "fact_observation_dedup",
-            "fact_observation_current",
-            "fact_observation_lineage",
-            "pipeline_run",
-            "ingest_lineage",
-            "reconciliation_result",
-        ),
-        fact_columns=(
-            "sys_to",
-            "series_key",
-            "content_hash",
-            "metric_id",
-            "report_document_id",
-            "timeseries_uuid",
-        ),
+        present_tables=READY_TABLES,
+        fact_columns=READY_FACT_COLUMNS,
         hypertable_present=True,
     )
     states = iter([empty, ready])
@@ -416,5 +439,21 @@ def test_live_recreate_greenfield_schema_and_backfill_curated_sqlite(
             WHERE metric_id IS NOT NULL AND sys_to = 'infinity'
             """
         ).fetchone()[0]
+        entity_count = pg.execute("SELECT COUNT(*) FROM canonical_entity").fetchone()[0]
+        wide_current = pg.execute(
+            "SELECT COUNT(*) FROM fact_wide_daily_current"
+        ).fetchone()[0]
+        identity_column = pg.execute(
+            """
+            SELECT COUNT(*) FROM fact_observation
+            WHERE canonical_entity_id IS NOT NULL AND sys_to = 'infinity'
+            """
+        ).fetchone()[0]
     assert current_count == result["load"]["observations_exported"]
     assert metric_ids == result["load"]["observations_exported"]
+    assert entity_count >= 6
+    assert wide_current >= 1
+    assert identity_column >= 1
+    assert result["load"]["identity"]["catalog_entities"] == entity_count
+    assert result["load"]["wide"]["wide_mirror"]["is_match"] is True
+    assert replay["load"]["wide"]["wide_facts_inserted"] == 0

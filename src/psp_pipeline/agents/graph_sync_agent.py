@@ -28,6 +28,7 @@ class GraphSyncAgent(BaseAgent):
                 "valid_to": fact.valid_to,
                 "ingested_at": fact.ingested_at,
                 "version_no": fact.version_no,
+                "canonical_entity_id": fact.canonical_entity_id,
             }
             for fact in facts
             if fact.time_block is None
@@ -42,4 +43,14 @@ class GraphSyncAgent(BaseAgent):
                 merge_values(payload)
             return
         for item in payload:
-            self.repo.merge_observation_topology(**item)
+            self.repo.merge_observation_topology(
+                entity_key=str(item["entity_key"]),
+                report_type=str(item["report_type"]),
+                metric_name=str(item["metric_name"]),
+                metric_id=item.get("metric_id"),
+                source_region=str(item["source_region"]),
+                timeseries_uuid=str(item["timeseries_uuid"]),
+                time_block=item.get("time_block"),
+                series_key=item.get("series_key"),
+                canonical_entity_id=item.get("canonical_entity_id"),
+            )

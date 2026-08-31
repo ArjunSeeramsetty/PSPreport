@@ -12,6 +12,10 @@ from psp_pipeline.quality.timescale_mirror_reconciliation import (
     CurrentRowFetcher,
     verify_exported_current_mirror,
 )
+from psp_pipeline.storage.postgres_publish import (
+    prepare_curated_postgres_publish,
+    publish_wide_facts_to_repository,
+)
 from psp_pipeline.storage.postgres_repo import PostgresRepository
 from psp_pipeline.storage.sqlite_curated_export import (
     export_all_daily_observations,
@@ -57,8 +61,13 @@ def load_curated_observations_to_timescale(
             report_document_id=report_document_id,
             ingested_at=ingested_at,
         )
+        repository = repository_factory(postgres_dsn)
+        observations, catalog, identity_summary = prepare_curated_postgres_publish(
+            connection,
+            observations,
+            repository,
+        )
         observation_lineage = observation_lineage_exporter(connection, observations)
-    repository = repository_factory(postgres_dsn)
     retired_timeseries_uuids: tuple[str, ...] = ()
     retired_at: datetime | None = None
     if replace_complete_snapshots and hasattr(
@@ -77,12 +86,22 @@ def load_curated_observations_to_timescale(
     else:
         # Compatibility for constrained test doubles and legacy tooling.
         inserted = repository.upsert_fact_observations(observations)
+    wide_summary = publish_wide_facts_to_repository(
+        observations,
+        catalog,
+        repository,
+        verify_current_mirror=verify_current_mirror,
+    )
     summary: dict[str, int | str | list[str] | dict[str, object]] = {
         "observations_exported": len(observations),
         "observations_inserted": inserted,
         "observations_deduplicated": len(observations) - inserted,
         "observation_lineage_exported": len(observation_lineage),
     }
+    if not identity_summary.get("skipped"):
+        summary["identity"] = identity_summary
+    if not wide_summary.get("skipped") or wide_summary.get("wide_facts_exported"):
+        summary["wide"] = wide_summary
     if replace_complete_snapshots:
         summary["observations_retired"] = len(retired_timeseries_uuids)
         summary["retired_timeseries_uuids"] = list(retired_timeseries_uuids)

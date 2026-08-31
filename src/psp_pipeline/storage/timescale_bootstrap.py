@@ -36,6 +36,7 @@ REQUIRED_FACT_COLUMNS = (
     "metric_id",
     "report_document_id",
     "timeseries_uuid",
+    "canonical_entity_id",
 )
 REQUIRED_TABLES = (
     "fact_observation",
@@ -45,6 +46,11 @@ REQUIRED_TABLES = (
     "pipeline_run",
     "ingest_lineage",
     "reconciliation_result",
+    "canonical_entity",
+    "canonical_entity_alias",
+    "canonical_entity_adjudication",
+    "fact_wide_daily",
+    "fact_wide_daily_current",
 )
 Connect = Callable[..., object]
 

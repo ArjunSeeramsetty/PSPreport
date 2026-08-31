@@ -34,6 +34,10 @@ from psp_pipeline.quality.timescale_mirror_reconciliation import (
 )
 from psp_pipeline.storage.minio_store import MinioRawStore
 from psp_pipeline.storage.neo4j_repo import Neo4jRepository
+from psp_pipeline.storage.postgres_publish import (
+    prepare_curated_postgres_publish,
+    publish_wide_facts_to_repository,
+)
 from psp_pipeline.storage.postgres_repo import PostgresRepository
 from psp_pipeline.storage.sqlite_curated_export import (
     export_observation_lineage,
@@ -208,20 +212,35 @@ def export_srldc_curated_to_timescale(
 
     with sqlite3.connect(sqlite_db_path) as conn:
         facts = export_srldc_daily_observations(conn)
-    if facts:
-        with sqlite3.connect(sqlite_db_path) as conn:
+        if facts:
             observation_lineage = export_observation_lineage(conn, facts)
-        repository = PostgresRepository(settings.postgres_dsn)
-        repository.upsert_curated_observations(
-            facts,
-            observation_lineage,
-        )
-        repository.refresh_current_truth_views()
-        if verify_current_mirror:
-            verify_exported_current_mirror(
+            repository = PostgresRepository(settings.postgres_dsn)
+            facts, catalog, identity_summary = prepare_curated_postgres_publish(
+                conn,
                 facts,
-                settings.postgres_dsn,
-                current_row_fetcher=current_row_fetcher,
+                repository,
+            )
+            repository.upsert_curated_observations(
+                facts,
+                observation_lineage,
+            )
+            publish_wide_facts_to_repository(
+                facts,
+                catalog,
+                repository,
+                verify_current_mirror=verify_current_mirror,
+            )
+            repository.refresh_current_truth_views()
+            if verify_current_mirror:
+                verify_exported_current_mirror(
+                    facts,
+                    settings.postgres_dsn,
+                    current_row_fetcher=current_row_fetcher,
+                )
+            logger.info(
+                "srldc_curated_postgres_publish observations=%s identity=%s",
+                len(facts),
+                identity_summary,
             )
     return len(facts)
 
@@ -382,7 +401,9 @@ def export_all_curated_to_timescale(
     """Export a date-scoped curated multi-RLDC slice into TimescaleDB.
 
     Historical replay belongs in ``bootstrap_timescale_from_sqlite`` against a
-    greenfield schema. This stage only publishes the orchestration date.
+    greenfield schema. This stage only publishes the orchestration date, then
+    upserts canonical identity and Postgres-primary wide facts when the
+    repository implements those APIs.
     """
     if not sqlite_db_path.exists():
         return 0
@@ -391,20 +412,37 @@ def export_all_curated_to_timescale(
     with sqlite3.connect(sqlite_db_path) as conn:
         facts = _export_curated_observations_for_date(conn, rldcs, target_date)
         observation_lineage = export_observation_lineage(conn, facts)
-    if facts:
-        repository = PostgresRepository(settings.postgres_dsn)
-        inserted = repository.upsert_curated_observations(
-            facts,
-            observation_lineage,
-        )
-        repository.refresh_current_truth_views()
-        if verify_current_mirror:
-            verify_exported_current_mirror(
+        if facts:
+            repository = PostgresRepository(settings.postgres_dsn)
+            facts, catalog, identity_summary = prepare_curated_postgres_publish(
+                conn,
                 facts,
-                settings.postgres_dsn,
-                current_row_fetcher=current_row_fetcher,
+                repository,
             )
-        return inserted
+            inserted = repository.upsert_curated_observations(
+                facts,
+                observation_lineage,
+            )
+            wide_summary = publish_wide_facts_to_repository(
+                facts,
+                catalog,
+                repository,
+                verify_current_mirror=verify_current_mirror,
+            )
+            repository.refresh_current_truth_views()
+            if verify_current_mirror:
+                verify_exported_current_mirror(
+                    facts,
+                    settings.postgres_dsn,
+                    current_row_fetcher=current_row_fetcher,
+                )
+            logger.info(
+                "curated_postgres_publish inserted=%s identity=%s wide=%s",
+                inserted,
+                identity_summary,
+                wide_summary,
+            )
+            return inserted
     return 0
 
 
@@ -418,9 +456,22 @@ def sync_all_curated_to_graph(
     if not sqlite_db_path.exists():
         return 0
     import sqlite3
+    from psp_pipeline.identity.canonical import (
+        annotate_topology_with_canonical_ids,
+        build_canonical_catalog,
+    )
+    from psp_pipeline.storage.postgres_publish import dimension_catalog_available
+    from psp_pipeline.storage.wide_facts import attach_canonical_entity_ids
+
     with sqlite3.connect(sqlite_db_path) as conn:
         topology = export_curated_topology(conn)
         facts = _export_curated_observations_for_date(conn, rldcs, target_date)
+        catalog = None
+        if dimension_catalog_available(conn):
+            catalog = build_canonical_catalog(conn)
+            topology = annotate_topology_with_canonical_ids(topology, catalog)
+            facts = attach_canonical_entity_ids(facts, catalog)
+            conn.commit()
     neo4j_repo = Neo4jRepository(
         settings.neo4j_uri,
         settings.neo4j_user,
@@ -428,7 +479,13 @@ def sync_all_curated_to_graph(
     )
     try:
         neo4j_repo.ensure_constraints(_neo4j_constraint_statements())
+        merge_canonical = getattr(neo4j_repo, "merge_canonical_entities", None)
+        if callable(merge_canonical):
+            merge_canonical(topology.get("canonical_entities", []))
         neo4j_repo.merge_grid_topology(topology)
+        link_identifies = getattr(neo4j_repo, "link_identifies_relationships", None)
+        if callable(link_identifies):
+            link_identifies()
         GraphSyncAgent(neo4j_repo).run(facts)
     finally:
         neo4j_repo.close()

@@ -70,6 +70,7 @@ class FactObservation:
     destination_key: str | None = None
     destination_column: str | None = None
     metric_id: str | None = None
+    canonical_entity_id: str | None = None
 
 
 @dataclass(frozen=True)

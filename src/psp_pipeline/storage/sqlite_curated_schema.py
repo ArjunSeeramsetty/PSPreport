@@ -432,6 +432,7 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_erldc_curated_tables(conn)
     _ensure_nerldc_curated_tables(conn)
     _ensure_nldc_curated_tables(conn)
+    _ensure_canonical_identity_tables(conn)
     _ensure_transmission_country_columns(conn)
     _migrate_curated_lineage_for_raw_lines(conn)
     _seed_curated_dimensions(conn)
@@ -880,6 +881,57 @@ def _migrate_curated_lineage_for_raw_lines(conn: sqlite3.Connection) -> None:
                Confidence, CreatedAt
         FROM curated_field_lineage_legacy;
         DROP TABLE curated_field_lineage_legacy;
+        """
+    )
+
+
+def _ensure_canonical_identity_tables(conn: sqlite3.Connection) -> None:
+    """Create the local canonical entity index used before Postgres publication."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS canonical_entity (
+            EntityID TEXT PRIMARY KEY,
+            EntityCode TEXT NOT NULL UNIQUE,
+            EntityType TEXT NOT NULL,
+            CanonicalName TEXT NOT NULL,
+            RegionCode TEXT,
+            StateCode TEXT,
+            CreatedAt TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS canonical_entity_alias (
+            AliasID INTEGER PRIMARY KEY AUTOINCREMENT,
+            EntityID TEXT NOT NULL,
+            SourceID TEXT NOT NULL,
+            EntityType TEXT NOT NULL,
+            RawName TEXT NOT NULL,
+            NormalizedName TEXT NOT NULL,
+            ObservationEntityKey TEXT,
+            MatchMethod TEXT NOT NULL,
+            MatchConfidence REAL NOT NULL,
+            ApprovalStatus TEXT NOT NULL,
+            CreatedAt TEXT NOT NULL,
+            FOREIGN KEY(EntityID) REFERENCES canonical_entity(EntityID),
+            UNIQUE(SourceID, EntityType, NormalizedName)
+        );
+
+        CREATE INDEX IF NOT EXISTS canonical_entity_alias_observation_key_idx
+            ON canonical_entity_alias(ObservationEntityKey);
+
+        CREATE TABLE IF NOT EXISTS canonical_entity_adjudication (
+            IssueID INTEGER PRIMARY KEY AUTOINCREMENT,
+            SourceID TEXT NOT NULL,
+            EntityType TEXT NOT NULL,
+            RawName TEXT NOT NULL,
+            NormalizedName TEXT NOT NULL,
+            CandidateEntityID TEXT,
+            CandidateScore REAL,
+            Reason TEXT NOT NULL,
+            Status TEXT NOT NULL DEFAULT 'pending',
+            CreatedAt TEXT NOT NULL,
+            UNIQUE(SourceID, EntityType, NormalizedName, Reason)
+        );
         """
     )
 

@@ -252,6 +252,7 @@ def test_postgres_repository_uses_uuid_ledger_and_versioned_grain_lock() -> None
     assert "pg_advisory_xact_lock" in queries
     assert "INSERT INTO fact_observation_dedup" in queries
     assert "metric_id" in queries
+    assert "canonical_entity_id" in queries
     assert "ON CONFLICT (timeseries_uuid) DO NOTHING" in queries
     assert "COALESCE(MAX(version_no), 0) + 1" in queries
     assert cursor.calls[-1][1]["version_no"] == 2

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS fact_observation (
     content_hash TEXT NOT NULL,
     report_document_id BIGINT NULL,
     timeseries_uuid UUID NOT NULL DEFAULT gen_random_uuid(),
+    canonical_entity_id UUID NULL,
     PRIMARY KEY (observation_id, ingested_at),
     UNIQUE (entity_key, metric_name, time_block, valid_from, version_no, ingested_at)
 );
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS fact_observation_dedup (
     source_region TEXT NOT NULL,
     valid_from TIMESTAMPTZ NOT NULL,
     valid_to TIMESTAMPTZ NULL,
-    first_ingested_at TIMESTAMPTZ NOT NULL
+    first_ingested_at TIMESTAMPTZ NOT NULL,
+    canonical_entity_id UUID NULL
 );
 
 -- Global current-truth enforcement belongs in an ordinary PostgreSQL table.
@@ -134,6 +136,84 @@ CREATE TABLE IF NOT EXISTS pipeline_run (
 
 CREATE INDEX IF NOT EXISTS pipeline_run_completed_at_idx
     ON pipeline_run (completed_at DESC);
+
+CREATE TABLE IF NOT EXISTS canonical_entity (
+    entity_id UUID PRIMARY KEY,
+    entity_code TEXT NOT NULL UNIQUE,
+    entity_type TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    region_code TEXT NULL,
+    state_code TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS canonical_entity_type_name_region_idx
+    ON canonical_entity (entity_type, canonical_name, region_code, state_code);
+
+CREATE TABLE IF NOT EXISTS canonical_entity_alias (
+    alias_id BIGSERIAL PRIMARY KEY,
+    entity_id UUID NOT NULL REFERENCES canonical_entity (entity_id),
+    source_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    raw_name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    observation_entity_key TEXT NULL,
+    match_method TEXT NOT NULL,
+    match_confidence DOUBLE PRECISION NOT NULL,
+    approval_status TEXT NOT NULL
+        CHECK (approval_status IN ('approved', 'auto_exact', 'pending', 'rejected')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source_id, entity_type, normalized_name)
+);
+
+CREATE INDEX IF NOT EXISTS canonical_entity_alias_entity_idx
+    ON canonical_entity_alias (entity_id);
+
+CREATE INDEX IF NOT EXISTS canonical_entity_alias_observation_key_idx
+    ON canonical_entity_alias (observation_entity_key);
+
+CREATE TABLE IF NOT EXISTS canonical_entity_adjudication (
+    issue_id BIGSERIAL PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    raw_name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    candidate_entity_id UUID NULL REFERENCES canonical_entity (entity_id),
+    candidate_score DOUBLE PRECISION NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'rejected')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source_id, entity_type, normalized_name, reason)
+);
+
+CREATE TABLE IF NOT EXISTS fact_wide_daily (
+    wide_fact_key TEXT PRIMARY KEY,
+    grain_key TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    destination_table TEXT NOT NULL,
+    destination_key TEXT NULL,
+    report_document_id BIGINT NULL,
+    content_hash TEXT NOT NULL,
+    valid_date DATE NOT NULL,
+    entity_key TEXT NOT NULL,
+    canonical_entity_id UUID NULL,
+    report_type TEXT NOT NULL,
+    source_region TEXT NOT NULL,
+    metrics JSONB NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sys_to TIMESTAMPTZ NOT NULL DEFAULT 'infinity'
+);
+
+CREATE INDEX IF NOT EXISTS fact_wide_daily_grain_history_idx
+    ON fact_wide_daily (grain_key, ingested_at DESC);
+
+CREATE TABLE IF NOT EXISTS fact_wide_daily_current (
+    grain_key TEXT PRIMARY KEY,
+    wide_fact_key TEXT NOT NULL,
+    canonical_entity_id UUID NULL,
+    system_from TIMESTAMPTZ NOT NULL
+);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS daily_regional_current_summary AS
 SELECT

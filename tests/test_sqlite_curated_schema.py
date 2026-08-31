@@ -40,6 +40,9 @@ def test_sqlite_schema_includes_governed_srldc_tables() -> None:
     assert "schema_coverage_run" in tables
     assert "promotion_quarantine" in tables
     assert "curated_field_lineage" in tables
+    assert "canonical_entity" in tables
+    assert "canonical_entity_alias" in tables
+    assert "canonical_entity_adjudication" in tables
     regional_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(FactSRLDCRegionalDaily)")
     }

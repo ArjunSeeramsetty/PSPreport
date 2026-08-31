@@ -39,3 +39,6 @@ FOR (unit:GeneratingUnit) REQUIRE unit.key IS UNIQUE;
 
 CREATE CONSTRAINT power_station_key IF NOT EXISTS
 FOR (station:PowerStation) REQUIRE station.key IS UNIQUE;
+
+CREATE CONSTRAINT canonical_entity_id IF NOT EXISTS
+FOR (entity:CanonicalEntity) REQUIRE entity.entity_id IS UNIQUE;

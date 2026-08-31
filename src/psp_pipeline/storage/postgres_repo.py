@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import json
 from typing import Iterable, Optional
 
 try:
@@ -162,6 +163,61 @@ class PostgresRepository:
             conn.commit()
         return refreshed
 
+    def upsert_canonical_entities(
+        self,
+        entities: Iterable[dict[str, object]],
+        aliases: Iterable[dict[str, object]],
+        adjudications: Iterable[dict[str, object]],
+    ) -> dict[str, int]:
+        """Publish the canonical identity index as the Postgres system of record."""
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                counts = self._upsert_canonical_identity(cur, entities, aliases, adjudications)
+            conn.commit()
+        return counts
+
+    def upsert_wide_facts(self, rows: Iterable[object]) -> int:
+        """Persist destination-table grains as current Postgres-primary facts."""
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                inserted = self._upsert_wide_facts(cur, rows)
+            conn.commit()
+        return inserted
+
+    def fetch_current_wide_facts(self) -> list[dict[str, object]]:
+        """Return current wide-fact grains for mirror verification."""
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        fact.grain_key,
+                        fact.wide_fact_key,
+                        fact.destination_table,
+                        fact.entity_key,
+                        fact.canonical_entity_id,
+                        fact.metrics
+                    FROM fact_wide_daily AS fact
+                    JOIN fact_wide_daily_current AS current_truth
+                      ON current_truth.wide_fact_key = fact.wide_fact_key
+                    """
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "grain_key": str(grain_key),
+                "wide_fact_key": str(wide_fact_key),
+                "destination_table": str(destination_table),
+                "entity_key": str(entity_key),
+                "canonical_entity_id": str(canonical_id) if canonical_id else None,
+                "metrics": dict(metrics or {}),
+            }
+            for grain_key, wide_fact_key, destination_table, entity_key, canonical_id, metrics in rows
+        ]
+
     def fetch_existing_hash(self, source_id: str) -> Optional[str]:
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
@@ -241,12 +297,13 @@ class PostgresRepository:
                 INSERT INTO fact_observation_dedup (
                     timeseries_uuid, series_key, content_hash, entity_key, metric_name, metric_id, time_block,
                     report_type, source_region, valid_from, valid_to,
-                    first_ingested_at
+                    first_ingested_at, canonical_entity_id
                 ) VALUES (
                     %(timeseries_uuid)s, %(series_key)s, %(content_hash)s,
                     %(entity_key)s, %(metric_name)s, %(metric_id)s,
                     %(time_block)s, %(report_type)s, %(source_region)s,
-                    %(valid_from)s, %(valid_to)s, CURRENT_TIMESTAMP
+                    %(valid_from)s, %(valid_to)s, CURRENT_TIMESTAMP,
+                    %(canonical_entity_id)s
                 )
                 ON CONFLICT (timeseries_uuid) DO NOTHING
                 RETURNING timeseries_uuid
@@ -286,12 +343,12 @@ class PostgresRepository:
                     entity_key, metric_name, metric_id, time_block, operational_value, settlement_value,
                     variance_pct, report_type, source_region, valid_from, valid_to,
                     version_no, ingested_at, sys_to, series_key, content_hash,
-                    report_document_id, timeseries_uuid
+                    report_document_id, timeseries_uuid, canonical_entity_id
                 ) VALUES (
                     %(entity_key)s, %(metric_name)s, %(metric_id)s, %(time_block)s, %(operational_value)s, %(settlement_value)s,
                     %(variance_pct)s, %(report_type)s, %(source_region)s, %(valid_from)s, %(valid_to)s,
                     %(version_no)s, CURRENT_TIMESTAMP, 'infinity', %(series_key)s, %(content_hash)s,
-                    %(report_document_id)s, %(timeseries_uuid)s
+                    %(report_document_id)s, %(timeseries_uuid)s, %(canonical_entity_id)s
                 )
                 """,
                 payload,
@@ -469,3 +526,149 @@ class PostgresRepository:
                 """,
                 payload,
             )
+
+
+    @staticmethod
+    def _upsert_canonical_identity(
+        cur,
+        entities: Iterable[dict[str, object]],
+        aliases: Iterable[dict[str, object]],
+        adjudications: Iterable[dict[str, object]],
+    ) -> dict[str, int]:
+        """Idempotently merge canonical entities, aliases, and open issues."""
+
+        entity_count = 0
+        for entity in entities:
+            cur.execute(
+                """
+                INSERT INTO canonical_entity (
+                    entity_id, entity_code, entity_type, canonical_name,
+                    region_code, state_code
+                ) VALUES (
+                    %(entity_id)s, %(entity_code)s, %(entity_type)s, %(canonical_name)s,
+                    %(region_code)s, %(state_code)s
+                )
+                ON CONFLICT (entity_id) DO UPDATE SET
+                    canonical_name = EXCLUDED.canonical_name,
+                    region_code = EXCLUDED.region_code,
+                    state_code = EXCLUDED.state_code
+                """,
+                entity,
+            )
+            entity_count += 1
+        alias_count = 0
+        for alias in aliases:
+            cur.execute(
+                """
+                INSERT INTO canonical_entity_alias (
+                    entity_id, source_id, entity_type, raw_name, normalized_name,
+                    observation_entity_key, match_method, match_confidence,
+                    approval_status
+                ) VALUES (
+                    %(entity_id)s, %(source_id)s, %(entity_type)s, %(raw_name)s,
+                    %(normalized_name)s, %(observation_entity_key)s, %(match_method)s,
+                    %(match_confidence)s, %(approval_status)s
+                )
+                ON CONFLICT (source_id, entity_type, normalized_name) DO UPDATE SET
+                    entity_id = EXCLUDED.entity_id,
+                    raw_name = EXCLUDED.raw_name,
+                    observation_entity_key = EXCLUDED.observation_entity_key,
+                    match_method = EXCLUDED.match_method,
+                    match_confidence = EXCLUDED.match_confidence
+                WHERE canonical_entity_alias.approval_status IN ('approved', 'auto_exact')
+                """,
+                alias,
+            )
+            alias_count += 1
+        issue_count = 0
+        for issue in adjudications:
+            cur.execute(
+                """
+                INSERT INTO canonical_entity_adjudication (
+                    source_id, entity_type, raw_name, normalized_name,
+                    candidate_entity_id, candidate_score, reason, status
+                ) VALUES (
+                    %(source_id)s, %(entity_type)s, %(raw_name)s, %(normalized_name)s,
+                    %(candidate_entity_id)s, %(candidate_score)s, %(reason)s, %(status)s
+                )
+                ON CONFLICT (source_id, entity_type, normalized_name, reason) DO NOTHING
+                """,
+                issue,
+            )
+            issue_count += 1
+        return {
+            "entities": entity_count,
+            "aliases": alias_count,
+            "adjudications": issue_count,
+        }
+
+    @staticmethod
+    def _upsert_wide_facts(cur, records: Iterable[object]) -> int:
+        """Insert idempotent wide grains and advance current-truth pointers."""
+
+        inserted = 0
+        for item in records:
+            payload = {
+                "wide_fact_key": item.wide_fact_key,
+                "grain_key": item.grain_key,
+                "source_id": item.source_id,
+                "destination_table": item.destination_table,
+                "destination_key": item.destination_key,
+                "report_document_id": item.report_document_id,
+                "content_hash": item.content_hash,
+                "valid_date": item.valid_date,
+                "entity_key": item.entity_key,
+                "canonical_entity_id": item.canonical_entity_id,
+                "report_type": item.report_type,
+                "source_region": item.source_region,
+                "metrics": json.dumps(item.metrics, sort_keys=True),
+            }
+            cur.execute(
+                """
+                INSERT INTO fact_wide_daily (
+                    wide_fact_key, grain_key, source_id, destination_table,
+                    destination_key, report_document_id, content_hash, valid_date,
+                    entity_key, canonical_entity_id, report_type, source_region,
+                    metrics, ingested_at, sys_to
+                ) VALUES (
+                    %(wide_fact_key)s, %(grain_key)s, %(source_id)s, %(destination_table)s,
+                    %(destination_key)s, %(report_document_id)s, %(content_hash)s,
+                    %(valid_date)s, %(entity_key)s, %(canonical_entity_id)s,
+                    %(report_type)s, %(source_region)s, %(metrics)s::jsonb,
+                    CURRENT_TIMESTAMP, 'infinity'
+                )
+                ON CONFLICT (wide_fact_key) DO NOTHING
+                RETURNING wide_fact_key
+                """,
+                payload,
+            )
+            if cur.fetchone() is None:
+                continue
+            cur.execute(
+                """
+                UPDATE fact_wide_daily
+                SET sys_to = CURRENT_TIMESTAMP
+                WHERE grain_key = %(grain_key)s
+                  AND sys_to = 'infinity'
+                  AND wide_fact_key <> %(wide_fact_key)s
+                """,
+                payload,
+            )
+            cur.execute(
+                """
+                INSERT INTO fact_wide_daily_current (
+                    grain_key, wide_fact_key, canonical_entity_id, system_from
+                ) VALUES (
+                    %(grain_key)s, %(wide_fact_key)s, %(canonical_entity_id)s,
+                    CURRENT_TIMESTAMP
+                )
+                ON CONFLICT (grain_key) DO UPDATE SET
+                    wide_fact_key = EXCLUDED.wide_fact_key,
+                    canonical_entity_id = EXCLUDED.canonical_entity_id,
+                    system_from = EXCLUDED.system_from
+                """,
+                payload,
+            )
+            inserted += 1
+        return inserted
+
