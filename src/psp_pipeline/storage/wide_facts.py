@@ -108,9 +108,13 @@ def export_wide_facts(
             destination_key=str(destination_key) if destination_key else None,
         )
         content = str(content_hash or "")
-        canonical_id = None
+        source_observation = payload["observation"]
+        assert isinstance(source_observation, FactObservation)
+        canonical_id = source_observation.canonical_entity_id
         if catalog is not None:
-            canonical_id = resolve_observation_entity_id(catalog, str(entity_key))
+            canonical_id = (
+                resolve_observation_entity_id(catalog, str(entity_key)) or canonical_id
+            )
         rows.append(
             WideFactRow(
                 grain_key=grain_key,
