@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
@@ -70,6 +71,27 @@ def hash_local_fixtures(
             }
         )
     return tuple(pins)
+
+
+def srldc_public_fixture_entry(report_date: date, sha256: str) -> dict[str, str]:
+    """Return one checksum-pinned SRLDC corpus fixture for a public PDF URL.
+
+    The URL is constructed deterministically. Callers must supply a SHA-256
+    measured from bytes they actually downloaded; this helper never invents a
+    digest.
+    """
+
+    from psp_pipeline.acquisition.downloaders.srldc import (
+        srldc_psp_filename,
+        srldc_psp_url,
+    )
+
+    return {
+        "id": f"srldc-{report_date.isoformat()}",
+        "source_url": srldc_psp_url(report_date),
+        "sha256": sha256.lower(),
+        "filename": srldc_psp_filename(report_date),
+    }
 
 
 def fetch_checksum_pinned_fixtures(

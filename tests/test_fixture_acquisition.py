@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from psp_pipeline.quality.fixture_acquisition import hash_local_fixtures, load_fixture_artifacts
+from psp_pipeline.quality.fixture_acquisition import (
+    hash_local_fixtures,
+    load_fixture_artifacts,
+    srldc_public_fixture_entry,
+)
 
 
 def test_default_fixture_manifest_requires_no_unverified_network_downloads() -> None:
@@ -39,6 +44,21 @@ def test_fixture_manifest_rejects_non_https_or_unpinned_artifacts(tmp_path: Path
 
     with pytest.raises(ValueError, match="HTTPS"):
         load_fixture_artifacts(path)
+
+
+def test_srldc_public_fixture_entry_uses_deterministic_url() -> None:
+    """A measured digest can be attached to the known SRLDC public PDF URL."""
+
+    digest = "ab" * 32
+    entry = srldc_public_fixture_entry(date(2026, 4, 15), digest.upper())
+    assert entry == {
+        "id": "srldc-2026-04-15",
+        "source_url": (
+            "https://www.srldc.in/var/ftp/reports/psp/2026/Apr26/15-04-2026-psp.pdf"
+        ),
+        "sha256": digest,
+        "filename": "15-04-2026-psp.pdf",
+    }
 
 
 def test_hash_local_fixtures_pins_existing_files_only(tmp_path: Path) -> None:

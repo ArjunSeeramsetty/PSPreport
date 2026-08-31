@@ -12,11 +12,14 @@ from psp_pipeline.core.settings import AppSettings, load_settings
 from psp_pipeline.models.contracts import FactObservation
 from psp_pipeline.pipelines.rldc_daily_psp import ensure_sqlite_schema
 from psp_pipeline.pipelines.stages import (
+    audit_curated_source_freshness,
     audit_national_curated_dimensions,
+    catch_up_missing_public_dates,
     collect_all_rldc_daily_psp,
     evaluate_curated_coverage_contract,
     export_all_curated_to_timescale,
     reconcile_national_daily_balance,
+    retry_curated_promotion_quarantine,
     sync_all_curated_to_graph,
 )
 from psp_pipeline.quality.timescale_mirror_reconciliation import CurrentMirrorRow
@@ -95,6 +98,12 @@ def test_daily_dag_wires_coverage_contract_and_timescale_mirror() -> None:
     assert "coverage_contract_task" in text
     assert "evaluate_curated_coverage_contract" in text
     assert "export_all_curated_to_timescale" in text
+    assert "catch_up_missing_dates_task" in text
+    assert "quarantine_retry_task" in text
+    assert "curated_freshness_task" in text
+    assert "coverage_contract_task(all_rldc_collection, quarantine_retry)" in text
+    assert "all_curated_timescale_task(" in text
+    assert "quarantine_retry" in text.split("all_curated_timescale_task")[1]
 
 
 def test_graph_stage_applies_constraints_and_syncs_topology(
@@ -222,3 +231,45 @@ def test_coverage_stage_skips_missing_daily_database(tmp_path: Path) -> None:
     payload = evaluate_curated_coverage_contract(tmp_path / "missing.sqlite")
     assert payload["skipped"] is True
     assert payload["passed"] is True
+
+
+def test_quarantine_retry_stage_skips_missing_daily_database(tmp_path: Path) -> None:
+    """Daily retry stays fail-soft before the first curated SQLite replay exists."""
+
+    payload = retry_curated_promotion_quarantine(tmp_path / "missing.sqlite")
+    assert payload["skipped"] is True
+    assert payload["resolved"] == 0
+    assert payload["retry_failed"] == 0
+
+
+def test_freshness_stage_flags_all_sources_when_database_is_absent(
+    tmp_path: Path,
+) -> None:
+    """A missing replay cannot claim today's public sources are current."""
+
+    payload = audit_curated_source_freshness(
+        tmp_path / "missing.sqlite",
+        date(2026, 1, 3),
+    )
+    assert payload["skipped"] is True
+    assert payload["passed"] is False
+    assert "srldc" in payload["stale_or_missing_sources"]
+    assert "grid_india_national" in payload["stale_or_missing_sources"]
+
+
+def test_catch_up_stage_is_fail_soft_when_coordinator_raises(
+    mock_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A catch-up exception cannot abort the rest of the daily public DAG."""
+
+    def boom(**_kwargs: object) -> dict:
+        raise RuntimeError("listing unavailable")
+
+    monkeypatch.setattr(
+        "psp_pipeline.pipelines.all_rldc_daily_psp.catch_up_missing_rldc_dates",
+        boom,
+    )
+    payload = catch_up_missing_public_dates(mock_settings, date(2026, 1, 3))
+    assert payload["error"] == "catch_up_failed"
+    assert payload["dates"] == []

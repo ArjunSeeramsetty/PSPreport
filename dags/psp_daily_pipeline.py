@@ -22,7 +22,9 @@ from psp_pipeline.pipelines.serde import (
 )
 from psp_pipeline.pipelines.staging import read_stage_payload, write_stage_payload
 from psp_pipeline.pipelines.stages import (
+    audit_curated_source_freshness,
     audit_national_curated_dimensions,
+    catch_up_missing_public_dates,
     collect_all_rldc_daily_psp,
     collect_srldc_daily_psp,
     deduplicate_artifacts,
@@ -41,6 +43,7 @@ from psp_pipeline.pipelines.stages import (
     reconcile_national_daily_balance,
     record_pipeline_run,
     repromote_srldc_curated,
+    retry_curated_promotion_quarantine,
     summarize_run,
     sync_all_curated_to_graph,
     sync_graph,
@@ -215,8 +218,49 @@ def psp_daily_public_ingestion():
         )
 
     @task
-    def national_balance_task(collection: dict, run_meta: dict) -> dict:
-        """Synthesize daily All-India balance and compare against NLDC if available."""
+    def catch_up_missing_dates_task(run_meta: dict, collection: dict) -> dict:
+        """Re-collect recent dates that never persisted a public source report."""
+
+        _ = collection
+        lookback_days = int(os.getenv("PSP_CATCHUP_LOOKBACK_DAYS", "2"))
+        return catch_up_missing_public_dates(
+            load_settings(),
+            date.fromisoformat(run_meta["target_date"]),
+            lookback_days=lookback_days,
+        )
+
+    @task
+    def quarantine_retry_task(catch_up: dict) -> dict:
+        """Replay LiteParse for pending spatial and OCR promotion holds."""
+
+        _ = catch_up
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        return retry_curated_promotion_quarantine(database)
+
+    @task
+    def curated_freshness_task(run_meta: dict, catch_up: dict) -> dict:
+        """Flag public sources still missing after today and catch-up."""
+
+        _ = catch_up
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        return audit_curated_source_freshness(
+            database,
+            date.fromisoformat(run_meta["target_date"]),
+        )
+
+    @task
+    def national_balance_task(collection: dict, run_meta: dict, retry: dict) -> dict:
+        """Synthesize daily All-India balance after spatial/OCR retries."""
+
+        _ = retry
         settings = load_settings()
         database = Path(os.getenv(
             "ALL_RLDC_SQLITE_DB",
@@ -228,8 +272,10 @@ def psp_daily_public_ingestion():
         )
 
     @task
-    def national_dimension_audit_task(collection: dict) -> dict:
-        """Audit national dimension quality across all 5 RLDC fact sets."""
+    def national_dimension_audit_task(collection: dict, retry: dict) -> dict:
+        """Audit national dimension quality after spatial/OCR retries."""
+
+        _ = retry
         settings = load_settings()
         database = Path(os.getenv(
             "ALL_RLDC_SQLITE_DB",
@@ -238,9 +284,10 @@ def psp_daily_public_ingestion():
         return audit_national_curated_dimensions(database)
 
     @task
-    def coverage_contract_task(collection: dict) -> dict:
-        """Evaluate corpus coverage floors without blocking Timescale publication."""
+    def coverage_contract_task(collection: dict, retry: dict) -> dict:
+        """Evaluate corpus coverage floors after quarantine retries complete."""
 
+        _ = retry
         settings = load_settings()
         database = Path(os.getenv(
             "ALL_RLDC_SQLITE_DB",
@@ -255,13 +302,15 @@ def psp_daily_public_ingestion():
             database,
             profile_name="corpus",
             require_sources=completed or None,
-            fail_hard=False,
+            fail_hard=os.getenv("PSP_COVERAGE_FAIL_HARD", "false").lower() == "true",
         )
 
     @task
-    def all_curated_timescale_task(collection: dict, run_meta: dict) -> int:
-        """Append approved curated observations from all 5 RLDCs to TimescaleDB."""
+    def all_curated_timescale_task(collection: dict, run_meta: dict, retry: dict) -> int:
+        """Append approved curated observations after catch-up and quarantine retry."""
+
         _ = collection
+        _ = retry
         settings = load_settings()
         database = Path(os.getenv(
             "ALL_RLDC_SQLITE_DB",
@@ -355,10 +404,15 @@ def psp_daily_public_ingestion():
         curated_graph >> summary
 
     all_rldc_collection = collect_all_rldc_task(run_meta)
-    national_balance_task(all_rldc_collection, run_meta)
-    national_dimension_audit_task(all_rldc_collection)
-    coverage_contract_task(all_rldc_collection)
-    all_timescale = all_curated_timescale_task(all_rldc_collection, run_meta)
+    catch_up = catch_up_missing_dates_task(run_meta, all_rldc_collection)
+    quarantine_retry = quarantine_retry_task(catch_up)
+    curated_freshness_task(run_meta, catch_up)
+    national_balance_task(all_rldc_collection, run_meta, quarantine_retry)
+    national_dimension_audit_task(all_rldc_collection, quarantine_retry)
+    coverage_contract_task(all_rldc_collection, quarantine_retry)
+    all_timescale = all_curated_timescale_task(
+        all_rldc_collection, run_meta, quarantine_retry
+    )
     all_graph = all_curated_graph_task(all_rldc_collection, run_meta)
     all_timescale >> all_graph
     pipeline_run_history_task(run_meta, all_rldc_collection, all_timescale, all_graph)

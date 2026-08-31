@@ -8,6 +8,7 @@ import sqlite3
 from psp_pipeline.pipelines.rldc_daily_psp import ensure_sqlite_schema
 from psp_pipeline.quality.promotion_quarantine import (
     record_promotion_quarantine,
+    resolve_promotion_quarantine,
     summarize_promotion_quarantine,
 )
 
@@ -99,3 +100,40 @@ def test_promotion_quarantine_summary_groups_open_holds(tmp_path) -> None:
             "report_document_ids": [1],
         }
     ]
+
+
+def test_resolve_promotion_quarantine_closes_only_the_matching_pending_hold() -> None:
+    """A successful retry must not dismiss unrelated template-review holds."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_sqlite_schema(conn)
+    _document(conn)
+    record_promotion_quarantine(
+        conn,
+        report_document_id=1,
+        source_id="erldc",
+        stage="spatial_reconstruction",
+        reason_code="erldc_market_extrema",
+    )
+    record_promotion_quarantine(
+        conn,
+        report_document_id=1,
+        source_id="erldc",
+        stage="template_review",
+        reason_code="semantic_review_required",
+    )
+
+    assert resolve_promotion_quarantine(
+        conn,
+        report_document_id=1,
+        stage="spatial_reconstruction",
+        reason_code="erldc_market_extrema",
+        details={"raw_text_item_count": 4},
+    )
+    statuses = dict(
+        conn.execute("SELECT ReasonCode, Status FROM promotion_quarantine").fetchall()
+    )
+    assert statuses == {
+        "erldc_market_extrema": "resolved",
+        "semantic_review_required": "pending",
+    }

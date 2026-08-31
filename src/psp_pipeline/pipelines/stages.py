@@ -303,6 +303,73 @@ def collect_all_rldc_daily_psp(
         }
 
 
+def catch_up_missing_public_dates(
+    settings: AppSettings,
+    target_date: date,
+    *,
+    lookback_days: int = 2,
+) -> Dict[str, Any]:
+    """Fill recent holes left by a failed or partial public collection day."""
+
+    from psp_pipeline.pipelines.all_rldc_daily_psp import catch_up_missing_rldc_dates
+
+    try:
+        return catch_up_missing_rldc_dates(
+            config_path=settings.project_root / "config" / "rldc_report_sources.yaml",
+            sqlite_db_path=settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+            download_root=settings.project_root / "downloads",
+            target_date=target_date,
+            lookback_days=lookback_days,
+        )
+    except Exception:
+        logger.exception("Public RLDC catch-up failed for %s", target_date.isoformat())
+        return {
+            "lookback_days": lookback_days,
+            "anchor_date": target_date.isoformat(),
+            "dates": [],
+            "error": "catch_up_failed",
+        }
+
+
+def retry_curated_promotion_quarantine(
+    sqlite_db_path: Path,
+) -> Dict[str, Any]:
+    """Retry pending spatial and OCR holds before coverage is evaluated."""
+
+    if not sqlite_db_path.exists():
+        return {
+            "holds_seen": 0,
+            "resolved": 0,
+            "skipped_semantic": 0,
+            "reports_missing_local_file": 0,
+            "reports_without_spatial_items": 0,
+            "liteparse_unavailable": 0,
+            "unknown_reason": 0,
+            "retry_failed": 0,
+            "skipped": True,
+        }
+    from psp_pipeline.pipelines.quarantine_retry import retry_pending_promotion_quarantine
+
+    return retry_pending_promotion_quarantine(sqlite_db_path)
+
+
+def audit_curated_source_freshness(
+    sqlite_db_path: Path,
+    target_date: date,
+) -> Dict[str, Any]:
+    """Return public sources missing a persisted report for the target date."""
+
+    from psp_pipeline.pipelines.all_rldc_daily_psp import missing_sources_for_date
+
+    missing = sorted(missing_sources_for_date(sqlite_db_path, target_date))
+    return {
+        "target_date": target_date.isoformat(),
+        "stale_or_missing_sources": missing,
+        "passed": not missing,
+        "skipped": not sqlite_db_path.exists(),
+    }
+
+
 def export_all_curated_to_timescale(
     settings: AppSettings,
     sqlite_db_path: Path,

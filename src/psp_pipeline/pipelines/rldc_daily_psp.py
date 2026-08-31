@@ -34,7 +34,7 @@ from psp_pipeline.parsing.rldc.pdf_tables import extract_page_tables
 from psp_pipeline.parsing.rldc.templates import TemplateMatch, inspect_report_structure, match_report_template
 from psp_pipeline.storage.sqlite_curated_promoter import promote_report_to_curated
 from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
-from psp_pipeline.quality.promotion_quarantine import record_promotion_quarantine
+from psp_pipeline.quality.promotion_quarantine import record_promotion_quarantine, resolve_promotion_quarantine
 
 logger = logging.getLogger(__name__)
 
@@ -1119,6 +1119,12 @@ def backfill_nrldc_continuation_spatial_items(
                 datetime.now(timezone.utc).isoformat(),
             )
             promote_report_to_curated(conn, int(report_id))
+            _resolve_spatial_quarantine(
+                conn,
+                report_id=int(report_id),
+                reason_code="nrldc_continuation",
+                item_count=len(items),
+            )
             conn.commit()
             result["reports_enriched"] += 1
     return result
@@ -1201,6 +1207,12 @@ def backfill_erldc_regional_generation_spatial_items(
                 datetime.now(timezone.utc).isoformat(),
             )
             promote_report_to_curated(conn, int(report_id))
+            _resolve_spatial_quarantine(
+                conn,
+                report_id=int(report_id),
+                reason_code="erldc_regional_generation",
+                item_count=len(items),
+            )
             conn.commit()
             result["reports_enriched"] += 1
     return result
@@ -1278,9 +1290,33 @@ def backfill_erldc_market_extrema_spatial_items(
                 datetime.now(timezone.utc).isoformat(),
             )
             promote_report_to_curated(conn, int(report_id))
+            _resolve_spatial_quarantine(
+                conn,
+                report_id=int(report_id),
+                reason_code="erldc_market_extrema",
+                item_count=len(items),
+            )
             conn.commit()
             result["reports_enriched"] += 1
     return result
+
+
+def _resolve_spatial_quarantine(
+    conn: sqlite3.Connection,
+    *,
+    report_id: int,
+    reason_code: str,
+    item_count: int,
+) -> None:
+    """Close a spatial hold when a backfill persisted LiteParse coordinates."""
+
+    resolve_promotion_quarantine(
+        conn,
+        report_document_id=report_id,
+        stage="spatial_reconstruction",
+        reason_code=reason_code,
+        details={"raw_text_item_count": item_count, "retry": "backfill"},
+    )
 
 
 def _upsert_raw_text_items(
