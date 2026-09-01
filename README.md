@@ -26,7 +26,7 @@ This repository now includes a local/open-source-first build for:
 - Timescale schema (`sql/timescale_schema.sql`)
 - Neo4j constraints (`sql/neo4j_constraints.cypher`)
 - Local infra stack (`docker-compose.yml`)
-- WBES probe stub (`scripts/run_wbes_probe.py`)
+- Isolated WBES schedule pipeline (`src/psp_pipeline/wbes/`, `scripts/run_wbes_schedule.py`)
 
 ## Operational Defaults
 - Retry policy: 3 attempts, exponential backoff with jitter (configurable via `.env`).
@@ -65,9 +65,15 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
 - Task-level stages: discover -> fetch -> dedup -> parse -> reconcile -> persist_raw -> persist_sql -> sync_graph -> dq_summary
 
 ## WBES Rollout
-- Phase A: public sources live.
-- Phase B: credential and compliance onboarding.
-- Phase C+: Playwright login + endpoint catalog + 96-block extraction.
+- Phase A: public sources live. The daily DAG never calls WBES.
+- Isolated pipeline (disabled by default): `scripts/run_wbes_schedule.py`
+  - Drop canonical JSON/XLSX into `data/wbes/drop/` and run with `WBES_ENABLED=true`.
+  - Live portal probe/fetch also requires `WBES_ALLOW_LIVE_NETWORK=true`.
+  - Block facts persist to `data/wbes/wbes_schedule.sqlite`, not the PSP SQLite DB.
+  - Timescale publish is opt-in via `WBES_WRITE_TIMESCALE=true` (`sql/wbes_schema.sql`).
+  - Neo4j is not updated.
+- Airflow DAG `wbes_schedule_ingestion` is created paused and is not wired into `psp_daily_public_ingestion`.
+- Probe only: `WBES_ENABLED=true WBES_ALLOW_LIVE_NETWORK=true python scripts/run_wbes_probe.py`
 
 See [`docs/BLOCKERS_AND_SOLUTIONS.md`](docs/BLOCKERS_AND_SOLUTIONS.md) for known risks and mitigations.
 

@@ -1,0 +1,36 @@
+# Isolated WBES catalog. Not loaded by the public PSP source registry.
+# Live calls require WBES_ENABLED=true and WBES_ALLOW_LIVE_NETWORK=true.
+sources:
+  - id: wbes_national
+    region: ALL
+    landing_url: https://newwbes.grid-india.in/
+    access_mode: controlled
+    matrices:
+      - entitlement
+      - requisition
+      - net_schedule
+    components:
+      - injection
+      - drawal
+      - bilateral
+      - collective
+    probe_urls:
+      - https://newwbes.grid-india.in/
+      - https://newwbes.grid-india.in/login
+    notes: Grid-India WBES is login-gated and often IP-allowlisted. Prefer drop-folder ingest.
+  - id: wbes_wr
+    region: WR
+    landing_url: https://wbes.wrldc.in/
+    access_mode: controlled
+    matrices:
+      - entitlement
+      - requisition
+      - net_schedule
+    components:
+      - injection
+      - drawal
+      - bilateral
+      - collective
+    probe_urls:
+      - https://wbes.wrldc.in/
+    notes: Regional WBES landing page used only for public reachability probes.
