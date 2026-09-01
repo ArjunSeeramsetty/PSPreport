@@ -28,6 +28,10 @@ def test_sqlite_schema_includes_governed_srldc_tables() -> None:
     assert "FactSRLDCVoltageProfile" in tables
     assert "FactSRLDCRegionalMarketTransaction" in tables
     assert "FactSRLDCOperationalEvent" in tables
+    assert "FactRPCWeeklyDSMEntity" in tables
+    assert "FactRPCWeeklyDSMAncillary" in tables
+    assert "FactRPCMonthlyREAStation" in tables
+    assert "FactRPCMonthlyREAAllocation" in tables
     assert "FactSRLDCRegionalDailySummary" not in tables
     assert "FactSRLDCStateDailyPosition" not in tables
     assert "FactSRLDCLoadForecast" not in tables
@@ -74,7 +78,7 @@ def test_sqlite_curated_schema_seeds_dimensions_and_unit_mappings() -> None:
 
     ensure_sqlite_schema(conn)
 
-    assert conn.execute("SELECT COUNT(*) FROM DimUnits").fetchone()[0] == 9
+    assert conn.execute("SELECT COUNT(*) FROM DimUnits").fetchone()[0] == 10
     assert conn.execute("SELECT COUNT(*) FROM DimRegions").fetchone()[0] == 6
     assert conn.execute("SELECT COUNT(*) FROM DimStates").fetchone()[0] >= 39
     unit = conn.execute(

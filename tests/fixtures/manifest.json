@@ -10,7 +10,12 @@
         "wrldc": 100.0,
         "erldc": 100.0,
         "nerldc": 100.0,
-        "grid_india_national": 100.0
+        "grid_india_national": 100.0,
+        "erpc": 100.0,
+        "nrpc": 100.0,
+        "srpc": 100.0,
+        "wrpc": 100.0,
+        "nerpc": 100.0
       }
     },
     "corpus": {
@@ -21,7 +26,12 @@
         "wrldc": 69.0,
         "erldc": 54.0,
         "nerldc": 59.0,
-        "grid_india_national": 84.0
+        "grid_india_national": 84.0,
+        "erpc": 80.0,
+        "nrpc": 80.0,
+        "srpc": 80.0,
+        "wrpc": 80.0,
+        "nerpc": 80.0
       },
       "artifact_manifest": "data/diagnostics/fixture_manifest.json"
     }

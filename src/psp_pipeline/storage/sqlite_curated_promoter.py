@@ -660,6 +660,17 @@ def promote_report_to_curated(conn: sqlite3.Connection, report_document_id: int)
 
         promote_nerldc_report_to_curated(conn, report_document_id)
         return
+    if str(report["rldc"]).lower() in {
+        "erpc",
+        "nrpc",
+        "srpc",
+        "wrpc",
+        "nerpc",
+    }:
+        from psp_pipeline.storage.sqlite_rpc_promoter import promote_rpc_report_to_curated
+
+        promote_rpc_report_to_curated(conn, report_document_id)
+        return
     if report["rldc"] != "srldc":
         return
     layout = _layout_for_report(report)

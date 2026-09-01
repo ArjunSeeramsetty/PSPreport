@@ -45,6 +45,13 @@ def test_sources_yaml_contains_all_five_rldcs_public():
     assert expected_regions.issubset(rldc_regions)
 
 
+def test_sources_yaml_contains_rpc_settlement_layer():
+    cfg = Path(__file__).resolve().parents[1] / "config" / "sources.yaml"
+    sources = load_sources(cfg)
+    rpc_regions = {s.region for s in sources if s.domain == "RPC"}
+    assert rpc_regions == {"SR", "NR", "WR", "ER", "NER"}
+
+
 def test_rldc_report_sources_yaml_contains_all_five_public_rldcs():
     import yaml
 
@@ -56,6 +63,19 @@ def test_rldc_report_sources_yaml_contains_all_five_public_rldcs():
     assert set(rldc_sources.keys()) == expected_rldcs
 
     for name, config in rldc_sources.items():
+        assert config.get("access_mode") == "public", f"{name} must have access_mode: public"
+        assert "listing_url" in config, f"{name} must define listing_url"
+        assert "allow_domains" in config, f"{name} must define allow_domains"
+
+
+def test_rpc_report_sources_yaml_contains_all_five_public_rpcs():
+    import yaml
+
+    cfg = Path(__file__).resolve().parents[1] / "config" / "rpc_report_sources.yaml"
+    data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    rpc_sources = data.get("rpc_sources", {})
+    assert set(rpc_sources.keys()) == {"ERPC", "NRPC", "SRPC", "WRPC", "NERPC"}
+    for name, config in rpc_sources.items():
         assert config.get("access_mode") == "public", f"{name} must have access_mode: public"
         assert "listing_url" in config, f"{name} must define listing_url"
         assert "allow_domains" in config, f"{name} must define allow_domains"

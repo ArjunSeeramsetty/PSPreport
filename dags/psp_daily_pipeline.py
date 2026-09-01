@@ -27,6 +27,7 @@ from psp_pipeline.pipelines.stages import (
     audit_pending_identity_adjudications,
     catch_up_missing_public_dates,
     collect_all_rldc_daily_psp,
+    collect_rpc_settlement,
     collect_srldc_daily_psp,
     deduplicate_artifacts,
     detect_schema_drift,
@@ -210,8 +211,19 @@ def psp_daily_public_ingestion():
         return sync_srldc_curated_to_graph(settings, database)
 
     @task
+    def collect_rpc_settlement_task(run_meta: dict) -> dict:
+        """Collect public weekly DSM and monthly REA accounts fail-soft per RPC."""
+
+        settings = load_settings()
+        return collect_rpc_settlement(
+            settings,
+            date.fromisoformat(run_meta["target_date"]),
+        )
+
+    @task
     def collect_all_rldc_task(run_meta: dict) -> dict:
         """Collect and curate all 5 public RLDC daily PSP sources with isolated failures."""
+
         settings = load_settings()
         return collect_all_rldc_daily_psp(
             settings,
@@ -418,6 +430,7 @@ def psp_daily_public_ingestion():
         curated_graph >> summary
 
     all_rldc_collection = collect_all_rldc_task(run_meta)
+    rpc_collection = collect_rpc_settlement_task(run_meta)
     catch_up = catch_up_missing_dates_task(run_meta, all_rldc_collection)
     quarantine_retry = quarantine_retry_task(catch_up)
     curated_freshness_task(run_meta, catch_up)
@@ -428,6 +441,7 @@ def psp_daily_public_ingestion():
     all_timescale = all_curated_timescale_task(
         all_rldc_collection, run_meta, quarantine_retry
     )
+    rpc_collection >> all_timescale
     all_graph = all_curated_graph_task(all_rldc_collection, run_meta)
     all_timescale >> all_graph
     pipeline_run_history_task(run_meta, all_rldc_collection, all_timescale, all_graph)
