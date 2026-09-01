@@ -607,20 +607,41 @@ def _needs_erldc_regional_generation_spatial_items(raw_cells: list[RawCell]) -> 
     return False
 
 
-def _needs_erldc_market_extrema_spatial_items(raw_cells: list[RawCell]) -> bool:
-    """Return whether ERLDC Page 6 Section 8(B) rows collapsed into labels."""
+def _erldc_market_extrema_spatial_pages(raw_cells: list[RawCell]) -> tuple[int, ...]:
+    """Return pages where Section 8(B) labels collapsed into numeric rows."""
 
-    has_section_heading = False
+    heading_pages: set[int] = set()
+    collapsed_pages: set[int] = set()
     for cell in raw_cells:
-        if cell.page_no != 6 or cell.col_no != 1:
+        if cell.col_no != 1:
             continue
         normalized = re.sub(r"\s+", "", cell.cell_text).lower()
         if normalized.startswith("8(b).shorttermopenaccess"):
-            has_section_heading = True
+            heading_pages.add(cell.page_no)
         numeric_values = re.findall(r"(?<![A-Za-z])[-−]?\d+(?:\.\d+)?", cell.cell_text)
         if "\n" in cell.cell_text and len(numeric_values) >= 8:
-            return has_section_heading
-    return False
+            collapsed_pages.add(cell.page_no)
+    return tuple(sorted(heading_pages & collapsed_pages))
+
+
+def _needs_erldc_market_extrema_spatial_items(raw_cells: list[RawCell]) -> bool:
+    """Return whether any ERLDC Section 8(B) page needs LiteParse reconstruction."""
+
+    return bool(_erldc_market_extrema_spatial_pages(raw_cells))
+
+
+def _erldc_liteparse_target_pages(
+    *,
+    regional: bool,
+    market_pages: tuple[int, ...],
+) -> str | None:
+    """Return LiteParse page selection for ERLDC spatial reconstruction."""
+
+    pages: list[str] = []
+    if regional:
+        pages.append("3")
+    pages.extend(str(page) for page in market_pages)
+    return ",".join(pages) or None
 
 
 def _spatial_fallback_reasons(rldc: str, raw_cells: list[RawCell]) -> tuple[str, ...]:
@@ -666,9 +687,10 @@ def extract_psp_content(
     erldc_regional_spatial_fallback = (
         rldc == "erldc" and _needs_erldc_regional_generation_spatial_items(raw_cells)
     )
-    erldc_market_extrema_spatial_fallback = (
-        rldc == "erldc" and _needs_erldc_market_extrema_spatial_items(raw_cells)
+    erldc_market_extrema_pages = (
+        _erldc_market_extrema_spatial_pages(raw_cells) if rldc == "erldc" else ()
     )
+    erldc_market_extrema_spatial_fallback = bool(erldc_market_extrema_pages)
     spatial_fallback_reasons = _spatial_fallback_reasons(rldc, raw_cells)
     if (
         should_try_liteparse
@@ -681,16 +703,9 @@ def extract_psp_content(
             target_pages=(
                 "6-9"
                 if nrldc_continuation_spatial_fallback
-                else (
-                    ",".join(
-                        page
-                        for page, enabled in (
-                            ("3", erldc_regional_spatial_fallback),
-                            ("6", erldc_market_extrema_spatial_fallback),
-                        )
-                        if enabled
-                    )
-                    or None
+                else _erldc_liteparse_target_pages(
+                    regional=erldc_regional_spatial_fallback,
+                    market_pages=erldc_market_extrema_pages,
                 )
             ),
         )
@@ -1221,7 +1236,7 @@ def backfill_erldc_regional_generation_spatial_items(
 def backfill_erldc_market_extrema_spatial_items(
     sqlite_db_path: Path,
 ) -> dict[str, int]:
-    """Add missing LiteParse Page 6 items for verified ERLDC Section 8(B) rows."""
+    """Add missing LiteParse items for collapsed ERLDC Section 8(B) pages."""
 
     result = {
         "reports_seen": 0,
@@ -1238,28 +1253,49 @@ def backfill_erldc_market_extrema_spatial_items(
         result["liteparse_unavailable"] = 1
         return result
 
-    template_id = "erldc_daily_psp_v2025_flat_11_column_generation"
     with sqlite3.connect(sqlite_db_path) as conn:
         ensure_sqlite_schema(conn)
         reports = conn.execute(
             """
             SELECT id, local_path
             FROM psp_report_document
-            WHERE rldc = 'erldc' AND template_id = ?
+            WHERE rldc = 'erldc'
             ORDER BY report_date, id
-            """,
-            (template_id,),
+            """
         ).fetchall()
         result["reports_seen"] = len(reports)
         for report_id, raw_path in reports:
+            pages = _erldc_market_extrema_spatial_pages(
+                [
+                    RawCell(
+                        int(page_no),
+                        1,
+                        1,
+                        int(col_no),
+                        str(text or ""),
+                        "pdfplumber",
+                    )
+                    for page_no, col_no, text in conn.execute(
+                        """
+                        SELECT page_no, col_no, cell_text
+                        FROM psp_raw_cell
+                        WHERE report_document_id = ?
+                        """,
+                        (report_id,),
+                    )
+                ]
+            )
+            if not pages:
+                continue
+            placeholders = ", ".join("?" for _ in pages)
             existing_count = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM psp_raw_text_item
                 WHERE report_document_id = ? AND extraction_method = 'liteparse'
-                  AND page_no = 6
+                  AND page_no IN ({placeholders})
                 """,
-                (report_id,),
+                (report_id, *pages),
             ).fetchone()[0]
             if existing_count:
                 result["reports_already_complete"] += 1
@@ -1273,8 +1309,9 @@ def backfill_erldc_market_extrema_spatial_items(
                 )
                 result["reports_missing_local_file"] += 1
                 continue
-            _, items = _extract_liteparse_content(pdf_path, target_pages="6")
-            items = [item for item in items if item.page_no == 6]
+            target_pages = ",".join(str(page) for page in pages)
+            _, items = _extract_liteparse_content(pdf_path, target_pages=target_pages)
+            items = [item for item in items if item.page_no in pages]
             if not items:
                 logger.warning(
                     "erldc_market_extrema_backfill_empty report_id=%s path=%s",
