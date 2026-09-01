@@ -430,6 +430,7 @@ def export_all_curated_to_timescale(
     sqlite_db_path: Path,
     rldcs: list[str] | None = None,
     target_date: date | None = None,
+    report_document_ids: Iterable[int] | None = None,
     *,
     verify_current_mirror: bool = True,
     current_row_fetcher: CurrentRowFetcher | None = None,
@@ -446,7 +447,12 @@ def export_all_curated_to_timescale(
     import sqlite3
 
     with sqlite3.connect(sqlite_db_path) as conn:
-        facts = _export_curated_observations_for_date(conn, rldcs, target_date)
+        facts = _export_curated_observations_for_date(
+            conn,
+            rldcs,
+            target_date,
+            report_document_ids=report_document_ids,
+        )
         observation_lineage = export_observation_lineage(conn, facts)
         if facts:
             repository = PostgresRepository(settings.postgres_dsn)
@@ -487,6 +493,7 @@ def sync_all_curated_to_graph(
     sqlite_db_path: Path,
     rldcs: list[str] | None = None,
     target_date: date | None = None,
+    report_document_ids: Iterable[int] | None = None,
 ) -> int:
     """Synchronize curated topology and a date-scoped observation slice to Neo4j."""
     if not sqlite_db_path.exists():
@@ -501,7 +508,12 @@ def sync_all_curated_to_graph(
 
     with sqlite3.connect(sqlite_db_path) as conn:
         topology = export_curated_topology(conn)
-        facts = _export_curated_observations_for_date(conn, rldcs, target_date)
+        facts = _export_curated_observations_for_date(
+            conn,
+            rldcs,
+            target_date,
+            report_document_ids=report_document_ids,
+        )
         catalog = None
         if dimension_catalog_available(conn):
             catalog = build_canonical_catalog(conn)
@@ -551,22 +563,26 @@ def _export_curated_observations_for_date(
     conn: Any,
     rldcs: list[str] | None,
     target_date: date | None,
+    *,
+    report_document_ids: Iterable[int] | None = None,
 ) -> list[FactObservation]:
-    """Return all observations for one report date without replaying history."""
+    """Return target-date observations plus explicitly collected reports."""
 
     from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
 
-    if target_date is None:
+    if target_date is None and report_document_ids is None:
         return export_all_daily_observations(conn, rldcs=rldcs)
-    placeholders = ", ".join("?" for _ in rldcs) if rldcs else ""
-    query = "SELECT id FROM psp_report_document WHERE report_date = ?"
-    params: list[Any] = [target_date.isoformat()]
-    if rldcs:
-        query += f" AND rldc IN ({placeholders})"
-        params.extend(rldcs)
-    report_ids = [int(row[0]) for row in conn.execute(query, params)]
+    report_ids = {int(report_id) for report_id in report_document_ids or ()}
+    if target_date is not None:
+        placeholders = ", ".join("?" for _ in rldcs) if rldcs else ""
+        query = "SELECT id FROM psp_report_document WHERE report_date = ?"
+        params: list[Any] = [target_date.isoformat()]
+        if rldcs:
+            query += f" AND rldc IN ({placeholders})"
+            params.extend(rldcs)
+        report_ids.update(int(row[0]) for row in conn.execute(query, params))
     observations: list[FactObservation] = []
-    for report_document_id in report_ids:
+    for report_document_id in sorted(report_ids):
         observations.extend(
             export_all_daily_observations(
                 conn,
@@ -786,6 +802,20 @@ def record_pipeline_run(
         logger.exception("Pipeline run history persistence failed for run_id=%s", run_id)
         return {"run_id": run_id, "status": "history_write_failed"}
     return {"run_id": run_id, "status": status}
+
+
+def combine_collection_summaries(*collections: Dict[str, Any]) -> Dict[str, Any]:
+    """Combine fail-soft source counters for one orchestration history record."""
+
+    counters = ("sources_requested", "sources_completed", "sources_failed")
+    aggregate = {
+        counter: sum(
+            int(collection.get("aggregate", {}).get(counter, 0))
+            for collection in collections
+        )
+        for counter in counters
+    }
+    return {"aggregate": aggregate}
 
 
 def evaluate_dq(

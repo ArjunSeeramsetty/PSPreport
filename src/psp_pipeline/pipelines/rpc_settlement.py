@@ -51,12 +51,13 @@ def run_rpc_settlement_collection(
     """Discover, persist, and promote RPC settlement accounts fail-soft per source."""
 
     run_date = target_date or datetime.now(timezone.utc).date()
+    configured_sources = load_rpc_sources(config_path)
     selected = [
         source_id
         for source_id in RPC_SOURCE_IDS
-        if target_rpcs is None or source_id in {item.lower() for item in target_rpcs}
+        if source_id in configured_sources
+        and (target_rpcs is None or source_id in {item.lower() for item in target_rpcs})
     ]
-    _ = load_rpc_sources(config_path)
     aggregate = {
         "sources_requested": len(selected),
         "sources_completed": 0,
@@ -66,7 +67,7 @@ def run_rpc_settlement_collection(
         "reports_persisted": 0,
         "unsupported_family": 0,
     }
-    source_results: dict[str, dict[str, int]] = {}
+    source_results: dict[str, dict[str, Any]] = {}
     source_failures: dict[str, str] = {}
     sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     download_root.mkdir(parents=True, exist_ok=True)
@@ -81,6 +82,7 @@ def run_rpc_settlement_collection(
                     download_root=download_root / source_id,
                     target_date=run_date,
                     max_reports=max_reports_per_rpc,
+                    source_config=configured_sources[source_id],
                 )
             except Exception as error:  # Source failures must not block other RPCs.
                 LOGGER.exception("rpc_source_failed source=%s", source_id)
@@ -107,7 +109,7 @@ def run_rpc_settlement_collection(
 def persist_local_rpc_report(
     conn: sqlite3.Connection,
     report: DownloadedReport,
-) -> None:
+) -> int | None:
     """Extract local RPC tables and promote matching settlement contracts."""
 
     classified = classify_rpc_document(
@@ -164,6 +166,11 @@ def persist_local_rpc_report(
         raw_cells=raw_cells,
         raw_text_items=[],
     )
+    row = conn.execute(
+        "SELECT id FROM psp_report_document WHERE rldc = ? AND content_hash = ?",
+        (report.rldc, report.content_hash),
+    ).fetchone()
+    return int(row[0]) if row else None
 
 
 def _collect_one_rpc(
@@ -174,16 +181,18 @@ def _collect_one_rpc(
     download_root: Path,
     target_date: date,
     max_reports: int,
-) -> dict[str, int]:
+    source_config: dict[str, Any],
+) -> dict[str, Any]:
     """Collect one RPC listing without aborting sibling regions."""
 
-    adapter = rpc_adapter_for(source_id)
     counts = {
         "links_found": 0,
         "reports_downloaded": 0,
         "reports_persisted": 0,
         "unsupported_family": 0,
+        "report_document_ids": [],
     }
+    adapter = rpc_adapter_for(source_id, source_config)
     if adapter is None:
         return counts
     links = adapter.discover(client, target_date)[:max_reports]
@@ -199,8 +208,10 @@ def _collect_one_rpc(
             classified = classify_rpc_document(f"{downloaded.local_path.name} {link.report_family}")
             if not classified.supported:
                 counts["unsupported_family"] += 1
-            persist_local_rpc_report(conn, downloaded)
+            report_id = persist_local_rpc_report(conn, downloaded)
             counts["reports_persisted"] += 1
+            if report_id is not None:
+                counts["report_document_ids"].append(report_id)
         conn.commit()
     finally:
         conn.close()

@@ -29,6 +29,7 @@ from psp_pipeline.pipelines.stages import (
     collect_all_rldc_daily_psp,
     collect_rpc_settlement,
     collect_srldc_daily_psp,
+    combine_collection_summaries,
     deduplicate_artifacts,
     detect_schema_drift,
     discover_sources,
@@ -332,7 +333,12 @@ def psp_daily_public_ingestion():
         )
 
     @task
-    def all_curated_timescale_task(collection: dict, run_meta: dict, retry: dict) -> int:
+    def all_curated_timescale_task(
+        collection: dict,
+        rpc_collection: dict,
+        run_meta: dict,
+        retry: dict,
+    ) -> int:
         """Append approved curated observations after catch-up and quarantine retry."""
 
         _ = collection
@@ -346,10 +352,15 @@ def psp_daily_public_ingestion():
             settings,
             database,
             target_date=date.fromisoformat(run_meta["target_date"]),
+            report_document_ids=_rpc_report_ids(rpc_collection),
         )
 
     @task
-    def all_curated_graph_task(collection: dict, run_meta: dict) -> int:
+    def all_curated_graph_task(
+        collection: dict,
+        rpc_collection: dict,
+        run_meta: dict,
+    ) -> int:
         """Synchronize approved 5-RLDC observations into Neo4j graph topology."""
         _ = collection
         settings = load_settings()
@@ -361,12 +372,14 @@ def psp_daily_public_ingestion():
             settings,
             database,
             target_date=date.fromisoformat(run_meta["target_date"]),
+            report_document_ids=_rpc_report_ids(rpc_collection),
         )
 
     @task(trigger_rule="all_done")
     def pipeline_run_history_task(
         run_meta: dict,
         collection: dict,
+        rpc_collection: dict,
         observations_inserted: int,
         graph_observations: int,
     ) -> dict:
@@ -376,7 +389,7 @@ def psp_daily_public_ingestion():
             load_settings(),
             run_id=run_meta["run_id"],
             started_at=datetime.fromisoformat(run_meta["started_at"]),
-            collection=collection,
+            collection=combine_collection_summaries(collection, rpc_collection),
             observations_inserted=observations_inserted,
             graph_observations=graph_observations,
         )
@@ -439,12 +452,29 @@ def psp_daily_public_ingestion():
     identity_adjudication_audit_task(all_rldc_collection, quarantine_retry)
     coverage_contract_task(all_rldc_collection, quarantine_retry)
     all_timescale = all_curated_timescale_task(
-        all_rldc_collection, run_meta, quarantine_retry
+        all_rldc_collection, rpc_collection, run_meta, quarantine_retry
     )
-    rpc_collection >> all_timescale
-    all_graph = all_curated_graph_task(all_rldc_collection, run_meta)
+    all_graph = all_curated_graph_task(all_rldc_collection, rpc_collection, run_meta)
     all_timescale >> all_graph
-    pipeline_run_history_task(run_meta, all_rldc_collection, all_timescale, all_graph)
+    pipeline_run_history_task(
+        run_meta,
+        all_rldc_collection,
+        rpc_collection,
+        all_timescale,
+        all_graph,
+    )
+
+
+def _rpc_report_ids(collection: dict) -> list[int]:
+    """Extract deduplicated persisted-report IDs from the RPC task payload."""
+
+    return sorted(
+        {
+            int(report_id)
+            for source in collection.get("sources", {}).values()
+            for report_id in source.get("report_document_ids", [])
+        }
+    )
 
 
 dag = psp_daily_public_ingestion()

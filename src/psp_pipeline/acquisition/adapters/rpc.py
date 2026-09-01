@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -36,10 +37,29 @@ class PublicListingRPCAdapter(BaseRLDCAdapter):
     DSM_PUBLICATION_LAG_DAYS = 10
     REA_PUBLICATION_LAG_DAYS = 25
 
+    def __init__(self, source_config: dict[str, Any] | None = None) -> None:
+        """Apply optional registry overrides for one public RPC source."""
+
+        config = source_config or {}
+        self._listing_url = str(
+            config.get("listing_url")
+            or urljoin(self.BASE_URL, self.LISTING_PATH)
+        )
+        configured_keywords = config.get("include_keywords")
+        self._include_keywords = tuple(
+            str(keyword).lower()
+            for keyword in configured_keywords
+        ) if isinstance(configured_keywords, list) else self.INCLUDE_KEYWORDS
+        configured_hosts = config.get("allow_domains")
+        self._allow_hosts = tuple(
+            str(host).lower()
+            for host in configured_hosts
+        ) if isinstance(configured_hosts, list) else self.ALLOW_HOSTS
+
     def discover(self, client: httpx.Client, target_date: date) -> list[DiscoveredLink]:
         """Return DSM/REA documents whose accounting window covers ``target_date``."""
 
-        listing_url = urljoin(self.BASE_URL, self.LISTING_PATH)
+        listing_url = self._listing_url
         try:
             response = client.get(listing_url)
         except httpx.HTTPError as error:
@@ -101,12 +121,12 @@ class PublicListingRPCAdapter(BaseRLDCAdapter):
         if parsed.scheme not in {"http", "https"}:
             return False
         host = (parsed.hostname or "").lower()
-        if self.ALLOW_HOSTS and not any(host.endswith(allowed) for allowed in self.ALLOW_HOSTS):
+        if self._allow_hosts and not any(host.endswith(allowed) for allowed in self._allow_hosts):
             return False
         lowered = blob.lower()
         if not any(suffix in lowered for suffix in _DOCUMENT_SUFFIXES):
             return False
-        return any(keyword in lowered for keyword in self.INCLUDE_KEYWORDS)
+        return any(keyword in lowered for keyword in self._include_keywords)
 
     def _in_publication_window(
         self,
@@ -197,11 +217,14 @@ RPC_ADAPTERS = {
 }
 
 
-def rpc_adapter_for(source_id: str) -> PublicListingRPCAdapter | None:
+def rpc_adapter_for(
+    source_id: str,
+    source_config: dict[str, Any] | None = None,
+) -> PublicListingRPCAdapter | None:
     """Return the listing adapter for one RPC source identifier."""
 
     adapter_cls = RPC_ADAPTERS.get(source_id.lower())
-    return adapter_cls() if adapter_cls else None
+    return adapter_cls(source_config) if adapter_cls else None
 
 
 def _effective_report_date(classified, target_date: date) -> date:

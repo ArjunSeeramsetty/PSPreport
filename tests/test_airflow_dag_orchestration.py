@@ -15,6 +15,7 @@ from psp_pipeline.pipelines.stages import (
     audit_curated_source_freshness,
     audit_national_curated_dimensions,
     catch_up_missing_public_dates,
+    combine_collection_summaries,
     collect_all_rldc_daily_psp,
     evaluate_curated_coverage_contract,
     export_all_curated_to_timescale,
@@ -90,13 +91,68 @@ def test_export_and_sync_curated_stages_non_existent(mock_settings: AppSettings,
     assert sync_all_curated_to_graph(mock_settings, non_existent) == 0
 
 
+def test_explicitly_collected_report_ids_are_exported_outside_run_date(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Delayed settlement accounts must not be lost to the daily date filter."""
+
+    from psp_pipeline.pipelines import stages
+
+    db_path = tmp_path / "reports.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        ensure_sqlite_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO psp_report_document(
+                id, rldc, source_url, local_path, content_hash, fetched_at,
+                ocr_score, ocr_used, ocr_reason, extracted_char_count, report_date
+            ) VALUES (71, 'erpc', 'fixture', 'fixture.xlsx', 'fixture-hash',
+                      '2026-09-02T00:00:00+00:00', 0, 0, 'native', 1, '2026-08-24')
+            """
+        )
+    exported_ids: list[int | None] = []
+    from psp_pipeline.storage import sqlite_curated_export
+
+    monkeypatch.setattr(
+        sqlite_curated_export,
+        "export_all_daily_observations",
+        lambda _conn, **kwargs: exported_ids.append(kwargs.get("report_document_id")) or [],
+    )
+    with sqlite3.connect(db_path) as conn:
+        result = stages._export_curated_observations_for_date(
+            conn,
+            None,
+            date(2026, 9, 2),
+            report_document_ids=[71],
+        )
+    assert result == []
+    assert exported_ids == [71]
+
+
+def test_combined_pipeline_history_counters_include_rpc_sources() -> None:
+    """Run history must surface fail-soft RPC failures alongside RLDC results."""
+
+    summary = combine_collection_summaries(
+        {"aggregate": {"sources_requested": 5, "sources_completed": 5, "sources_failed": 0}},
+        {"aggregate": {"sources_requested": 5, "sources_completed": 2, "sources_failed": 3}},
+    )
+    assert summary["aggregate"] == {
+        "sources_requested": 10,
+        "sources_completed": 7,
+        "sources_failed": 3,
+    }
+
+
 def test_daily_dag_wires_coverage_contract_and_timescale_mirror() -> None:
     """The public DAG evaluates corpus floors and dual-write verification in-process."""
 
     dag_source = Path(__file__).resolve().parents[1] / "dags" / "psp_daily_pipeline.py"
     text = dag_source.read_text(encoding="utf-8")
     assert "collect_rpc_settlement_task" in text
-    assert "rpc_collection >> all_timescale" in text
+    assert "all_rldc_collection, rpc_collection, run_meta, quarantine_retry" in text
+    assert "report_document_ids=_rpc_report_ids(rpc_collection)" in text
+    assert "combine_collection_summaries(collection, rpc_collection)" in text
     assert "coverage_contract_task" in text
     assert "evaluate_curated_coverage_contract" in text
     assert "export_all_curated_to_timescale" in text

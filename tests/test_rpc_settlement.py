@@ -152,6 +152,30 @@ def test_erpc_adapter_discovers_dsm_and_rea_inside_publication_window() -> None:
     assert rpc_adapter_for("nerpc") is not None
 
 
+def test_rpc_adapter_uses_registry_listing_domain_and_keywords() -> None:
+    """The external source registry must override portal-specific defaults."""
+
+    adapter = rpc_adapter_for(
+        "erpc",
+        {
+            "listing_url": "https://reports.example.gov/settlement/index.html",
+            "allow_domains": ["reports.example.gov"],
+            "include_keywords": ["account statement"],
+        },
+    )
+    assert adapter is not None
+    assert adapter._listing_url == "https://reports.example.gov/settlement/index.html"
+    links = adapter.links_from_html(
+        '<a href="/files/account_statement_DSM_18-08-2026_to_24-08-2026.pdf">'
+        "account statement</a>",
+        adapter._listing_url,
+        date(2026, 8, 28),
+    )
+    assert [link.url for link in links] == [
+        "https://reports.example.gov/files/account_statement_DSM_18-08-2026_to_24-08-2026.pdf"
+    ]
+
+
 def _seed_rpc_report(conn: sqlite3.Connection, *, family: str, template_id: str, table: ExtractedTable) -> int:
     """Persist one synthetic RPC document and its raw cells."""
 
