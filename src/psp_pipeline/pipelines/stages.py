@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 from uuid import uuid4
 
 from psp_pipeline.agents.dq_alert_agent import DQAlertAgent
@@ -23,8 +23,21 @@ from psp_pipeline.models.contracts import (
     ReconciliationResult,
     SourceDefinition,
 )
+from psp_pipeline.quality.coverage_contract import (
+    default_coverage_manifest_path,
+    enforce_coverage_manifest,
+    evaluate_coverage_manifest,
+)
+from psp_pipeline.quality.timescale_mirror_reconciliation import (
+    CurrentRowFetcher,
+    verify_exported_current_mirror,
+)
 from psp_pipeline.storage.minio_store import MinioRawStore
 from psp_pipeline.storage.neo4j_repo import Neo4jRepository
+from psp_pipeline.storage.postgres_publish import (
+    prepare_curated_postgres_publish,
+    publish_wide_facts_to_repository,
+)
 from psp_pipeline.storage.postgres_repo import PostgresRepository
 from psp_pipeline.storage.sqlite_curated_export import (
     export_observation_lineage,
@@ -187,6 +200,9 @@ def repromote_srldc_curated(sqlite_db_path: Path) -> Dict[str, int]:
 def export_srldc_curated_to_timescale(
     settings: AppSettings,
     sqlite_db_path: Path,
+    *,
+    verify_current_mirror: bool = True,
+    current_row_fetcher: CurrentRowFetcher | None = None,
 ) -> int:
     """Append curated SRLDC regional and state facts to TimescaleDB."""
 
@@ -196,15 +212,36 @@ def export_srldc_curated_to_timescale(
 
     with sqlite3.connect(sqlite_db_path) as conn:
         facts = export_srldc_daily_observations(conn)
-    if facts:
-        with sqlite3.connect(sqlite_db_path) as conn:
+        if facts:
             observation_lineage = export_observation_lineage(conn, facts)
-        repository = PostgresRepository(settings.postgres_dsn)
-        repository.upsert_curated_observations(
-            facts,
-            observation_lineage,
-        )
-        repository.refresh_current_truth_views()
+            repository = PostgresRepository(settings.postgres_dsn)
+            facts, catalog, identity_summary = prepare_curated_postgres_publish(
+                conn,
+                facts,
+                repository,
+            )
+            repository.upsert_curated_observations(
+                facts,
+                observation_lineage,
+            )
+            publish_wide_facts_to_repository(
+                facts,
+                catalog,
+                repository,
+                verify_current_mirror=verify_current_mirror,
+            )
+            repository.refresh_current_truth_views()
+            if verify_current_mirror:
+                verify_exported_current_mirror(
+                    facts,
+                    settings.postgres_dsn,
+                    current_row_fetcher=current_row_fetcher,
+                )
+            logger.info(
+                "srldc_curated_postgres_publish observations=%s identity=%s",
+                len(facts),
+                identity_summary,
+            )
     return len(facts)
 
 
@@ -285,29 +322,127 @@ def collect_all_rldc_daily_psp(
         }
 
 
+def catch_up_missing_public_dates(
+    settings: AppSettings,
+    target_date: date,
+    *,
+    lookback_days: int = 2,
+) -> Dict[str, Any]:
+    """Fill recent holes left by a failed or partial public collection day."""
+
+    from psp_pipeline.pipelines.all_rldc_daily_psp import catch_up_missing_rldc_dates
+
+    try:
+        return catch_up_missing_rldc_dates(
+            config_path=settings.project_root / "config" / "rldc_report_sources.yaml",
+            sqlite_db_path=settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+            download_root=settings.project_root / "downloads",
+            target_date=target_date,
+            lookback_days=lookback_days,
+        )
+    except Exception:
+        logger.exception("Public RLDC catch-up failed for %s", target_date.isoformat())
+        return {
+            "lookback_days": lookback_days,
+            "anchor_date": target_date.isoformat(),
+            "dates": [],
+            "error": "catch_up_failed",
+        }
+
+
+def retry_curated_promotion_quarantine(
+    sqlite_db_path: Path,
+) -> Dict[str, Any]:
+    """Retry pending spatial and OCR holds before coverage is evaluated."""
+
+    if not sqlite_db_path.exists():
+        return {
+            "holds_seen": 0,
+            "resolved": 0,
+            "skipped_semantic": 0,
+            "reports_missing_local_file": 0,
+            "reports_without_spatial_items": 0,
+            "liteparse_unavailable": 0,
+            "unknown_reason": 0,
+            "retry_failed": 0,
+            "skipped": True,
+        }
+    from psp_pipeline.pipelines.quarantine_retry import retry_pending_promotion_quarantine
+
+    return retry_pending_promotion_quarantine(sqlite_db_path)
+
+
+def audit_curated_source_freshness(
+    sqlite_db_path: Path,
+    target_date: date,
+) -> Dict[str, Any]:
+    """Return public sources missing a persisted report for the target date."""
+
+    from psp_pipeline.pipelines.all_rldc_daily_psp import missing_sources_for_date
+
+    missing = sorted(missing_sources_for_date(sqlite_db_path, target_date))
+    return {
+        "target_date": target_date.isoformat(),
+        "stale_or_missing_sources": missing,
+        "passed": not missing,
+        "skipped": not sqlite_db_path.exists(),
+    }
+
+
 def export_all_curated_to_timescale(
     settings: AppSettings,
     sqlite_db_path: Path,
     rldcs: list[str] | None = None,
     target_date: date | None = None,
+    *,
+    verify_current_mirror: bool = True,
+    current_row_fetcher: CurrentRowFetcher | None = None,
 ) -> int:
-    """Export a date-scoped curated multi-RLDC slice into TimescaleDB."""
+    """Export a date-scoped curated multi-RLDC slice into TimescaleDB.
+
+    Historical replay belongs in ``bootstrap_timescale_from_sqlite`` against a
+    greenfield schema. This stage only publishes the orchestration date, then
+    upserts canonical identity and Postgres-primary wide facts when the
+    repository implements those APIs.
+    """
     if not sqlite_db_path.exists():
         return 0
     import sqlite3
-    from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
 
     with sqlite3.connect(sqlite_db_path) as conn:
         facts = _export_curated_observations_for_date(conn, rldcs, target_date)
         observation_lineage = export_observation_lineage(conn, facts)
-    if facts:
-        repository = PostgresRepository(settings.postgres_dsn)
-        inserted = repository.upsert_curated_observations(
-            facts,
-            observation_lineage,
-        )
-        repository.refresh_current_truth_views()
-        return inserted
+        if facts:
+            repository = PostgresRepository(settings.postgres_dsn)
+            facts, catalog, identity_summary = prepare_curated_postgres_publish(
+                conn,
+                facts,
+                repository,
+            )
+            inserted = repository.upsert_curated_observations(
+                facts,
+                observation_lineage,
+            )
+            wide_summary = publish_wide_facts_to_repository(
+                facts,
+                catalog,
+                repository,
+                verify_current_mirror=verify_current_mirror,
+            )
+            repository.refresh_current_truth_views()
+            if verify_current_mirror:
+                verify_exported_current_mirror(
+                    facts,
+                    settings.postgres_dsn,
+                    current_row_fetcher=current_row_fetcher,
+                )
+            logger.info(
+                "curated_postgres_publish inserted=%s identity=%s wide=%s",
+                inserted,
+                identity_summary,
+                wide_summary,
+            )
+            return inserted
     return 0
 
 
@@ -321,9 +456,22 @@ def sync_all_curated_to_graph(
     if not sqlite_db_path.exists():
         return 0
     import sqlite3
+    from psp_pipeline.identity.canonical import (
+        annotate_topology_with_canonical_ids,
+        build_canonical_catalog,
+    )
+    from psp_pipeline.storage.postgres_publish import dimension_catalog_available
+    from psp_pipeline.storage.wide_facts import attach_canonical_entity_ids
+
     with sqlite3.connect(sqlite_db_path) as conn:
         topology = export_curated_topology(conn)
         facts = _export_curated_observations_for_date(conn, rldcs, target_date)
+        catalog = None
+        if dimension_catalog_available(conn):
+            catalog = build_canonical_catalog(conn)
+            topology = annotate_topology_with_canonical_ids(topology, catalog)
+            facts = attach_canonical_entity_ids(facts, catalog)
+            conn.commit()
     neo4j_repo = Neo4jRepository(
         settings.neo4j_uri,
         settings.neo4j_user,
@@ -331,7 +479,13 @@ def sync_all_curated_to_graph(
     )
     try:
         neo4j_repo.ensure_constraints(_neo4j_constraint_statements())
+        merge_canonical = getattr(neo4j_repo, "merge_canonical_entities", None)
+        if callable(merge_canonical):
+            merge_canonical(topology.get("canonical_entities", []))
         neo4j_repo.merge_grid_topology(topology)
+        link_identifies = getattr(neo4j_repo, "link_identifies_relationships", None)
+        if callable(link_identifies):
+            link_identifies()
         GraphSyncAgent(neo4j_repo).run(facts)
     finally:
         neo4j_repo.close()
@@ -418,6 +572,96 @@ def _neo4j_constraint_statements() -> list[str]:
     ]
 
 
+def audit_pending_identity_adjudications(
+    sqlite_db_path: Path,
+) -> Dict[str, Any]:
+    """Count pending canonical identity issues without auto-approving them.
+
+    Daily orchestration treats this as fail-soft observability. A non-zero
+    pending count is recorded in XCom; humans apply decisions through
+    ``apply_canonical_identity_adjudication``.
+    """
+
+    if not sqlite_db_path.exists():
+        return {
+            "pending": 0,
+            "approved": 0,
+            "rejected": 0,
+            "total": 0,
+            "skipped": True,
+            "passed": True,
+            "issues": [],
+        }
+    import sqlite3
+    from psp_pipeline.identity.adjudication import (
+        identity_adjudication_summary,
+        list_identity_adjudications,
+    )
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        summary = identity_adjudication_summary(conn)
+        issues = list_identity_adjudications(conn, status="pending")
+    logger.info(
+        "identity_adjudication_audit pending=%s approved=%s rejected=%s",
+        summary["pending"],
+        summary["approved"],
+        summary["rejected"],
+    )
+    return {
+        **summary,
+        "skipped": False,
+        "passed": True,
+        "issues": issues,
+    }
+
+
+def apply_canonical_identity_adjudication(
+    sqlite_db_path: Path,
+    *,
+    issue_id: int,
+    decision: str,
+    decided_by: str = "operator",
+    entity_id: str | None = None,
+    observation_entity_key: str | None = None,
+    postgres_dsn: str | None = None,
+    repository: object | None = None,
+) -> Dict[str, Any]:
+    """Apply one human identity decision and optionally republish to Postgres."""
+
+    import sqlite3
+    from psp_pipeline.identity.adjudication import (
+        apply_adjudication,
+        republish_identity_after_adjudication,
+    )
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        result = apply_adjudication(
+            conn,
+            issue_id=issue_id,
+            decision=decision,
+            decided_by=decided_by,
+            entity_id=entity_id,
+            observation_entity_key=observation_entity_key,
+        )
+        repo = repository
+        if repo is None and postgres_dsn:
+            repo = PostgresRepository(postgres_dsn)
+        if repo is None:
+            return {
+                "apply": result.as_dict(),
+                "postgres": {"skipped": True},
+                "decision": {"skipped": True},
+                "backfill": {"skipped": True},
+            }
+        published = republish_identity_after_adjudication(conn, repo, result)
+    logger.info(
+        "canonical_identity_adjudication_applied issue_id=%s decision=%s",
+        issue_id,
+        decision,
+    )
+    return published
+
+
 def audit_national_curated_dimensions(
     sqlite_db_path: Path,
 ) -> Dict[str, Any]:
@@ -427,6 +671,47 @@ def audit_national_curated_dimensions(
     from psp_pipeline.quality.national_dimension_audit import audit_national_dimensions
 
     return audit_national_dimensions(sqlite_db_path)
+
+
+def evaluate_curated_coverage_contract(
+    sqlite_db_path: Path,
+    *,
+    manifest_path: Path | None = None,
+    profile_name: str = "corpus",
+    require_sources: Iterable[str] | None = None,
+    fail_hard: bool = False,
+) -> Dict[str, Any]:
+    """Evaluate or enforce the committed coverage floors against one SQLite replay.
+
+    Daily orchestration uses ``fail_hard=False`` so a coverage regression is
+    visible in XCom without blocking Timescale or graph publication. Replay and
+    CI callers pass ``fail_hard=True`` for the profile they intend to gate.
+    """
+
+    if not sqlite_db_path.exists():
+        return {
+            "database_path": str(sqlite_db_path),
+            "profile_name": profile_name,
+            "passed": True,
+            "skipped": True,
+            "profiles": {},
+        }
+    resolved_manifest = manifest_path or default_coverage_manifest_path()
+    evaluator = enforce_coverage_manifest if fail_hard else evaluate_coverage_manifest
+    results = evaluator(
+        sqlite_db_path,
+        resolved_manifest,
+        profile_name=profile_name,
+        require_sources=require_sources,
+    )
+    selected = results[profile_name]
+    return {
+        "database_path": str(sqlite_db_path),
+        "profile_name": profile_name,
+        "passed": selected.passed,
+        "skipped": False,
+        "profiles": {name: result.as_dict() for name, result in results.items()},
+    }
 
 
 def record_pipeline_run(

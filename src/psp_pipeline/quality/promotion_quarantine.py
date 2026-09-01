@@ -57,6 +57,89 @@ def record_promotion_quarantine(
     )
 
 
+def list_pending_promotion_quarantine(
+    conn: sqlite3.Connection,
+) -> list[dict[str, Any]]:
+    """Return open holds joined to the local report path needed for retry."""
+
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("promotion_quarantine",),
+    ).fetchone()
+    if not has_table:
+        return []
+    rows = conn.execute(
+        """
+        SELECT
+            hold.QuarantineID,
+            hold.ReportDocumentID,
+            hold.SourceID,
+            hold.Stage,
+            hold.ReasonCode,
+            hold.DetailsJson,
+            hold.Status,
+            document.local_path
+        FROM promotion_quarantine AS hold
+        JOIN psp_report_document AS document
+          ON document.id = hold.ReportDocumentID
+        WHERE hold.Status = 'pending'
+        ORDER BY hold.ReportDocumentID, hold.Stage, hold.ReasonCode
+        """
+    ).fetchall()
+    return [
+        {
+            "quarantine_id": int(quarantine_id),
+            "report_document_id": int(report_id),
+            "source_id": source_id,
+            "stage": stage,
+            "reason_code": reason_code,
+            "details": json.loads(details_json or "{}"),
+            "status": status,
+            "local_path": local_path,
+        }
+        for (
+            quarantine_id,
+            report_id,
+            source_id,
+            stage,
+            reason_code,
+            details_json,
+            status,
+            local_path,
+        ) in rows
+    ]
+
+
+def resolve_promotion_quarantine(
+    conn: sqlite3.Connection,
+    *,
+    report_document_id: int,
+    stage: str,
+    reason_code: str,
+    details: Mapping[str, object] | None = None,
+) -> bool:
+    """Mark one hold resolved after a successful retry or backfill.
+
+    Returns:
+        True when a pending row was updated.
+    """
+
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(details or {}, sort_keys=True)
+    cursor = conn.execute(
+        """
+        UPDATE promotion_quarantine
+        SET Status = 'resolved',
+            DetailsJson = ?,
+            UpdatedAt = ?
+        WHERE ReportDocumentID = ? AND Stage = ? AND ReasonCode = ?
+          AND Status = 'pending'
+        """,
+        (payload, now, report_document_id, stage, reason_code),
+    )
+    return cursor.rowcount > 0
+
+
 def summarize_promotion_quarantine(
     db_path: Path | str,
 ) -> dict[str, Any]:

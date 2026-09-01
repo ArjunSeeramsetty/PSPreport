@@ -58,6 +58,8 @@ def test_run_national_replay_mocked(tmp_path: Path) -> None:
     assert report["date_results"][0]["target_date"] == "2025-01-01"
     assert report["date_results"][0]["observations_exported"] > 0
     assert "final_dimension_audit" in report
+    assert "coverage" in report
+    assert "corpus" in report["coverage"]
 
 
 def test_run_national_replay_with_balance_synthesis(tmp_path: Path) -> None:

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 import logging
 from pathlib import Path
+import sqlite3
 from typing import Any, Callable
 
 from psp_pipeline.pipelines.rldc_daily_psp import run_rldc_daily_psp_collection
@@ -92,6 +93,95 @@ def run_all_rldc_daily_psp(
         "aggregate": aggregate,
         "sources": source_results,
         "source_failures": source_failures,
+    }
+
+
+def missing_sources_for_date(
+    sqlite_db_path: Path | str,
+    target_date: date,
+    expected_sources: tuple[str, ...] | None = None,
+) -> set[str]:
+    """Return public sources with no persisted report for one valid date."""
+
+    expected = expected_sources or RLDC_SOURCE_IDS
+    path = Path(sqlite_db_path)
+    if not path.exists():
+        return set(expected)
+    with sqlite3.connect(path) as conn:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("psp_report_document",),
+        ).fetchone()
+        if not has_table:
+            return set(expected)
+        present = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT rldc FROM psp_report_document WHERE report_date = ?",
+                (target_date.isoformat(),),
+            )
+        }
+    return {source for source in expected if source not in present}
+
+
+def catch_up_missing_rldc_dates(
+    *,
+    config_path: Path,
+    sqlite_db_path: Path,
+    download_root: Path,
+    target_date: date,
+    lookback_days: int = 2,
+    max_reports_per_rldc: int = 1,
+    collection_runner: CollectionRunner = run_rldc_daily_psp_collection,
+) -> dict[str, Any]:
+    """Re-collect recent dates that never persisted a report for a source.
+
+    Today's orchestration date is owned by the primary collect task. This
+    catch-up only walks the lookback window so a single outage does not leave
+    a permanent hole in the curated SQLite replay.
+    """
+
+    lookback = max(int(lookback_days), 0)
+    date_results: list[dict[str, Any]] = []
+    for offset in range(lookback, 0, -1):
+        catch_date = target_date - timedelta(days=offset)
+        missing = missing_sources_for_date(sqlite_db_path, catch_date)
+        if not missing:
+            date_results.append(
+                {
+                    "target_date": catch_date.isoformat(),
+                    "missing_sources": [],
+                    "skipped": True,
+                }
+            )
+            continue
+        LOGGER.info(
+            "rldc_catch_up date=%s missing=%s",
+            catch_date.isoformat(),
+            ",".join(sorted(missing)),
+        )
+        collection = run_all_rldc_daily_psp(
+            config_path=config_path,
+            sqlite_db_path=sqlite_db_path,
+            download_root=download_root,
+            target_date=catch_date,
+            max_reports_per_rldc=max_reports_per_rldc,
+            target_rldcs=missing,
+            collection_runner=collection_runner,
+        )
+        date_results.append(
+            {
+                "target_date": catch_date.isoformat(),
+                "missing_sources": sorted(missing),
+                "skipped": False,
+                "aggregate": collection.get("aggregate", {}),
+                "source_failures": collection.get("source_failures", {}),
+            }
+        )
+    return {
+        "lookback_days": lookback,
+        "anchor_date": target_date.isoformat(),
+        "dates": date_results,
     }
 
 

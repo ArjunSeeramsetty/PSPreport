@@ -45,8 +45,12 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
    - `copy .env.example .env`
 4. Start infrastructure:
    - `powershell -ExecutionPolicy Bypass -File scripts/bootstrap_local.ps1`
-5. Run public ingestion:
+5. Recreate Timescale from `sql/timescale_schema.sql` and backfill curated SQLite:
    - `set PYTHONPATH=src`
+   - `python scripts/bootstrap_timescale_from_sqlite.py --db data/sqlite/all_rldc_daily.sqlite --recreate-schema`
+6. Publish canonical identities and Postgres-primary wide facts without dropping schema:
+   - `python scripts/publish_curated_postgres.py --db data/sqlite/all_rldc_daily.sqlite`
+7. Run public ingestion:
    - `python scripts/run_public_ingestion.py`
 
 ## Airflow
@@ -66,3 +70,6 @@ Neo4j now stores relationship topology for observations:
 - `Region` -> `SourceEntity` -> `TimeSeries` -> `Metric`
 - `SourceEntity` -> `Observation` -> `Metric`
 - `Observation` -> `Region`
+- `SourceEntity`/`Region`/`State` -> `IDENTIFIES` -> `CanonicalEntity`
+
+Postgres is the published system of record for canonical aliases and wide daily facts (`fact_wide_daily`). Fuzzy name matches are queued in `canonical_entity_adjudication` and never auto-merged.

@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+from datetime import date
 from pathlib import Path
+from typing import Iterable
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -44,6 +46,52 @@ def load_fixture_artifacts(manifest_path: Path | str) -> tuple[FixtureArtifact, 
         _validate_fixture(fixture)
         parsed.append(fixture)
     return tuple(parsed)
+
+
+def hash_local_fixtures(
+    artifacts: Iterable[tuple[str, Path | str]],
+) -> tuple[dict[str, str], ...]:
+    """Return SHA-256 pins for local corpus files that already exist.
+
+    Missing files are omitted rather than invented. This lets replay runners
+    record an evidence manifest without requiring a public download URL.
+    """
+
+    pins: list[dict[str, str]] = []
+    for fixture_id, raw_path in artifacts:
+        path = Path(raw_path)
+        if not path.exists() or not path.is_file():
+            continue
+        pins.append(
+            {
+                "id": fixture_id,
+                "filename": path.name,
+                "path": str(path),
+                "sha256": _sha256(path),
+            }
+        )
+    return tuple(pins)
+
+
+def srldc_public_fixture_entry(report_date: date, sha256: str) -> dict[str, str]:
+    """Return one checksum-pinned SRLDC corpus fixture for a public PDF URL.
+
+    The URL is constructed deterministically. Callers must supply a SHA-256
+    measured from bytes they actually downloaded; this helper never invents a
+    digest.
+    """
+
+    from psp_pipeline.acquisition.downloaders.srldc import (
+        srldc_psp_filename,
+        srldc_psp_url,
+    )
+
+    return {
+        "id": f"srldc-{report_date.isoformat()}",
+        "source_url": srldc_psp_url(report_date),
+        "sha256": sha256.lower(),
+        "filename": srldc_psp_filename(report_date),
+    }
 
 
 def fetch_checksum_pinned_fixtures(

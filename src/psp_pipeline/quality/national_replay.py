@@ -11,6 +11,10 @@ import sqlite3
 from typing import Any
 
 from psp_pipeline.pipelines.all_rldc_daily_psp import run_all_rldc_daily_psp
+from psp_pipeline.quality.coverage_contract import (
+    default_coverage_manifest_path,
+    evaluate_coverage_manifest,
+)
 from psp_pipeline.quality.national_dimension_audit import audit_national_dimensions
 from psp_pipeline.reconciliation.all_india_balance import synthesize_all_india_daily_balance
 from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
@@ -161,11 +165,24 @@ def run_national_replay(
 
     completed_at = datetime.now(timezone.utc).isoformat()
 
-    # Final dimension quality audit
+    # Final dimension quality audit and coverage-contract evaluation.
     try:
         final_audit = audit_national_dimensions(db_path)
     except Exception as exc:
         final_audit = {"error": str(exc)}
+
+    try:
+        coverage_results = evaluate_coverage_manifest(
+            db_path,
+            default_coverage_manifest_path(),
+            profile_name="corpus",
+            require_sources=target_rldcs,
+        )
+        final_coverage = {
+            name: result.as_dict() for name, result in coverage_results.items()
+        }
+    except Exception as exc:
+        final_coverage = {"error": str(exc)}
 
     report = NationalReplayReport(
         started_at=started_at,
@@ -179,6 +196,7 @@ def run_national_replay(
         final_dimension_audit=final_audit,
     )
     report_dict = asdict(report)
+    report_dict["coverage"] = final_coverage
 
     if output_path is not None:
         out_file = Path(output_path)

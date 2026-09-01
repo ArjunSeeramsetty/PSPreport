@@ -21,6 +21,11 @@ from psp_pipeline.pipelines.rldc_daily_psp import (
     LocalReportInput,
     run_rldc_local_pdf_ingestion,
 )
+from psp_pipeline.quality.coverage_contract import (
+    default_coverage_manifest_path,
+    enforce_coverage_manifest,
+)
+from psp_pipeline.quality.fixture_acquisition import hash_local_fixtures
 from psp_pipeline.reconciliation.all_india_balance import synthesize_all_india_daily_balance
 from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
 from psp_pipeline.storage.timescale_loader import load_curated_observations_to_timescale
@@ -81,6 +86,15 @@ def run_replay_for_date(
 
     LOGGER.info("Starting 6-source local SQLite ingestion for %s", target_date_str)
     ingestion = run_rldc_local_pdf_ingestion(db_path, inputs)
+    fixture_checksums = hash_local_fixtures(
+        (f"{rldc}-{target_date_str}", path) for rldc, path in file_map.items()
+    )
+    coverage = enforce_coverage_manifest(
+        db_path,
+        default_coverage_manifest_path(),
+        profile_name="corpus",
+        require_sources=file_map.keys(),
+    )
 
     conn = sqlite3.connect(str(db_path))
     try:
@@ -121,6 +135,7 @@ def run_replay_for_date(
                 settings.postgres_dsn,
                 ingested_at=datetime.now(timezone.utc),
                 replace_complete_snapshots=True,
+                verify_current_mirror=True,
             )
             LOGGER.info("TimescaleDB load complete: %s", timescale_result)
         except Exception as exc:
@@ -186,6 +201,8 @@ def run_replay_for_date(
         "exported_observation_total": len(obs),
         "exported_observations_by_source": obs_by_source,
         "balance_reconciliation": balance_dict,
+        "fixture_checksums": list(fixture_checksums),
+        "coverage": {name: result.as_dict() for name, result in coverage.items()},
         "timescale_result": timescale_result,
         "neo4j_result": neo4j_result,
     }

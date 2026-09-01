@@ -32,6 +32,7 @@ class Neo4jRepository:
         timeseries_uuid: str,
         time_block: Optional[str],
         series_key: str | None = None,
+        canonical_entity_id: str | None = None,
     ) -> None:
         region_code, source_entity_id = _split_entity_key(entity_key)
         observation_key = f"{entity_key}|{metric_name}|{time_block or 'NA'}"
@@ -42,7 +43,8 @@ class Neo4jRepository:
                 MERGE (r:Region {code: $region_code})
 
                 MERGE (e:SourceEntity {entity_key: $entity_key})
-                SET e.entity_id = $source_entity_id
+                SET e.entity_id = $source_entity_id,
+                    e.canonical_entity_id = coalesce($canonical_entity_id, e.canonical_entity_id)
 
                 MERGE (rt:ReportType {name: $report_type})
                 MERGE (m:Metric {name: $metric_name})
@@ -59,6 +61,10 @@ class Neo4jRepository:
                 MERGE (e)-[:HAS_OBSERVATION]->(o)
                 MERGE (o)-[:MEASURES]->(m)
                 MERGE (o)-[:RECORDED_IN]->(r)
+                FOREACH (_ IN CASE WHEN $canonical_entity_id IS NULL THEN [] ELSE [1] END |
+                  MERGE (canonical:CanonicalEntity {entity_id: $canonical_entity_id})
+                  MERGE (e)-[:IDENTIFIES]->(canonical)
+                )
                 """,
                 {
                     "region_code": region_code,
@@ -70,6 +76,7 @@ class Neo4jRepository:
                     "series_key": series_key or observation_key,
                     "observation_key": observation_key,
                     "time_block": time_block,
+                    "canonical_entity_id": canonical_entity_id,
                 },
             )
 
@@ -101,6 +108,7 @@ class Neo4jRepository:
                         f"{entity_key}|{metric_name}|{time_block or 'NA'}"
                     ),
                     "time_block": time_block,
+                    "canonical_entity_id": observation.get("canonical_entity_id"),
                 }
             )
         if not rows:
@@ -113,9 +121,13 @@ class Neo4jRepository:
                 MERGE (e:SourceEntity {entity_key: row.entity_key})
                 ON CREATE SET e.entity_id = row.source_entity_id,
                               e.created_at = datetime(),
-                              e.last_seen_at = datetime()
+                              e.last_seen_at = datetime(),
+                              e.canonical_entity_id = row.canonical_entity_id
                 ON MATCH SET e.entity_id = row.source_entity_id,
-                             e.last_seen_at = datetime()
+                             e.last_seen_at = datetime(),
+                             e.canonical_entity_id = coalesce(
+                                 row.canonical_entity_id, e.canonical_entity_id
+                             )
                 MERGE (rt:ReportType {name: row.report_type})
                 MERGE (m:Metric {name: row.metric_name})
                 SET m.metric_id = coalesce(row.metric_id, row.metric_name)
@@ -133,6 +145,10 @@ class Neo4jRepository:
                 MERGE (e)-[:HAS_OBSERVATION]->(o)
                 MERGE (o)-[:MEASURES]->(m)
                 MERGE (o)-[:RECORDED_IN]->(r)
+                FOREACH (_ IN CASE WHEN row.canonical_entity_id IS NULL THEN [] ELSE [1] END |
+                  MERGE (canonical:CanonicalEntity {entity_id: row.canonical_entity_id})
+                  MERGE (e)-[:IDENTIFIES]->(canonical)
+                )
                 """,
                 {"rows": rows},
             )
@@ -202,6 +218,19 @@ class Neo4jRepository:
                 topology.get("transmission_lines", []),
             )
 
+    def merge_canonical_entities(self, entities: Iterable[Mapping[str, Any]]) -> None:
+        """Idempotently merge canonical identity nodes used by IDENTIFIES links."""
+
+        rows = [dict(entity) for entity in entities]
+        with self.driver.session() as session:
+            _run_batches(session, _CANONICAL_ENTITY_QUERY, rows)
+
+    def link_identifies_relationships(self) -> None:
+        """Connect topology nodes that carry canonical_entity_id to CanonicalEntity."""
+
+        with self.driver.session() as session:
+            session.run(_IDENTIFIES_QUERY)
+
     def ensure_constraints(self, statements: Iterable[str]) -> None:
         """Apply idempotent Cypher constraints before a graph synchronization."""
 
@@ -237,6 +266,7 @@ UNWIND $rows AS row
 MERGE (region:Region {code: row.code})
 ON CREATE SET region.name = row.name, region.created_at = datetime()
 ON MATCH SET region.name = row.name, region.last_seen_at = datetime()
+SET region.canonical_entity_id = coalesce(row.canonical_entity_id, region.canonical_entity_id)
 """
 
 _COUNTRY_QUERY = """
@@ -244,6 +274,7 @@ UNWIND $rows AS row
 MERGE (country:Country {code: row.code})
 ON CREATE SET country.name = row.name, country.created_at = datetime()
 ON MATCH SET country.name = row.name, country.last_seen_at = datetime()
+SET country.canonical_entity_id = coalesce(row.canonical_entity_id, country.canonical_entity_id)
 """
 
 _STATE_QUERY = """
@@ -251,6 +282,7 @@ UNWIND $rows AS row
 MERGE (state:State {code: row.code})
 ON CREATE SET state.name = row.name, state.created_at = datetime()
 ON MATCH SET state.name = row.name, state.last_seen_at = datetime()
+SET state.canonical_entity_id = coalesce(row.canonical_entity_id, state.canonical_entity_id)
 WITH row, state
 FOREACH (_ IN CASE WHEN row.region_code IS NULL THEN [] ELSE [1] END |
   MERGE (region:Region {code: row.region_code})
@@ -268,7 +300,8 @@ UNWIND $rows AS row
 MERGE (station:GridEntity:PowerStation {key: row.key})
 ON CREATE SET station.name = row.name, station.created_at = datetime()
 ON MATCH SET station.name = row.name, station.last_seen_at = datetime()
-SET station.capacity_mw = row.capacity_mw
+SET station.capacity_mw = row.capacity_mw,
+    station.canonical_entity_id = coalesce(row.canonical_entity_id, station.canonical_entity_id)
 WITH row, station
 FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.state_code})
@@ -281,7 +314,8 @@ UNWIND $rows AS row
 MERGE (unit:GridEntity:GeneratingUnit {key: row.key})
 ON CREATE SET unit.name = row.name, unit.created_at = datetime()
 ON MATCH SET unit.name = row.name, unit.last_seen_at = datetime()
-SET unit.unit_number = row.unit_number, unit.capacity_mw = row.capacity_mw
+SET unit.unit_number = row.unit_number, unit.capacity_mw = row.capacity_mw,
+    unit.canonical_entity_id = coalesce(row.canonical_entity_id, unit.canonical_entity_id)
 WITH row, unit
 MERGE (station:GridEntity:PowerStation {key: row.station_key})
 MERGE (unit)-[:UNIT_OF]->(station)
@@ -295,7 +329,8 @@ ON CREATE SET entity.name = row.name, entity.entity_type = row.entity_type,
 ON MATCH SET entity.name = row.name, entity.entity_type = row.entity_type,
              entity.last_seen_at = datetime()
 SET entity.capacity_mw = row.capacity_mw,
-    entity.observation_entity_key = row.observation_entity_key
+    entity.observation_entity_key = row.observation_entity_key,
+    entity.canonical_entity_id = coalesce(row.canonical_entity_id, entity.canonical_entity_id)
 WITH row, entity
 FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.state_code})
@@ -313,7 +348,8 @@ MERGE (node:VoltageNode {key: row.key})
 ON CREATE SET node.name = row.name, node.created_at = datetime()
 ON MATCH SET node.name = row.name, node.last_seen_at = datetime()
 SET node.nominal_voltage_kv = row.nominal_voltage_kv,
-    node.observation_entity_key = row.observation_entity_key
+    node.observation_entity_key = row.observation_entity_key,
+    node.canonical_entity_id = coalesce(row.canonical_entity_id, node.canonical_entity_id)
 WITH row, node
 FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.state_code})
@@ -332,7 +368,8 @@ ON CREATE SET line.name = row.name, line.created_at = datetime()
 ON MATCH SET line.name = row.name, line.last_seen_at = datetime()
 SET line.element_type = row.element_type,
     line.nominal_voltage_kv = row.nominal_voltage_kv,
-    line.observation_entity_key = row.observation_entity_key
+    line.observation_entity_key = row.observation_entity_key,
+    line.canonical_entity_id = coalesce(row.canonical_entity_id, line.canonical_entity_id)
 WITH row, line
 FOREACH (_ IN CASE WHEN row.from_state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.from_state_code})
@@ -390,4 +427,26 @@ MATCH (version:ObservationVersion {timeseries_uuid: row.timeseries_uuid})
 WHERE version.sys_to = 'infinity'
 SET version.sys_to = datetime(row.retired_at),
     version.retired_at = datetime(row.retired_at)
+"""
+
+_CANONICAL_ENTITY_QUERY = """
+UNWIND $rows AS row
+MERGE (entity:CanonicalEntity {entity_id: row.entity_id})
+ON CREATE SET entity.entity_code = row.entity_code,
+              entity.entity_type = row.entity_type,
+              entity.canonical_name = row.canonical_name,
+              entity.region_code = row.region_code,
+              entity.state_code = row.state_code,
+              entity.created_at = datetime()
+ON MATCH SET entity.canonical_name = row.canonical_name,
+             entity.region_code = row.region_code,
+             entity.state_code = row.state_code,
+             entity.last_seen_at = datetime()
+"""
+
+_IDENTIFIES_QUERY = """
+MATCH (n)
+WHERE n.canonical_entity_id IS NOT NULL
+MERGE (entity:CanonicalEntity {entity_id: n.canonical_entity_id})
+MERGE (n)-[:IDENTIFIES]->(entity)
 """

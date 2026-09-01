@@ -80,6 +80,19 @@ def test_repository_runs_bounded_topology_batches_without_per_row_queries() -> N
     assert payload == {"rows": [{"code": "SR", "name": "Southern Region"}]}
 
 
+def test_canonical_entity_merge_and_identifies_queries_are_idempotent() -> None:
+    """Canonical nodes are merged by entity_id and linked without duplication."""
+
+    from psp_pipeline.storage.neo4j_repo import (
+        _CANONICAL_ENTITY_QUERY,
+        _IDENTIFIES_QUERY,
+    )
+
+    assert "MERGE (entity:CanonicalEntity {entity_id: row.entity_id})" in _CANONICAL_ENTITY_QUERY
+    assert "MATCH (n)" in _IDENTIFIES_QUERY
+    assert "MERGE (n)-[:IDENTIFIES]->(entity)" in _IDENTIFIES_QUERY
+
+
 def test_repository_applies_each_idempotent_constraint_statement() -> None:
     """Constraint setup uses one session and preserves statement ordering."""
 

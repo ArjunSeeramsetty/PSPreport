@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
 from math import isclose
-from typing import Iterable
+from typing import Callable, Iterable
 
 try:
     import psycopg
@@ -13,6 +14,8 @@ except ImportError:
 
 from psp_pipeline.models.contracts import FactObservation
 from psp_pipeline.storage.observation_identity import build_series_key
+
+CurrentRowFetcher = Callable[[str, Iterable[FactObservation]], list["CurrentMirrorRow"]]
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,42 @@ class TimescaleMirrorReconciliation:
         payload = asdict(self)
         payload["is_match"] = self.is_match
         return payload
+
+
+class TimescaleMirrorMismatchError(AssertionError):
+    """Raised when a dual-write load does not match Timescale current truth."""
+
+    def __init__(self, result: TimescaleMirrorReconciliation) -> None:
+        self.result = result
+        super().__init__(
+            "Timescale current-truth mirror mismatch: "
+            + json.dumps(result.as_dict(), sort_keys=True)
+        )
+
+
+def verify_exported_current_mirror(
+    observations: Iterable[FactObservation],
+    postgres_dsn: str,
+    *,
+    current_row_fetcher: CurrentRowFetcher | None = None,
+) -> TimescaleMirrorReconciliation:
+    """Fetch Timescale current truth and fail when it diverges from the export.
+
+    Raises:
+        TimescaleMirrorMismatchError: If any exported grain is missing, extra,
+            or numerically different in the current-truth projection.
+        RuntimeError: If the optional PostgreSQL driver is unavailable.
+    """
+
+    fetcher = current_row_fetcher or fetch_current_timescale_rows
+    observation_list = list(observations)
+    result = reconcile_timescale_current_mirror(
+        observation_list,
+        fetcher(postgres_dsn, observation_list),
+    )
+    if not result.is_match:
+        raise TimescaleMirrorMismatchError(result)
+    return result
 
 
 def reconcile_timescale_current_mirror(
