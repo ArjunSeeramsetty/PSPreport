@@ -109,9 +109,12 @@ logger = logging.getLogger(__name__)
 def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) -> None:
     """Promote verified ERLDC PSP sections with raw-cell lineage.
 
-    Split-table layouts currently promote their stable Page 1 regional and state
-    tables. Multi-page generation and operational sections remain gated until
-    their continuation geometry has a fixture-backed contract.
+    Split-table layouts promote their stable Page 1 regional and state tables
+    plus generation, frequency, reservoir, voltage, and exchange sections when
+    those tables match a fixture-backed contract. Market day-energy and extrema
+    are promoted for every approved flat and split family after a complete
+    header match. HPX RTM stays outside the extrema contract when both columns
+    are labeled ``Minimum``. Nepal line-detail remains out of scope.
     """
     report = conn.execute(
         "SELECT rldc, report_date, template_id, semantic_pass_required "
@@ -150,6 +153,7 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
         _split_frequency(conn, report_id, date_id, int(region[0]))
         _split_reservoirs(conn, report_id, date_id, int(region[0]))
         _split_voltage_and_exchanges(conn, report_id, date_id, int(region[0]))
+        _promote_market_sections(conn, report_id, date_id)
         return
     _regional(conn, report_id, date_id, int(region[0]))
     _states(conn, report_id, date_id)
@@ -179,6 +183,7 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
         )
     else:
         _voltage_and_exchanges(conn, report_id, date_id, int(region[0]))
+    _promote_market_sections(conn, report_id, date_id)
 
 
 def _date_id(conn: sqlite3.Connection, value: str) -> int | None:
@@ -1572,18 +1577,41 @@ def _promote_2025_flat_operational_sections(
     _promote_2025_flat_physical_exchanges(conn, report, date_id)
     _promote_2025_flat_voltage_profiles(conn, report, date_id, region_id)
     _promote_2025_flat_country_exchanges(conn, report, date_id)
-    _promote_2025_flat_market_day_energy(conn, report, date_id)
-    _promote_2025_flat_market_extrema(conn, report, date_id)
 
 
-def _promote_2025_flat_market_day_energy(
+def _promote_market_sections(
     conn: sqlite3.Connection,
     report: int,
     date_id: int,
 ) -> None:
-    """Promote the header-verified ERLDC Page 6 day-energy market matrix."""
+    """Promote day-energy and extrema from any ERLDC family that publishes them.
 
-    rows = _rows(conn, report, 6)
+    Day-energy uses native cells after a complete header match. Extrema first
+    tries native max/min columns, then LiteParse reconstruction for collapsed
+    2025-flat rows. HPX RTM stays outside the contract when both columns are
+    labeled ``Minimum``. Nepal line-detail is not handled here.
+    """
+
+    for page_no, _table_no, rows in _all_tables(conn, report):
+        _promote_market_day_energy_from_rows(conn, report, date_id, rows)
+        _promote_market_extrema_from_native_rows(conn, report, date_id, rows)
+        if _market_extrema_headers_are_verified(rows):
+            _promote_market_extrema_from_spatial_items(
+                conn,
+                report,
+                date_id,
+                page_no,
+            )
+
+
+def _promote_market_day_energy_from_rows(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    rows: list[dict[int, tuple[int, str]]],
+) -> None:
+    """Promote one header-verified ERLDC day-energy market matrix."""
+
     for index, row in enumerate(rows[:-1]):
         if not any(
             _compact_text(text) == "dayenergy(mu)"
@@ -1633,35 +1661,165 @@ def _promote_2025_flat_market_day_energy(
         return
 
 
-def _promote_2025_flat_market_extrema(
+def _erldc_market_mechanism_columns(
+    row: dict[int, tuple[int, str]],
+) -> dict[str, int]:
+    """Resolve published ERLDC market mechanism headers to raw columns."""
+
+    names = {
+        "gnaschedule": "GNASchedule",
+        "isgsgnaschedule": "GNASchedule",
+        "isgsgnasched": "GNASchedule",
+        "tgnabilateral": "TGNABilateral",
+        "tgnabilateralmw": "TGNABilateral",
+        "isgstgnabilateral": "TGNABilateral",
+        "gdamschedule": "GDAMSchedule",
+        "iexgdamschedule": "GDAMSchedule",
+        "iexgdammw": "IEXGDAM",
+        "damschedule": "DAMSchedule",
+        "iexdamschedule": "DAMSchedule",
+        "iexdammw": "IEXDAM",
+        "hpdamschedule": "HPDAMSchedule",
+        "iexhpdamschedule": "HPDAMSchedule",
+        "iexhpdammw": "IEXHPDAM",
+        "rtmschedule": "RTMSchedule",
+        "iexrtmschedule": "RTMSchedule",
+        "iexrtmmw": "IEXRTM",
+        "pxilgdammw": "PXILGDAM",
+        "pxildammw": "PXILDAM",
+        "pxilhpdammw": "PXILHPDAM",
+        "pxilrtmmw": "PXILRTM",
+        "pxirtmmw": "PXILRTM",
+        "hpxgdammw": "HPXGDAM",
+        "hpxdammw": "HPXDAM",
+        "hpxhpdammw": "HPXHPDAM",
+        "hpxrtm": "HPXRTM",
+        "hpxrtmmw": "HPXRTM",
+        "hpxrtmschedule": "HPXRTM",
+    }
+    result: dict[str, int] = {}
+    for column, (_, text) in row.items():
+        name = names.get(re.sub(r"[^a-z]", "", text.lower()))
+        if name:
+            result[name] = column
+    return result
+
+
+def _erldc_market_extrema_pairs(
+    mechanisms: dict[str, int],
+    row: dict[int, tuple[int, str]],
+) -> dict[str, tuple[int, int]]:
+    """Return complete Maximum/Minimum column pairs, skipping malformed ones.
+
+    HPX RTM is omitted when both of its columns are labeled ``Minimum`` instead
+    of aborting the rest of a verified 8(B) table.
+    """
+
+    columns = sorted(mechanisms.items(), key=lambda item: item[1])
+    last_column = max(row) + 1 if row else 0
+    pairs: dict[str, tuple[int, int]] = {}
+    for index, (mechanism, start) in enumerate(columns):
+        end = columns[index + 1][1] if index + 1 < len(columns) else last_column
+        maximum = [
+            column
+            for column in range(start, end)
+            if _market_extrema_header_text(row.get(column, (0, ""))[1]) == "maximum"
+        ]
+        minimum = [
+            column
+            for column in range(start, end)
+            if _market_extrema_header_text(row.get(column, (0, ""))[1]) == "minimum"
+        ]
+        if len(maximum) != 1 or len(minimum) != 1:
+            continue
+        pairs[mechanism] = (maximum[0], minimum[0])
+    return pairs
+
+
+def _promote_market_extrema_from_native_rows(
     conn: sqlite3.Connection,
     report: int,
     date_id: int,
+    rows: list[dict[int, tuple[int, str]]],
 ) -> None:
-    """Promote complete ERLDC Page 6 market extrema pairs from spatial items.
+    """Promote complete native max/min pairs, skipping malformed HPX RTM."""
 
-    The native table merges the final West Bengal, Jharkhand, and Railways
-    rows. Promotion is therefore conditional on both the published Section
-    8(B) headers and a complete LiteParse reconstruction for each mechanism.
-    The publisher labels both HPX RTM columns as ``Minimum``; that ambiguous
-    pair is intentionally outside this contract.
+    for index, row in enumerate(rows[:-1]):
+        mechanisms = _erldc_market_mechanism_columns(row)
+        if len(mechanisms) < 6:
+            continue
+        pairs = _erldc_market_extrema_pairs(mechanisms, rows[index + 1])
+        if not pairs:
+            continue
+        for data_row in rows[index + 2:]:
+            label_cell = data_row.get(1)
+            label = label_cell[1].strip() if label_cell else ""
+            compact_label = _compact_text(label)
+            if compact_label.startswith("8(b)") or compact_label == "total":
+                break
+            if not compact_label or compact_label == "state":
+                continue
+            state_id = _market_state_id(conn, label)
+            entity_id = _market_participant_entity_id(conn, label, state_id)
+            promoted = False
+            for mechanism, (maximum_col, minimum_col) in pairs.items():
+                maximum, maximum_raw = _number(data_row, maximum_col)
+                minimum, minimum_raw = _number(data_row, minimum_col)
+                if maximum is None or minimum is None:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO FactERLDCMarketExtremaDaily("
+                    "ReportDocumentID, DateID, EntityID, StateID, Mechanism, MaximumMW, MinimumMW"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (report, date_id, entity_id, state_id, mechanism, maximum, minimum),
+                )
+                sources = {
+                    name: raw_id
+                    for name, raw_id in (
+                        ("MaximumMW", maximum_raw),
+                        ("MinimumMW", minimum_raw),
+                    )
+                    if raw_id is not None
+                }
+                _lineage(
+                    conn,
+                    report,
+                    "FactERLDCMarketExtremaDaily",
+                    f"report={report};date={date_id};entity={entity_id};mechanism={mechanism}",
+                    sources,
+                )
+                promoted = True
+            if not promoted and not label:
+                break
+        return
+
+
+def _promote_market_extrema_from_spatial_items(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    page_no: int,
+) -> None:
+    """Promote collapsed Section 8(B) extrema from LiteParse boxes on one page.
+
+    The native table can merge West Bengal, Jharkhand, and Railways rows.
+    Promotion therefore requires both published headers and a complete spatial
+    reconstruction. HPX RTM is omitted from the spatial contracts.
     """
 
-    if not _market_extrema_headers_are_verified(_rows(conn, report, 6)):
-        return
     if not _table_exists(conn, "psp_raw_text_item"):
         return
     items = [
-        SpatialTextItem(int(raw_id), int(page_no), str(text), float(x), float(y))
-        for raw_id, page_no, text, x, y in conn.execute(
+        SpatialTextItem(int(raw_id), int(item_page), str(text), float(x), float(y))
+        for raw_id, item_page, text, x, y in conn.execute(
             """
             SELECT id, page_no, item_text, x, y
             FROM psp_raw_text_item
-            WHERE report_document_id = ? AND page_no = 6
+            WHERE report_document_id = ? AND page_no = ?
               AND extraction_method = 'liteparse' AND x IS NOT NULL AND y IS NOT NULL
             ORDER BY item_no
             """,
-            (report,),
+            (report, page_no),
         )
     ]
     for (lower_y, upper_y), centers in _ERLDC_MARKET_EXTREMA_SPATIAL_TABLES:
@@ -1776,19 +1934,30 @@ def _market_day_energy_columns(
 
     expected = {
         "gnaschedule": "GNAScheduleMU",
+        "isgsgnaschedule": "GNAScheduleMU",
         "tgnabilateral": "TGNABilateralMU",
+        "tgnabilateralmw": "TGNABilateralMU",
         "gdamschedule": "GDAMScheduleMU",
         "damschedule": "DAMScheduleMU",
         "hpdamschedule": "HPDAMScheduleMU",
         "rtmschedule": "RTMScheduleMU",
         "totalmu": "TotalMU",
     }
+    required = {
+        "GNAScheduleMU",
+        "TGNABilateralMU",
+        "GDAMScheduleMU",
+        "DAMScheduleMU",
+        "HPDAMScheduleMU",
+        "RTMScheduleMU",
+        "TotalMU",
+    }
     columns: dict[str, int] = {}
     for column, (_, text) in header_row.items():
         field_name = expected.get(re.sub(r"[^a-z]", "", text.lower()))
         if field_name:
             columns[field_name] = column
-    return columns if len(columns) == len(expected) else None
+    return columns if set(columns) == required else None
 
 
 def _market_state_id(

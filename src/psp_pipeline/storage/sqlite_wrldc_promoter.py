@@ -60,7 +60,13 @@ WRLDC_2026_OPERATIONAL_TEMPLATE_IDS = frozenset(
     }
 )
 WRLDC_OPERATIONAL_TEMPLATE_IDS = frozenset(
-    {WRLDC_2025_TEMPLATE.template_id, *WRLDC_2026_OPERATIONAL_TEMPLATE_IDS}
+    {
+        WRLDC_2024_REVISED_TEMPLATE.template_id,
+        WRLDC_2024_TRANSITION_TEMPLATE.template_id,
+        WRLDC_2025_TEMPLATE.template_id,
+        WRLDC_2025_REVISED_TEMPLATE.template_id,
+        *WRLDC_2026_OPERATIONAL_TEMPLATE_IDS,
+    }
 )
 
 _REGIONAL_COLUMNS = {
@@ -236,8 +242,9 @@ def promote_wrldc_report_to_curated(
     """Promote verified WRLDC PSP facts with raw-cell lineage.
 
     Approved nine- and eleven-column state-generation layouts are supported.
-    The 2025 standard and 2026 early templates also expose an explicitly
-    verified renewable continuation table on pages five and six.
+    The 2024-revised, 2024-transition, 2025, and 2026 families also promote
+    verified operational and market sections when those pages match a
+    fixture-backed contract.
     """
     ensure_curated_sqlite_schema(conn)
     report = _fetch_report(conn, report_document_id)
@@ -350,12 +357,12 @@ def _renewable_scope_is_affected(report: dict[str, object]) -> bool:
 
 
 def _market_energy_scope_is_affected(report: dict[str, object]) -> bool:
-    """Return whether the verified Page 8 day-energy section has drifted."""
+    """Return whether the verified page 7/8 day-energy section has drifted."""
 
     if not report["semantic_pass_required"]:
         return False
     reason = str(report["structure_deviation_reason"] or "")
-    return bool(re.search(r"(?:p8_t|missing_table=p8_)", reason))
+    return bool(re.search(r"(?:p[7-8]_t|missing_table=p[7-8]_)", reason))
 
 
 def _conventional_generation_scope_is_affected(report: dict[str, object]) -> bool:
@@ -1108,76 +1115,88 @@ def _promote_market_day_energy(
     region_id: int,
     mapped_cells: set[int],
 ) -> None:
-    """Promote the verified WRLDC Page 8 day-energy market matrix.
+    """Promote the verified WRLDC day-energy market matrix.
 
-    The 2025 and 2026 reports use the same seven MU measures but shift the
-    HP-DAM, RTM, and total columns. Header-derived columns preserve that
-    published geometry without treating the separate MW snapshots or extrema
-    blocks as daily energy values.
+    2025 and 2026 reports publish this block on page 8. The 2024-revised family
+    places the same seven MU measures on page 7. Header-derived columns preserve
+    that published geometry without treating MW snapshots or extrema as daily
+    energy values.
     """
 
-    rows = _table_rows(conn, report_id, 8, 1)
-    for index, row in enumerate(rows[:-1]):
-        row_text = " ".join(text for _, text in row.values())
-        if "dayenergy" not in re.sub(r"[^a-z]", "", row_text.lower()):
-            continue
-        columns = _market_day_energy_columns(rows[index + 1])
-        if columns is None:
+    for page_no in (7, 8):
+        rows = _table_rows(conn, report_id, page_no, 1)
+        for index, row in enumerate(rows[:-1]):
+            row_text = " ".join(text for _, text in row.values())
+            if "dayenergy" not in re.sub(r"[^a-z]", "", row_text.lower()):
+                continue
+            columns = _market_day_energy_columns(rows[index + 1])
+            if columns is None:
+                return
+            for data_row in rows[index + 2:]:
+                label_cell = data_row.get(1)
+                label = _clean_label(label_cell[1]) if label_cell else ""
+                if _is_total_row(label):
+                    break
+                if not label:
+                    continue
+                values, sources = _values(data_row, columns)
+                if not any(value is not None for value in values.values()):
+                    continue
+                state_id = _market_state_id(conn, report_id, label)
+                entity_id = _market_participant_entity_id(
+                    conn,
+                    label,
+                    state_id,
+                    region_id,
+                )
+                _insert_fact(
+                    conn,
+                    "FactWRLDCMarketEnergyDaily",
+                    {
+                        "ReportDocumentID": report_id,
+                        "DateID": date_id,
+                        "EntityID": entity_id,
+                        "StateID": state_id,
+                        **values,
+                    },
+                )
+                if label_cell:
+                    mapped_cells.add(label_cell[0])
+                _write_lineage(
+                    conn,
+                    report_id,
+                    "FactWRLDCMarketEnergyDaily",
+                    f"report={report_id};date={date_id};entity={entity_id}",
+                    sources,
+                    mapped_cells,
+                )
             return
-        for data_row in rows[index + 2:]:
-            label_cell = data_row.get(1)
-            label = _clean_label(label_cell[1]) if label_cell else ""
-            if _is_total_row(label):
-                break
-            if not label:
-                continue
-            values, sources = _values(data_row, columns)
-            if not any(value is not None for value in values.values()):
-                continue
-            state_id = _market_state_id(conn, report_id, label)
-            entity_id = _market_participant_entity_id(
-                conn,
-                label,
-                state_id,
-                region_id,
-            )
-            _insert_fact(
-                conn,
-                "FactWRLDCMarketEnergyDaily",
-                {
-                    "ReportDocumentID": report_id,
-                    "DateID": date_id,
-                    "EntityID": entity_id,
-                    "StateID": state_id,
-                    **values,
-                },
-            )
-            if label_cell:
-                mapped_cells.add(label_cell[0])
-            _write_lineage(
-                conn,
-                report_id,
-                "FactWRLDCMarketEnergyDaily",
-                f"report={report_id};date={date_id};entity={entity_id}",
-                sources,
-                mapped_cells,
-            )
-        return
 
 
 def _market_day_energy_columns(
     header_row: dict[int, tuple[int, str]],
 ) -> dict[str, int] | None:
-    """Resolve the explicit Page 8 Day Energy headers to their raw columns."""
+    """Resolve the explicit Day Energy headers to their raw columns."""
 
     expected = {
         "isgsgnaschedule": "GNAScheduleMU",
+        "gnaschedule": "GNAScheduleMU",
         "tgnabilateralmw": "TGNABilateralMU",
+        "tgnabilateral": "TGNABilateralMU",
         "gdamschedule": "GDAMScheduleMU",
         "damschedule": "DAMScheduleMU",
         "hpdamschedule": "HPDAMScheduleMU",
         "rtmschedule": "RTMScheduleMU",
         "totalmu": "TotalMU",
+    }
+    required = {
+        "GNAScheduleMU",
+        "TGNABilateralMU",
+        "GDAMScheduleMU",
+        "DAMScheduleMU",
+        "HPDAMScheduleMU",
+        "RTMScheduleMU",
+        "TotalMU",
     }
     columns: dict[str, int] = {}
     for column, (_, text) in header_row.items():
@@ -1185,7 +1204,7 @@ def _market_day_energy_columns(
         field_name = expected.get(normalized)
         if field_name:
             columns[field_name] = column
-    return columns if len(columns) == len(expected) else None
+    return columns if set(columns) == required else None
 
 
 def _promote_market_points_and_extrema(
@@ -1287,6 +1306,7 @@ def _market_mechanism_columns(row: dict[int, tuple[int, str]]) -> dict[str, int]
 
     names = {
         "isgsgnaschedule": "GNASchedule",
+        "gnaschedule": "GNASchedule",
         "tgnabilateralmw": "TGNABilateral", "iexgdammw": "IEXGDAM",
         "iexdammw": "IEXDAM", "iexhpdammw": "IEXHPDAM", "iexrtmmw": "IEXRTM",
         "pxilgdammw": "PXILGDAM", "pxildammw": "PXILDAM", "pxilhpdammw": "PXILHPDAM",

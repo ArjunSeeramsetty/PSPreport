@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from psp_pipeline.storage.sqlite_curated_promoter import promote_report_to_curated
 from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_schema
 from psp_pipeline.storage.sqlite_wrldc_promoter import (
@@ -16,6 +18,9 @@ from psp_pipeline.storage.sqlite_wrldc_promoter import (
 WRLDC_TEMPLATE_ID = "wrldc_daily_psp_v2025_standard_11_column_generation"
 WRLDC_9_COLUMN_TEMPLATE_ID = "wrldc_daily_psp_v2023_standard_09_column_generation"
 WRLDC_2026_EARLY_TEMPLATE_ID = "wrldc_daily_psp_v2026_early_11_column_generation"
+WRLDC_2024_REVISED_TEMPLATE_ID = "wrldc_daily_psp_v2024_revised_11_column_generation"
+WRLDC_2025_REVISED_TEMPLATE_ID = "wrldc_daily_psp_v2025_revised_11_column_generation"
+WRLDC_2024_TRANSITION_TEMPLATE_ID = "wrldc_daily_psp_v2024_transition_11_column_generation"
 
 
 def test_wrldc_promotes_regional_state_and_generation_with_lineage() -> None:
@@ -737,3 +742,119 @@ def test_wrldc_market_header_contracts_cover_2025_and_2026_geometries() -> None:
         "IEXGDAM": (12, 13), "PXILGDAM": (15, 17),
         "HPXGDAM": (19, 22), "IEXDAM": (23, 25), "PXILDAM": (27, 30),
     }
+
+
+def test_wrldc_2024_revised_promotes_market_day_energy_on_page_seven() -> None:
+    """The 2024-revised family publishes the same MU contract on page 7."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (10, 'wrldc', 'WRLDC_PSP_Report_15-12-2024.pdf', '2024-12-15', ?, 0)
+        """,
+        (WRLDC_2024_REVISED_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 10, 7, 28, {1: "State", 6: "DayEnergy(MU)"})
+    _insert_cells(conn, 10, 7, 29, {
+        6: "ISGS+GNASchedule", 10: "T-GNABilateral(MW)",
+        14: "GDAMSchedule", 17: "DAMSchedule", 21: "HPDAMSchedule",
+        25: "RTMSchedule", 29: "Total(MU)",
+    })
+    _insert_cells(conn, 10, 7, 30, {
+        1: "GUJARAT", 6: "151.93", 10: "2.66", 14: "3.79", 17: "36.63",
+        21: "-", 25: "-1.93", 29: "193.08",
+    })
+    _insert_cells(conn, 10, 7, 31, {1: "TOTAL", 6: "151.93", 29: "193.08"})
+
+    promote_report_to_curated(conn, 10)
+
+    rows = conn.execute(
+        """
+        SELECT entity.EntityName, state.StateName, fact.GNAScheduleMU,
+               fact.DAMScheduleMU, fact.RTMScheduleMU, fact.TotalMU
+        FROM FactWRLDCMarketEnergyDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        LEFT JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 10
+        """
+    ).fetchall()
+    lineage_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 10
+          AND DestinationTable = 'FactWRLDCMarketEnergyDaily'
+        """
+    ).fetchone()[0]
+    assert rows == [("GUJARAT", "Gujarat", 151.93, 36.63, -1.93, 193.08)]
+    assert lineage_count == 6
+
+
+@pytest.mark.parametrize(
+    ("report_id", "template_id"),
+    [
+        (11, WRLDC_2025_REVISED_TEMPLATE_ID),
+        (12, WRLDC_2024_TRANSITION_TEMPLATE_ID),
+    ],
+)
+def test_wrldc_revised_families_promote_native_market_extrema(
+    report_id: int,
+    template_id: str,
+) -> None:
+    """2025-revised and 2024-transition promote complete 8(B) max/min pairs."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (?, 'wrldc', 'WRLDC_PSP_Report_01-01-2025.pdf', '2025-01-01', ?, 0)
+        """,
+        (report_id, template_id),
+    )
+    _insert_cells(conn, report_id, 8, 2, {
+        1: "State", 3: "ISGS+GNA Schedule", 7: "T-GNA Bilateral (MW)",
+        12: "IEX GDAM (MW)", 15: "PXIL GDAM (MW)", 19: "HPX GDAM (MW)",
+        23: "IEX DAM (MW)", 27: "PXIL DAM (MW)",
+    })
+    _insert_cells(conn, report_id, 8, 3, {
+        3: "Maximum", 4: "Minimum", 7: "Maximum", 9: "Minimum",
+        12: "Maximum", 13: "Minimum", 15: "Maximum", 17: "Minimum",
+        19: "Maximum", 22: "Minimum", 23: "Maximum", 25: "Minimum",
+        27: "Maximum", 30: "Minimum",
+    })
+    _insert_cells(conn, report_id, 8, 4, {
+        1: "GUJARAT", 3: "210", 4: "12", 7: "40", 9: "1",
+        12: "55", 13: "0", 15: "0", 17: "0",
+        19: "0", 22: "0", 23: "88", 25: "3",
+        27: "0", 30: "0",
+    })
+    _insert_cells(conn, report_id, 8, 5, {1: "TOTAL"})
+
+    promote_report_to_curated(conn, report_id)
+
+    rows = conn.execute(
+        """
+        SELECT fact.Mechanism, fact.MaximumMW, fact.MinimumMW
+        FROM FactWRLDCMarketExtremaDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = ? AND state.StateName = 'Gujarat'
+        ORDER BY fact.Mechanism
+        """,
+        (report_id,),
+    ).fetchall()
+    assert rows == [
+        ("GNASchedule", 210.0, 12.0),
+        ("HPXGDAM", 0.0, 0.0),
+        ("IEXDAM", 88.0, 3.0),
+        ("IEXGDAM", 55.0, 0.0),
+        ("PXILDAM", 0.0, 0.0),
+        ("PXILGDAM", 0.0, 0.0),
+        ("TGNABilateral", 40.0, 1.0),
+    ]
