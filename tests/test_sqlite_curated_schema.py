@@ -43,6 +43,10 @@ def test_sqlite_schema_includes_governed_srldc_tables() -> None:
     assert "canonical_entity" in tables
     assert "canonical_entity_alias" in tables
     assert "canonical_entity_adjudication" in tables
+    adjudication_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(canonical_entity_adjudication)")
+    }
+    assert {"DecidedAt", "DecidedBy"} <= adjudication_columns
     regional_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(FactSRLDCRegionalDaily)")
     }

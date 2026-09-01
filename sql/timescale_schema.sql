@@ -184,6 +184,8 @@ CREATE TABLE IF NOT EXISTS canonical_entity_adjudication (
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    decided_at TIMESTAMPTZ NULL,
+    decided_by TEXT NULL,
     UNIQUE (source_id, entity_type, normalized_name, reason)
 );
 
@@ -238,3 +240,57 @@ CREATE UNIQUE INDEX IF NOT EXISTS daily_regional_current_summary_grain_idx
     ON daily_regional_current_summary (
         valid_date, source_region, entity_key, metric_name, time_block
     );
+
+CREATE OR REPLACE VIEW gold_wide_fact_current AS
+SELECT
+    fact.valid_date,
+    fact.source_id,
+    fact.source_region,
+    fact.destination_table,
+    fact.entity_key,
+    COALESCE(fact.canonical_entity_id, current_truth.canonical_entity_id) AS canonical_entity_id,
+    entity.entity_code,
+    entity.entity_type,
+    entity.canonical_name,
+    entity.region_code AS entity_region_code,
+    entity.state_code,
+    fact.metrics,
+    fact.wide_fact_key,
+    current_truth.system_from
+FROM fact_wide_daily AS fact
+JOIN fact_wide_daily_current AS current_truth
+  ON current_truth.wide_fact_key = fact.wide_fact_key
+LEFT JOIN canonical_entity AS entity
+  ON entity.entity_id = COALESCE(fact.canonical_entity_id, current_truth.canonical_entity_id);
+
+CREATE OR REPLACE VIEW gold_canonical_daily_current AS
+SELECT
+    fact.valid_date,
+    COALESCE(fact.canonical_entity_id, current_truth.canonical_entity_id) AS canonical_entity_id,
+    entity.entity_code,
+    entity.entity_type,
+    entity.canonical_name,
+    COALESCE(entity.region_code, fact.source_region) AS region_code,
+    entity.state_code,
+    fact.source_id,
+    fact.source_region,
+    fact.destination_table,
+    fact.entity_key,
+    COALESCE(
+        (fact.metrics ->> 'DayEnergyMetMU')::double precision,
+        (fact.metrics ->> 'EnergyMetMU')::double precision,
+        (fact.metrics ->> 'EnergyMet')::double precision
+    ) AS energy_met_mu,
+    COALESCE(
+        (fact.metrics ->> 'EveningPeakDemandMetMW')::double precision,
+        (fact.metrics ->> 'PeakDemandMetMW')::double precision
+    ) AS evening_peak_demand_met_mw,
+    fact.metrics,
+    fact.wide_fact_key,
+    current_truth.system_from
+FROM fact_wide_daily AS fact
+JOIN fact_wide_daily_current AS current_truth
+  ON current_truth.wide_fact_key = fact.wide_fact_key
+LEFT JOIN canonical_entity AS entity
+  ON entity.entity_id = COALESCE(fact.canonical_entity_id, current_truth.canonical_entity_id);
+

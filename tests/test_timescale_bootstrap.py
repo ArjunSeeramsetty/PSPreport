@@ -110,6 +110,10 @@ def test_greenfield_schema_file_is_the_current_dual_write_contract() -> None:
     assert "fact_wide_daily" in script
     assert "fact_wide_daily_current" in script
     assert "canonical_entity_id" in script
+    assert "CREATE OR REPLACE VIEW gold_wide_fact_current AS" in script
+    assert "CREATE OR REPLACE VIEW gold_canonical_daily_current AS" in script
+    assert "decided_at" in script
+    assert "decided_by" in script
     assert "create_hypertable('fact_observation'" in script
     assert "SET sys_to = ordered_versions.next_system_from" not in script
 
@@ -457,3 +461,60 @@ def test_live_recreate_greenfield_schema_and_backfill_curated_sqlite(
     assert result["load"]["identity"]["catalog_entities"] == entity_count
     assert result["load"]["wide"]["wide_mirror"]["is_match"] is True
     assert replay["load"]["wide"]["wide_facts_inserted"] == 0
+
+    from psp_pipeline.identity.adjudication import (
+        apply_adjudication,
+        list_identity_adjudications,
+        queue_source_label,
+        republish_identity_after_adjudication,
+    )
+    from psp_pipeline.storage.postgres_repo import PostgresRepository
+
+    repository = PostgresRepository(dsn)
+    gold_rows = repository.fetch_gold_canonical_daily_current(region_code="SR")
+    southern = next(
+        row for row in gold_rows if row["entity_key"] == "SR:region:Southern Region"
+    )
+    assert southern["energy_met_mu"] == 950.0
+    assert southern["evening_peak_demand_met_mw"] == 45000.0
+    assert southern["canonical_entity_id"]
+    assert southern["entity_code"] == "region:SR"
+
+    with sqlite3.connect(sqlite_path) as conn:
+        queue_source_label(
+            conn,
+            source_id="srldc",
+            entity_type="state",
+            raw_name="Karnatka",
+        )
+        issue_id = next(
+            int(issue["issue_id"])
+            for issue in list_identity_adjudications(conn)
+            if issue["raw_name"] == "Karnatka" and issue["status"] == "pending"
+        )
+        applied = apply_adjudication(conn, issue_id=issue_id, decision="approved")
+        published = republish_identity_after_adjudication(conn, repository, applied)
+    assert published["apply"]["decision"] == "approved"
+    assert published["backfill"]["skipped"] is False
+
+    with psycopg.connect(dsn) as pg:
+        alias = pg.execute(
+            """
+            SELECT match_method, approval_status, entity_id
+            FROM canonical_entity_alias
+            WHERE raw_name = 'Karnatka' AND match_method = 'human_adjudication'
+            """
+        ).fetchone()
+        gold_view = pg.execute(
+            """
+            SELECT to_regclass('public.gold_canonical_daily_current'),
+                   to_regclass('public.gold_wide_fact_current')
+            """
+        ).fetchone()
+    assert alias is not None
+    assert alias[1] == "approved"
+    assert str(alias[2]) == applied.entity_id
+    assert gold_view == (
+        "gold_canonical_daily_current",
+        "gold_wide_fact_current",
+    )

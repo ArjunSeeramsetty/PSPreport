@@ -930,10 +930,20 @@ def _ensure_canonical_identity_tables(conn: sqlite3.Connection) -> None:
             Reason TEXT NOT NULL,
             Status TEXT NOT NULL DEFAULT 'pending',
             CreatedAt TEXT NOT NULL,
+            DecidedAt TEXT,
+            DecidedBy TEXT,
             UNIQUE(SourceID, EntityType, NormalizedName, Reason)
         );
         """
     )
+    existing = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(canonical_entity_adjudication)")
+    }
+    if "DecidedAt" not in existing:
+        conn.execute("ALTER TABLE canonical_entity_adjudication ADD COLUMN DecidedAt TEXT")
+    if "DecidedBy" not in existing:
+        conn.execute("ALTER TABLE canonical_entity_adjudication ADD COLUMN DecidedBy TEXT")
 
 
 def _ensure_srldc_curated_tables(conn: sqlite3.Connection) -> None:

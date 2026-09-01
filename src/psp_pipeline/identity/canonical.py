@@ -184,7 +184,9 @@ def build_canonical_catalog(
     _add_lines(conn, catalog, region_codes)
     _add_dimension_aliases(conn, catalog, region_codes)
     catalog.adjudications.extend(_fuzzy_duplicate_issues(catalog))
+    _load_persisted_aliases(conn, catalog)
     persist_canonical_catalog(conn, catalog, recorded_at=recorded_at)
+    _load_persisted_adjudications(conn, catalog)
     LOGGER.info(
         "canonical_catalog_built entities=%s aliases=%s adjudications=%s",
         len(catalog.entities),
@@ -336,6 +338,7 @@ def persist_canonical_catalog(
                 MatchMethod = excluded.MatchMethod,
                 MatchConfidence = excluded.MatchConfidence
             WHERE canonical_entity_alias.ApprovalStatus IN ('approved', 'auto_exact')
+              AND canonical_entity_alias.MatchMethod <> 'human_adjudication'
             """,
             (
                 alias.entity_id,
@@ -579,6 +582,14 @@ def _add_countries(conn: sqlite3.Connection, catalog: CanonicalCatalog) -> None:
             raw_name=str(name),
             observation_entity_key=f"COUNTRY:{name}",
         )
+        for prefix in ("NLDC", "NER", "ER", "WR", "SR", "NR"):
+            _add_alias(
+                catalog,
+                entity=entity,
+                source_id=f"{IDENTITY_SOURCE}:{prefix}",
+                raw_name=str(name),
+                observation_entity_key=f"{prefix}:country:{name}",
+            )
         _ = country_id
 
 
@@ -887,7 +898,156 @@ def _canonical_id_for_topology_row(
         mapped = _STATE_CODES.get(name)
         if mapped:
             return build_entity_id(f"state:{mapped}")
+        stored = row.get("state_code")
+        if isinstance(stored, str) and stored.startswith("IN-"):
+            return build_entity_id(f"state:{stored}")
+    if collection == "countries" and row.get("name"):
+        return build_entity_id(f"country:{normalize_dimension_name(str(row['name']))}")
+    if collection == "stations" and row.get("station_code"):
+        return build_entity_id(f"station:{row['station_code']}")
+    if collection == "units" and row.get("unit_code"):
+        return build_entity_id(f"unit:{row['unit_code']}")
+    if collection == "voltage_nodes" and row.get("name"):
+        region_code = str(row.get("region_code") or "-")
+        return build_entity_id(
+            f"voltage:{normalize_dimension_name(str(row['name']))}:{region_code}"
+        )
+    if collection == "transmission_lines" and row.get("name"):
+        return build_entity_id(f"line:{normalize_dimension_name(str(row['name']))}")
     return None
+
+
+def observation_keys_for_label(
+    entity: CanonicalEntity,
+    raw_name: str,
+) -> tuple[str, ...]:
+    """Return exporter-compatible entity keys for one approved source label."""
+
+    keys: list[str] = []
+    category = {
+        "region": "region",
+        "state": "state",
+        "country": "country",
+        "power_station": "generation",
+        "voltage_node": "voltage",
+        "reservoir": "reservoir",
+        "transmission_line": "line",
+    }.get(entity.entity_type)
+    names = (raw_name, entity.canonical_name)
+    if entity.region_code and category:
+        for name in names:
+            key = _observation_entity_key(entity.region_code, category, name)
+            if key:
+                keys.append(key)
+    if entity.entity_type == "country":
+        for prefix in ("NLDC", "NER", "ER", "WR", "SR", "NR", "COUNTRY"):
+            for name in names:
+                token = (
+                    f"{prefix}:{name}" if prefix == "COUNTRY" else f"{prefix}:country:{name}"
+                )
+                keys.append(token)
+    return tuple(dict.fromkeys(keys))
+
+
+def _load_persisted_aliases(conn: sqlite3.Connection, catalog: CanonicalCatalog) -> None:
+    """Reload human-approved aliases so catalog rebuilds do not drop them."""
+
+    if not _table_exists(conn, "canonical_entity_alias"):
+        return
+    seen = {
+        (
+            alias.source_id,
+            alias.entity_type,
+            alias.normalized_name,
+            alias.observation_entity_key,
+        )
+        for alias in catalog.aliases
+    }
+    for row in conn.execute(
+        """
+        SELECT EntityID, SourceID, EntityType, RawName, NormalizedName,
+               ObservationEntityKey, MatchMethod, MatchConfidence, ApprovalStatus
+        FROM canonical_entity_alias
+        WHERE ApprovalStatus IN ('approved', 'auto_exact')
+        """
+    ):
+        (
+            entity_id,
+            source_id,
+            entity_type,
+            raw_name,
+            normalized,
+            obs_key,
+            method,
+            confidence,
+            status,
+        ) = row
+        if str(entity_id) not in catalog.entities:
+            continue
+        identity = (str(source_id), str(entity_type), str(normalized), obs_key)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        catalog.aliases.append(
+            CanonicalAlias(
+                entity_id=str(entity_id),
+                source_id=str(source_id),
+                entity_type=str(entity_type),
+                raw_name=str(raw_name),
+                normalized_name=str(normalized),
+                observation_entity_key=str(obs_key) if obs_key else None,
+                match_method=str(method),
+                match_confidence=float(confidence),
+                approval_status=str(status),
+            )
+        )
+
+
+def _load_persisted_adjudications(
+    conn: sqlite3.Connection,
+    catalog: CanonicalCatalog,
+) -> None:
+    """Reload queued and decided issues so Postgres publish stays complete."""
+
+    if not _table_exists(conn, "canonical_entity_adjudication"):
+        return
+    seen = {
+        (issue.source_id, issue.entity_type, issue.normalized_name, issue.reason)
+        for issue in catalog.adjudications
+    }
+    for row in conn.execute(
+        """
+        SELECT SourceID, EntityType, RawName, NormalizedName,
+               CandidateEntityID, CandidateScore, Reason, Status
+        FROM canonical_entity_adjudication
+        """
+    ):
+        (
+            source_id,
+            entity_type,
+            raw_name,
+            normalized,
+            candidate,
+            score,
+            reason,
+            status,
+        ) = row
+        identity = (str(source_id), str(entity_type), str(normalized), str(reason))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        catalog.adjudications.append(
+            CanonicalAdjudication(
+                source_id=str(source_id),
+                entity_type=str(entity_type),
+                raw_name=str(raw_name),
+                normalized_name=str(normalized),
+                candidate_entity_id=str(candidate) if candidate else None,
+                candidate_score=float(score) if score is not None else None,
+                reason=str(reason),
+                status=str(status),
+            )
+        )
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:

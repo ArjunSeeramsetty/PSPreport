@@ -24,6 +24,7 @@ from psp_pipeline.pipelines.staging import read_stage_payload, write_stage_paylo
 from psp_pipeline.pipelines.stages import (
     audit_curated_source_freshness,
     audit_national_curated_dimensions,
+    audit_pending_identity_adjudications,
     catch_up_missing_public_dates,
     collect_all_rldc_daily_psp,
     collect_srldc_daily_psp,
@@ -284,6 +285,19 @@ def psp_daily_public_ingestion():
         return audit_national_curated_dimensions(database)
 
     @task
+    def identity_adjudication_audit_task(collection: dict, retry: dict) -> dict:
+        """Count pending identity issues without auto-approving them."""
+
+        _ = collection
+        _ = retry
+        settings = load_settings()
+        database = Path(os.getenv(
+            "ALL_RLDC_SQLITE_DB",
+            settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+        ))
+        return audit_pending_identity_adjudications(database)
+
+    @task
     def coverage_contract_task(collection: dict, retry: dict) -> dict:
         """Evaluate corpus coverage floors after quarantine retries complete."""
 
@@ -409,6 +423,7 @@ def psp_daily_public_ingestion():
     curated_freshness_task(run_meta, catch_up)
     national_balance_task(all_rldc_collection, run_meta, quarantine_retry)
     national_dimension_audit_task(all_rldc_collection, quarantine_retry)
+    identity_adjudication_audit_task(all_rldc_collection, quarantine_retry)
     coverage_contract_task(all_rldc_collection, quarantine_retry)
     all_timescale = all_curated_timescale_task(
         all_rldc_collection, run_meta, quarantine_retry

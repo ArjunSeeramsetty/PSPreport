@@ -55,26 +55,31 @@ def export_curated_topology(conn: sqlite3.Connection) -> dict[str, list[dict[str
     stations = [
         {
             "key": f"station:{station_id}",
+            "station_code": code,
             "name": name,
             "state_code": _state_code(state_id),
             "region_code": region_codes.get(region_id),
             "capacity_mw": capacity,
+            "observation_entity_key": _observation_entity_key(
+                region_codes.get(region_id), "generation", name
+            ),
         }
-        for station_id, name, state_id, region_id, capacity in conn.execute(
-            "SELECT StationID, CanonicalStationName, StateID, RegionID, InstalledCapacityMW "
+        for station_id, code, name, state_id, region_id, capacity in conn.execute(
+            "SELECT StationID, StationCode, CanonicalStationName, StateID, RegionID, InstalledCapacityMW "
             "FROM DimPowerStations ORDER BY StationID"
         )
     ]
     units = [
         {
             "key": f"unit:{unit_id}",
+            "unit_code": code,
             "name": name,
             "station_key": f"station:{station_id}",
             "unit_number": unit_number,
             "capacity_mw": capacity,
         }
-        for unit_id, station_id, name, unit_number, capacity in conn.execute(
-            "SELECT GeneratingUnitID, StationID, CanonicalUnitName, UnitNumber, CapacityMW "
+        for unit_id, station_id, code, name, unit_number, capacity in conn.execute(
+            "SELECT GeneratingUnitID, StationID, UnitCode, CanonicalUnitName, UnitNumber, CapacityMW "
             "FROM DimGeneratingUnits ORDER BY GeneratingUnitID"
         )
     ]

@@ -101,6 +101,9 @@ def test_daily_dag_wires_coverage_contract_and_timescale_mirror() -> None:
     assert "catch_up_missing_dates_task" in text
     assert "quarantine_retry_task" in text
     assert "curated_freshness_task" in text
+    assert "identity_adjudication_audit_task" in text
+    assert "audit_pending_identity_adjudications" in text
+    assert "identity_adjudication_audit_task(all_rldc_collection, quarantine_retry)" in text
     assert "coverage_contract_task(all_rldc_collection, quarantine_retry)" in text
     assert "all_curated_timescale_task(" in text
     assert "quarantine_retry" in text.split("all_curated_timescale_task")[1]

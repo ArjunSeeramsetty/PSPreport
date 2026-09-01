@@ -572,6 +572,96 @@ def _neo4j_constraint_statements() -> list[str]:
     ]
 
 
+def audit_pending_identity_adjudications(
+    sqlite_db_path: Path,
+) -> Dict[str, Any]:
+    """Count pending canonical identity issues without auto-approving them.
+
+    Daily orchestration treats this as fail-soft observability. A non-zero
+    pending count is recorded in XCom; humans apply decisions through
+    ``apply_canonical_identity_adjudication``.
+    """
+
+    if not sqlite_db_path.exists():
+        return {
+            "pending": 0,
+            "approved": 0,
+            "rejected": 0,
+            "total": 0,
+            "skipped": True,
+            "passed": True,
+            "issues": [],
+        }
+    import sqlite3
+    from psp_pipeline.identity.adjudication import (
+        identity_adjudication_summary,
+        list_identity_adjudications,
+    )
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        summary = identity_adjudication_summary(conn)
+        issues = list_identity_adjudications(conn, status="pending")
+    logger.info(
+        "identity_adjudication_audit pending=%s approved=%s rejected=%s",
+        summary["pending"],
+        summary["approved"],
+        summary["rejected"],
+    )
+    return {
+        **summary,
+        "skipped": False,
+        "passed": True,
+        "issues": issues,
+    }
+
+
+def apply_canonical_identity_adjudication(
+    sqlite_db_path: Path,
+    *,
+    issue_id: int,
+    decision: str,
+    decided_by: str = "operator",
+    entity_id: str | None = None,
+    observation_entity_key: str | None = None,
+    postgres_dsn: str | None = None,
+    repository: object | None = None,
+) -> Dict[str, Any]:
+    """Apply one human identity decision and optionally republish to Postgres."""
+
+    import sqlite3
+    from psp_pipeline.identity.adjudication import (
+        apply_adjudication,
+        republish_identity_after_adjudication,
+    )
+
+    with sqlite3.connect(sqlite_db_path) as conn:
+        result = apply_adjudication(
+            conn,
+            issue_id=issue_id,
+            decision=decision,
+            decided_by=decided_by,
+            entity_id=entity_id,
+            observation_entity_key=observation_entity_key,
+        )
+        repo = repository
+        if repo is None and postgres_dsn:
+            repo = PostgresRepository(postgres_dsn)
+        if repo is None:
+            return {
+                "apply": result.as_dict(),
+                "postgres": {"skipped": True},
+                "decision": {"skipped": True},
+                "backfill": {"skipped": True},
+            }
+        published = republish_identity_after_adjudication(conn, repo, result)
+    logger.info(
+        "canonical_identity_adjudication_applied issue_id=%s decision=%s",
+        issue_id,
+        decision,
+    )
+    return published
+
+
 def audit_national_curated_dimensions(
     sqlite_db_path: Path,
 ) -> Dict[str, Any]:

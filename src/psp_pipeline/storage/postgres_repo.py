@@ -155,13 +155,117 @@ class PostgresRepository:
             conn.commit()
 
     def refresh_current_truth_views(self) -> bool:
-        """Refresh valid-date current-truth views when their migration is present."""
+        """Ensure Gold views exist and refresh valid-date current-truth projections."""
 
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
+                self._ensure_adjudication_decision_columns(cur)
+                self._ensure_gold_query_views(cur)
                 refreshed = self._refresh_current_truth_views(cur)
             conn.commit()
         return refreshed
+
+    def fetch_gold_canonical_daily_current(
+        self,
+        *,
+        valid_date: object | None = None,
+        entity_type: str | None = None,
+        region_code: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Return Gold current-truth wide facts keyed by canonical identity."""
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                self._ensure_gold_query_views(cur)
+                clauses: list[str] = []
+                params: dict[str, object] = {}
+                if valid_date is not None:
+                    clauses.append("valid_date = %(valid_date)s")
+                    params["valid_date"] = valid_date
+                if entity_type:
+                    clauses.append("entity_type = %(entity_type)s")
+                    params["entity_type"] = entity_type
+                if region_code:
+                    clauses.append("region_code = %(region_code)s")
+                    params["region_code"] = region_code
+                where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+                cur.execute(
+                    f"""
+                    SELECT
+                        valid_date, canonical_entity_id, entity_code, entity_type,
+                        canonical_name, region_code, state_code, source_id,
+                        source_region, destination_table, entity_key,
+                        energy_met_mu, evening_peak_demand_met_mw, metrics,
+                        wide_fact_key
+                    FROM gold_canonical_daily_current
+                    {where}
+                    ORDER BY valid_date, region_code, canonical_name
+                    """,
+                    params,
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "valid_date": valid.isoformat() if hasattr(valid, "isoformat") else valid,
+                "canonical_entity_id": str(entity_id) if entity_id else None,
+                "entity_code": entity_code,
+                "entity_type": entity_type_value,
+                "canonical_name": canonical_name,
+                "region_code": region,
+                "state_code": state,
+                "source_id": source_id,
+                "source_region": source_region,
+                "destination_table": destination_table,
+                "entity_key": entity_key,
+                "energy_met_mu": float(energy) if energy is not None else None,
+                "evening_peak_demand_met_mw": float(peak) if peak is not None else None,
+                "metrics": dict(metrics or {}),
+                "wide_fact_key": str(wide_fact_key),
+            }
+            for (
+                valid,
+                entity_id,
+                entity_code,
+                entity_type_value,
+                canonical_name,
+                region,
+                state,
+                source_id,
+                source_region,
+                destination_table,
+                entity_key,
+                energy,
+                peak,
+                metrics,
+                wide_fact_key,
+            ) in rows
+        ]
+
+    def apply_canonical_adjudication(self, payload: dict[str, object]) -> dict[str, int]:
+        """Persist one human identity decision into the Postgres system of record."""
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                self._ensure_adjudication_decision_columns(cur)
+                counts = self._apply_canonical_adjudication(cur, payload)
+            conn.commit()
+        return counts
+
+    def backfill_canonical_entity_ids(
+        self,
+        entity_id: str,
+        entity_keys: Iterable[str],
+    ) -> dict[str, int]:
+        """Attach a canonical UUID to current facts that still use source keys."""
+
+        keys = [str(key) for key in entity_keys if key]
+        if not keys:
+            return {"observations_updated": 0, "wide_facts_updated": 0}
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                counts = self._backfill_canonical_entity_ids(cur, entity_id, keys)
+            conn.commit()
+        return counts
 
     def upsert_canonical_entities(
         self,
@@ -507,6 +611,134 @@ class PostgresRepository:
         return True
 
     @staticmethod
+    def _ensure_adjudication_decision_columns(cur) -> None:
+        """Add decision audit columns to existing identity tables without DROP."""
+
+        cur.execute(
+            """
+            ALTER TABLE canonical_entity_adjudication
+            ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ NULL
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE canonical_entity_adjudication
+            ADD COLUMN IF NOT EXISTS decided_by TEXT NULL
+            """
+        )
+
+    @staticmethod
+    def _ensure_gold_query_views(cur) -> None:
+        """Create or replace Gold current-truth views from the greenfield schema."""
+
+        from psp_pipeline.storage.timescale_bootstrap import (
+            default_greenfield_schema_path,
+            split_sql_statements,
+        )
+
+        script = default_greenfield_schema_path().read_text(encoding="utf-8")
+        for statement in split_sql_statements(script):
+            if statement.upper().startswith("CREATE OR REPLACE VIEW GOLD_"):
+                cur.execute(statement)
+
+    @staticmethod
+    def _apply_canonical_adjudication(cur, payload: dict[str, object]) -> dict[str, int]:
+        """Update one adjudication row and upsert a human-approved alias."""
+
+        cur.execute(
+            """
+            UPDATE canonical_entity_adjudication
+            SET status = %(decision)s,
+                candidate_entity_id = COALESCE(
+                    %(entity_id)s::uuid, candidate_entity_id
+                ),
+                decided_at = CURRENT_TIMESTAMP,
+                decided_by = %(decided_by)s
+            WHERE source_id = %(source_id)s
+              AND entity_type = %(entity_type)s
+              AND normalized_name = %(normalized_name)s
+              AND reason = %(reason)s
+            """,
+            payload,
+        )
+        updated = cur.rowcount or 0
+        alias_count = 0
+        if payload.get("decision") == "approved" and payload.get("entity_id"):
+            cur.execute(
+                """
+                INSERT INTO canonical_entity_alias (
+                    entity_id, source_id, entity_type, raw_name, normalized_name,
+                    observation_entity_key, match_method, match_confidence,
+                    approval_status
+                ) VALUES (
+                    %(entity_id)s, %(source_id)s, %(entity_type)s, %(raw_name)s,
+                    %(normalized_name)s, %(observation_entity_key)s,
+                    'human_adjudication', 1.0, 'approved'
+                )
+                ON CONFLICT (source_id, entity_type, normalized_name) DO UPDATE SET
+                    entity_id = EXCLUDED.entity_id,
+                    raw_name = EXCLUDED.raw_name,
+                    observation_entity_key = COALESCE(
+                        EXCLUDED.observation_entity_key,
+                        canonical_entity_alias.observation_entity_key
+                    ),
+                    match_method = 'human_adjudication',
+                    match_confidence = 1.0,
+                    approval_status = 'approved'
+                """,
+                payload,
+            )
+            alias_count = 1
+        return {"issues_updated": updated, "aliases_upserted": alias_count}
+
+    @staticmethod
+    def _backfill_canonical_entity_ids(
+        cur,
+        entity_id: str,
+        entity_keys: list[str],
+    ) -> dict[str, int]:
+        """Stamp current observation and wide-fact rows with a canonical UUID."""
+
+        params = {"entity_id": entity_id, "entity_keys": entity_keys}
+        cur.execute(
+            """
+            UPDATE fact_observation
+            SET canonical_entity_id = %(entity_id)s
+            WHERE entity_key = ANY(%(entity_keys)s)
+              AND sys_to = 'infinity'
+              AND canonical_entity_id IS DISTINCT FROM %(entity_id)s::uuid
+            """,
+            params,
+        )
+        observations_updated = cur.rowcount or 0
+        cur.execute(
+            """
+            UPDATE fact_wide_daily AS fact
+            SET canonical_entity_id = %(entity_id)s
+            WHERE entity_key = ANY(%(entity_keys)s)
+              AND sys_to = 'infinity'
+              AND canonical_entity_id IS DISTINCT FROM %(entity_id)s::uuid
+            """,
+            params,
+        )
+        wide_updated = cur.rowcount or 0
+        cur.execute(
+            """
+            UPDATE fact_wide_daily_current AS current_truth
+            SET canonical_entity_id = %(entity_id)s
+            FROM fact_wide_daily AS fact
+            WHERE fact.wide_fact_key = current_truth.wide_fact_key
+              AND fact.entity_key = ANY(%(entity_keys)s)
+              AND current_truth.canonical_entity_id IS DISTINCT FROM %(entity_id)s::uuid
+            """,
+            params,
+        )
+        return {
+            "observations_updated": observations_updated,
+            "wide_facts_updated": wide_updated,
+        }
+
+    @staticmethod
     def _upsert_reconciliation(cur, records: Iterable[ReconciliationResult]) -> None:
         for item in records:
             payload = asdict(item)
@@ -576,6 +808,7 @@ class PostgresRepository:
                     match_method = EXCLUDED.match_method,
                     match_confidence = EXCLUDED.match_confidence
                 WHERE canonical_entity_alias.approval_status IN ('approved', 'auto_exact')
+                  AND canonical_entity_alias.match_method <> 'human_adjudication'
                 """,
                 alias,
             )
