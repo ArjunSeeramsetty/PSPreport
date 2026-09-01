@@ -1235,6 +1235,206 @@ def test_erldc_promotes_header_verified_market_day_energy_at_entity_grain() -> N
     ).fetchone()[0] == 0
 
 
+@pytest.mark.parametrize(
+    ("report_id", "template_id"),
+    [
+        (35, ERLDC_FLAT_2023_TEMPLATE_ID),
+        (36, ERLDC_FLAT_2024_TEMPLATE_ID),
+    ],
+)
+def test_erldc_earlier_flat_promotes_header_verified_market_day_energy(
+    report_id: int,
+    template_id: str,
+) -> None:
+    """2023-flat and 2024-flat reuse the same Section 8(A) day-energy contract."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (?, 'erldc', 'Power Supply Position Report_15042024.pdf',
+                  '2024-04-15', ?, 0)
+        """,
+        (report_id, template_id),
+    )
+    _insert_cells(conn, report_id, 6, 1, 13, {8: "DayEnergy(MU)"})
+    _insert_cells(
+        conn,
+        report_id,
+        6,
+        1,
+        14,
+        {
+            1: "State",
+            3: "GNASchedule",
+            9: "T-GNABILATERAL",
+            14: "GDAMSchedule",
+            19: "DAMSchedule",
+            25: "HPDAMSchedule",
+            32: "RTMSchedule",
+            38: "Total(MU)",
+        },
+    )
+    _insert_cells(
+        conn,
+        report_id,
+        6,
+        1,
+        15,
+        {1: "WESTBENGAL", 3: "27.63", 9: "0.11", 14: "-0.24", 19: "-5.28", 25: "0", 32: "-4.77", 38: "17.45"},
+    )
+    _insert_cells(conn, report_id, 6, 1, 16, {1: "TOTAL", 3: "27.78", 38: "17.60"})
+    _insert_cells(conn, report_id, 6, 1, 17, {1: "8(B). Short-Term Open Access Details"})
+
+    promote_report_to_curated(conn, report_id)
+
+    rows = conn.execute(
+        """
+        SELECT entity.EntityName, state.StateName, fact.GNAScheduleMU, fact.TotalMU
+        FROM FactERLDCMarketEnergyDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        LEFT JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = ?
+        ORDER BY entity.EntityName
+        """,
+        (report_id,),
+    ).fetchall()
+    assert rows == [("WESTBENGAL", "West Bengal", 27.63, 17.45)]
+
+
+def test_erldc_split_promotes_native_market_extrema_without_hpx_rtm() -> None:
+    """Split 8(B) native max/min pairs skip a malformed HPX RTM column pair."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (38, 'erldc', 'Power Supply Position Report_31122024.pdf',
+                  '2024-12-31', ?, 0)
+        """,
+        (ERLDC_SPLIT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 38, 6, 1, 1, {1: "8(B). Short-Term Open Access Details"})
+    _insert_cells(conn, 38, 6, 1, 2, {
+        1: "State", 2: "GNA Schedule", 7: "T-GNA BILATERAL (MW)",
+        12: "IEX GDAM (MW)", 18: "PXIL GDAM (MW)", 24: "HPX GDAM (MW)",
+        31: "IEX DAM (MW)", 37: "PXIL DAM (MW)", 43: "HPX RTM (MW)",
+    })
+    _insert_cells(conn, 38, 6, 1, 3, {
+        2: "Maximum", 4: "Minimum", 7: "Maximum", 10: "Minimum",
+        12: "Maximum", 16: "Minimum", 18: "Maximum", 21: "Minimum",
+        24: "Maximum", 27: "Minimum", 31: "Maximum", 35: "Minimum",
+        37: "Maximum", 40: "Minimum", 43: "Minimum", 46: "Minimum",
+    })
+    _insert_cells(conn, 38, 6, 1, 4, {
+        1: "WEST BENGAL",
+        2: "120", 4: "10", 7: "30", 10: "5",
+        12: "40", 16: "0", 18: "0", 21: "0",
+        24: "0", 27: "0", 31: "80", 35: "2",
+        37: "0", 40: "0", 43: "9", 46: "1",
+    })
+    _insert_cells(conn, 38, 6, 1, 5, {1: "TOTAL"})
+
+    promote_report_to_curated(conn, 38)
+
+    rows = conn.execute(
+        """
+        SELECT fact.Mechanism, fact.MaximumMW, fact.MinimumMW
+        FROM FactERLDCMarketExtremaDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 38 AND state.StateName = 'West Bengal'
+        ORDER BY fact.Mechanism
+        """
+    ).fetchall()
+    assert rows == [
+        ("GNASchedule", 120.0, 10.0),
+        ("HPXGDAM", 0.0, 0.0),
+        ("IEXDAM", 80.0, 2.0),
+        ("IEXGDAM", 40.0, 0.0),
+        ("PXILDAM", 0.0, 0.0),
+        ("PXILGDAM", 0.0, 0.0),
+        ("TGNABilateral", 30.0, 5.0),
+    ]
+    assert not any(mechanism == "HPXRTM" for mechanism, *_ in rows)
+
+
+def test_erldc_2024_flat_promotes_spatial_market_extrema_without_hpx_rtm() -> None:
+    """2024-flat reuses the 2025-flat LiteParse 8(B) geometry on page 6."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (39, 'erldc', 'Power Supply Position Report_15042024.pdf',
+                  '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 39, 6, 1, 1, {1: "8(B). Short-Term Open Access Details"})
+    _insert_cells(conn, 39, 6, 1, 2, {
+        1: "State", 2: "GNA Schedule", 7: "T-GNA BILATERAL (MW)",
+        12: "IEX GDAM (MW)", 18: "PXIL GDAM (MW)", 24: "HPX GDAM (MW)",
+        31: "IEX DAM (MW)", 37: "PXIL DAM (MW)",
+    })
+    _insert_cells(conn, 39, 6, 1, 3, {
+        2: "Maximum", 4: "Minimum", 7: "Maximum", 10: "Minimum",
+        12: "Maximum", 16: "Minimum", 18: "Maximum", 21: "Minimum",
+        24: "Maximum", 27: "Minimum", 31: "Maximum", 35: "Minimum",
+        37: "Maximum", 40: "Minimum",
+    })
+    _insert_cells(conn, 39, 6, 1, 4, {
+        1: "State", 2: "HPX DAM (MW)", 7: "IEX HPDAM (MW)",
+        12: "PXIL HPDAM (MW)", 18: "HPX HPDAM (MW)", 24: "IEX RTM (MW)",
+        31: "PXIL RTM (MW)", 37: "HPX RTM (MW)",
+    })
+    _insert_cells(conn, 39, 6, 1, 5, {
+        2: "Maximum", 4: "Minimum", 7: "Maximum", 10: "Minimum",
+        12: "Maximum", 16: "Minimum", 18: "Maximum", 21: "Minimum",
+        24: "Maximum", 27: "Minimum", 31: "Maximum", 35: "Minimum",
+        37: "Minimum", 40: "Minimum",
+    })
+    _insert_spatial_items(conn, 39, 6, [
+        ("WEST", 19.4, 530.0), ("BENGAL", 23.0, 535.0),
+        ("0", 88.0, 530.0), ("0", 130.0, 530.0),
+        ("0", 172.0, 530.0), ("0", 214.0, 530.0),
+        ("0", 256.0, 530.0), ("0", 298.0, 530.0),
+        ("0", 340.0, 530.0), ("0", 382.0, 530.0),
+        ("255.99", 415.0, 530.0), ("-991.28", 456.0, 530.0),
+        ("0", 508.0, 530.0), ("0", 550.0, 530.0),
+    ])
+
+    promote_report_to_curated(conn, 39)
+
+    rows = conn.execute(
+        """
+        SELECT fact.Mechanism, fact.MaximumMW, fact.MinimumMW
+        FROM FactERLDCMarketExtremaDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 39 AND state.StateName = 'West Bengal'
+        ORDER BY fact.Mechanism
+        """
+    ).fetchall()
+    assert rows == [
+        ("HPXDAM", 0.0, 0.0),
+        ("HPXHPDAM", 0.0, 0.0),
+        ("IEXHPDAM", 0.0, 0.0),
+        ("IEXRTM", 255.99, -991.28),
+        ("PXILHPDAM", 0.0, 0.0),
+        ("PXILRTM", 0.0, 0.0),
+    ]
+
+
 def test_erldc_end_to_end_local_pdf_promotion(tmp_path: Path) -> None:
     """Validate end-to-end extraction and promotion on a real local ERLDC PSP PDF."""
     from datetime import date

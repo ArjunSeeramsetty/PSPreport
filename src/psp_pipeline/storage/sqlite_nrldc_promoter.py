@@ -188,6 +188,7 @@ _NRLDC_2026_RAW_CONTINUATION_SPARSE_COLUMNS = {
     "UIMU": 23,
 }
 _MARKET_DAY_ENERGY_PAGE = {
+    NRLDC_2024_TEMPLATE.template_id: 11,
     NRLDC_2025_TEMPLATE.template_id: 11,
     NRLDC_2026_TEMPLATE.template_id: 12,
 }
@@ -200,6 +201,11 @@ _MARKET_DAY_ENERGY_COLUMNS = {
     "TotalMU": 23,
 }
 _MARKET_POINT_PAGE = NRLDC_2026_TEMPLATE.template_id
+_MARKET_EXTREMA_PAGE = {
+    NRLDC_2024_TEMPLATE.template_id: 11,
+    NRLDC_2025_TEMPLATE.template_id: 11,
+    NRLDC_2026_TEMPLATE.template_id: 12,
+}
 _MARKET_OFF_PEAK_COLUMNS = {
     "TGNABilateralMW": 2,
     "IEXGDAMMW": 4,
@@ -331,6 +337,7 @@ def promote_nrldc_report_to_curated(
             conn,
             report_document_id,
             date_id,
+            template_id,
             mapped_cells,
         )
     _record_initial_coverage(
@@ -385,14 +392,15 @@ def _market_extrema_scope_is_affected(
     report: Mapping[str, object],
     template_id: str,
 ) -> bool:
-    """Block Section 7(B) promotion until its verified page-12 layout is stable."""
+    """Block Section 7(B) promotion when its verified extrema page drifted."""
 
-    if template_id != _MARKET_POINT_PAGE:
+    page_no = _MARKET_EXTREMA_PAGE.get(template_id)
+    if page_no is None:
         return True
     if not report["semantic_pass_required"]:
         return False
     reason = str(report.get("structure_deviation_reason") or "")
-    return bool(re.search(r"(?:p12_t|missing_table=p12_)", reason))
+    return bool(re.search(rf"(?:p{page_no}_t|missing_table=p{page_no}_)", reason))
 
 
 def _clear_nrldc_curated_report(
@@ -456,9 +464,9 @@ def _promote_market_day_energy(
 ) -> None:
     """Promote the fixture-verified Section 7(A) state Day Energy matrix.
 
-    The contract is shared by the 2025 and 2026 templates; only the page
-    number shifts.  Peak/off-peak and Section 7(B) extrema have separate
-    grains and are intentionally not handled here.
+    The contract is shared by the 2024, 2025, and 2026 templates; only the page
+    number shifts. Peak/off-peak snapshots stay on the 2026 page-11 layout.
+    Section 7(B) extrema have a separate grain and are not handled here.
     """
 
     page_no = _MARKET_DAY_ENERGY_PAGE.get(template_id)
@@ -573,13 +581,17 @@ def _promote_2026_market_extrema(
     conn: sqlite3.Connection,
     report_id: int,
     date_id: int,
+    template_id: str,
     mapped_cells: set[int],
 ) -> None:
     """Promote Section 7(B) 24-hour market maximum and minimum MW pairs."""
 
+    page_no = _MARKET_EXTREMA_PAGE.get(template_id)
+    if page_no is None:
+        return
     in_section = False
     columns: dict[str, tuple[int, int]] | None = None
-    for row in _table_rows(conn, report_id, 12, 1):
+    for row in _table_rows(conn, report_id, page_no, 1):
         label_cell = row.get(1)
         label = _clean_label(label_cell[1]) if label_cell else ""
         normalized = re.sub(r"[^a-z0-9]", "", label.lower())

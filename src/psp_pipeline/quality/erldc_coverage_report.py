@@ -55,6 +55,8 @@ _FACT_TABLES = (
     "FactERLDCVoltageProfile",
     "FactERLDCInterRegionalExchange",
     "FactERLDCInternationalExchange",
+    "FactERLDCMarketEnergyDaily",
+    "FactERLDCMarketExtremaDaily",
 )
 
 

@@ -9,6 +9,7 @@ from psp_pipeline.storage.sqlite_curated_schema import ensure_curated_sqlite_sch
 from psp_pipeline.storage.sqlite_nrldc_promoter import repromote_nrldc_reports
 
 
+NRLDC_2024_TEMPLATE_ID = "nrldc_daily_psp_v2024_standard_09_column_generation"
 NRLDC_2025_TEMPLATE_ID = "nrldc_daily_psp_v2025_standard_11_column_generation"
 NRLDC_2026_TEMPLATE_ID = "nrldc_daily_psp_v2026_standard_11_column_storage"
 
@@ -421,6 +422,107 @@ def test_nrldc_promotes_verified_market_extrema_with_cell_lineage() -> None:
         ("T_GNA_BILATERAL", 0.0, -1302.44),
     ]
     assert lineage == 16
+
+
+def test_nrldc_2024_promotes_market_day_energy_on_page_eleven() -> None:
+    """Section 7(A) day-energy on the 2024 template uses page 11."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (9, 'nrldc', 'daily15042024.pdf', '2024-04-15', ?, 0)
+        """,
+        (NRLDC_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 9, 11, 2, {1: "State", 4: "Day Energy (MU)"})
+    _insert_cells(conn, 9, 11, 4, {
+        1: "PUNJAB", 4: "48.45", 7: "-14.86", 10: "4.13",
+        15: "6.19", 19: "34.27", 23: "78.18",
+    })
+    _insert_cells(conn, 9, 11, 5, {1: "TOTAL", 4: "574.38", 23: "592.05"})
+    _insert_cells(conn, 9, 11, 6, {1: "7(B). Short-Term Open Access Details"})
+
+    promote_report_to_curated(conn, 9)
+
+    market = conn.execute(
+        """
+        SELECT GNAScheduleMU, TGNABilateralMU, GDAMScheduleMU, DAMScheduleMU,
+               RTMScheduleMU, TotalMU
+        FROM FactNRLDCStateMarketDaily AS fact
+        JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 9 AND state.StateName = 'Punjab'
+        """
+    ).fetchone()
+    lineage = conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 9 AND DestinationTable = 'FactNRLDCStateMarketDaily'
+        """
+    ).fetchone()[0]
+    point_count = conn.execute(
+        "SELECT COUNT(*) FROM FactNRLDCStateMarketPointDaily WHERE ReportDocumentID = 9"
+    ).fetchone()[0]
+    assert market == (48.45, -14.86, 4.13, 6.19, 34.27, 78.18)
+    assert lineage == 6
+    assert point_count == 0
+
+
+def test_nrldc_2025_promotes_market_extrema_on_page_eleven() -> None:
+    """Section 7(B) extrema on the 2025 template share page 11 with day-energy."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (10, 'nrldc', 'daily201225.pdf', '2025-12-20', ?, 0)
+        """,
+        (NRLDC_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 10, 11, 15, {1: "7(B). Short-Term Open Access Details"})
+    _insert_cells(conn, 10, 11, 16, {1: "State", 2: "GNA Schedule"})
+    _insert_cells(conn, 10, 11, 18, {
+        1: "PUNJAB", 2: "3,145.46", 5: "973.82", 8: "0",
+        12: "-1,302.44", 16: "1,255.4", 20: "0", 22: "0", 25: "0",
+    })
+    _insert_cells(conn, 10, 11, 29, {1: "State", 3: "IEX DAM (MW)"})
+    _insert_cells(conn, 10, 11, 31, {
+        1: "PUNJAB", 3: "1,663.72", 6: "0", 9: "0", 11: "0",
+        14: "2,682.88", 17: "475.35", 21: "0", 24: "0",
+    })
+    _insert_cells(conn, 10, 11, 41, {1: "8. Major Reservoir Particulars"})
+
+    promote_report_to_curated(conn, 10)
+
+    rows = conn.execute(
+        """
+        SELECT Mechanism, MaximumMW, MinimumMW
+        FROM FactNRLDCStateMarketExtremaDaily AS fact
+        JOIN DimStates AS state ON state.StateID = fact.StateID
+        WHERE fact.ReportDocumentID = 10 AND state.StateName = 'Punjab'
+        ORDER BY Mechanism
+        """
+    ).fetchall()
+    point_count = conn.execute(
+        "SELECT COUNT(*) FROM FactNRLDCStateMarketPointDaily WHERE ReportDocumentID = 10"
+    ).fetchone()[0]
+    assert rows == [
+        ("GNA", 3145.46, 973.82),
+        ("IEX_DAM", 1663.72, 0.0),
+        ("IEX_GDAM", 1255.4, 0.0),
+        ("IEX_RTM", 2682.88, 475.35),
+        ("PXIL_DAM", 0.0, 0.0),
+        ("PXIL_GDAM", 0.0, 0.0),
+        ("PXIL_RTM", 0.0, 0.0),
+        ("T_GNA_BILATERAL", 0.0, -1302.44),
+    ]
+    assert point_count == 0
 
 
 def test_nrldc_promotes_page_eleven_24_column_voltage_continuation() -> None:
