@@ -15,6 +15,10 @@ This repository now includes a local/open-source-first build for:
   - `recon_agent`
   - `graph_sync_agent`
   - `dq_alert_agent`
+- RPC settlement layer:
+  - weekly DSM entity charges, sustained deviation penalties, and ancillary payments
+  - monthly REA station PAFM / deemed generation and peak/off-peak allocations
+  - header-driven table location, malformed-pair skip, unsupported-family quarantine
 - Data contracts and source registry (`src/psp_pipeline/models/`)
 - Pipeline flow (`src/psp_pipeline/pipelines/bronze_pipeline.py`)
 - Stage decomposition (`src/psp_pipeline/pipelines/stages.py`)
@@ -52,6 +56,8 @@ WBES: `newwbes.grid-india.in` marked as controlled-access source
    - `python scripts/publish_curated_postgres.py --db data/sqlite/all_rldc_daily.sqlite`
 7. Run public ingestion:
    - `python scripts/run_public_ingestion.py`
+8. Collect public RPC DSM/REA settlement accounts:
+   - `python scripts/run_rpc_settlement.py`
 
 ## Airflow
 - UI: `http://localhost:8080`

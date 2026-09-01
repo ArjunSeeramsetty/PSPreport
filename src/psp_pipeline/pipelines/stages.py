@@ -322,6 +322,42 @@ def collect_all_rldc_daily_psp(
         }
 
 
+def collect_rpc_settlement(
+    settings: AppSettings,
+    target_date: date | None = None,
+    target_rpcs: set[str] | None = None,
+    max_reports_per_rpc: int = 4,
+) -> Dict[str, Any]:
+    """Collect weekly DSM and monthly REA accounts from public RPC listings."""
+
+    from psp_pipeline.pipelines.rpc_settlement import run_rpc_settlement_collection
+
+    try:
+        return run_rpc_settlement_collection(
+            config_path=settings.project_root / "config" / "rpc_report_sources.yaml",
+            sqlite_db_path=settings.project_root / "data" / "sqlite" / "all_rldc_daily.sqlite",
+            download_root=settings.project_root / "downloads" / "rpc",
+            target_date=target_date,
+            target_rpcs=target_rpcs,
+            max_reports_per_rpc=max_reports_per_rpc,
+        )
+    except Exception:
+        logger.exception("RPC settlement collection failed")
+        return {
+            "aggregate": {
+                "sources_requested": len(target_rpcs) if target_rpcs else 5,
+                "sources_completed": 0,
+                "sources_failed": len(target_rpcs) if target_rpcs else 5,
+                "links_found": 0,
+                "reports_downloaded": 0,
+                "reports_persisted": 0,
+                "unsupported_family": 0,
+            },
+            "sources": {},
+            "failures": {"all": "Critical failure in RPC coordinator"},
+        }
+
+
 def catch_up_missing_public_dates(
     settings: AppSettings,
     target_date: date,

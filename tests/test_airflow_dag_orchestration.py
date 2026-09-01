@@ -95,6 +95,8 @@ def test_daily_dag_wires_coverage_contract_and_timescale_mirror() -> None:
 
     dag_source = Path(__file__).resolve().parents[1] / "dags" / "psp_daily_pipeline.py"
     text = dag_source.read_text(encoding="utf-8")
+    assert "collect_rpc_settlement_task" in text
+    assert "rpc_collection >> all_timescale" in text
     assert "coverage_contract_task" in text
     assert "evaluate_curated_coverage_contract" in text
     assert "export_all_curated_to_timescale" in text

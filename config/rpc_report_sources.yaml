@@ -1,0 +1,61 @@
+rpc_sources:
+  ERPC:
+    region: ER
+    region_name: Eastern Region
+    access_mode: public
+    listing_url: "https://erpc.gov.in/en/commercial/"
+    include_keywords:
+      - dsm
+      - deviation settlement
+      - rea
+      - regional energy account
+    allow_domains:
+      - "erpc.gov.in"
+  NRPC:
+    region: NR
+    region_name: Northern Region
+    access_mode: public
+    listing_url: "https://www.nrpc.gov.in/"
+    include_keywords:
+      - dsm
+      - deviation settlement
+      - rea
+      - regional energy account
+    allow_domains:
+      - "nrpc.gov.in"
+  SRPC:
+    region: SR
+    region_name: Southern Region
+    access_mode: public
+    listing_url: "https://www.srpc.kar.nic.in/html/recent_uploads.html"
+    include_keywords:
+      - dsm
+      - deviation settlement
+      - rea
+      - regional energy account
+    allow_domains:
+      - "srpc.kar.nic.in"
+  WRPC:
+    region: WR
+    region_name: Western Region
+    access_mode: public
+    listing_url: "https://www.wrpc.gov.in/"
+    include_keywords:
+      - dsm
+      - deviation settlement
+      - rea
+      - regional energy account
+    allow_domains:
+      - "wrpc.gov.in"
+  NERPC:
+    region: NER
+    region_name: North Eastern Region
+    access_mode: public
+    listing_url: "https://nerpc.gov.in/"
+    include_keywords:
+      - dsm
+      - deviation settlement
+      - rea
+      - regional energy account
+    allow_domains:
+      - "nerpc.gov.in"

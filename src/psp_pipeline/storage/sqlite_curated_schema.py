@@ -37,6 +37,7 @@ UNIT_ROWS = (
     ("Hours", "hrs", "TimeDuration", "Unit of time duration"),
     ("Count", "Count", "Count", "Simple count of items"),
     ("Time", "HH:MM:SS", "Time", "Time in hours:minutes:seconds format"),
+    ("Rupees", "Rs", "Currency", "Indian rupee settlement amount"),
 )
 
 REGION_ROWS = (
@@ -191,6 +192,23 @@ UNIT_MAPPINGS = (
     ("FactCountryDailyExchange", "TotalEnergyExchanged", "MU"),
     ("FactCountryDailyExchange", "PeakExchange", "MW"),
     ("FactTransnationalExchangeDetail", "ExchangeValue", "MU"),
+    ("FactRPCWeeklyDSMEntity", "ScheduledEnergyMU", "MU"),
+    ("FactRPCWeeklyDSMEntity", "ActualEnergyMU", "MU"),
+    ("FactRPCWeeklyDSMEntity", "DeviationMU", "MU"),
+    ("FactRPCWeeklyDSMEntity", "FrequencyLinkedDeviationChargeRs", "Rs"),
+    ("FactRPCWeeklyDSMEntity", "SustainedDeviationPenaltyRs", "Rs"),
+    ("FactRPCWeeklyDSMEntity", "SignChangeViolationChargeRs", "Rs"),
+    ("FactRPCWeeklyDSMEntity", "NetPayableReceivableRs", "Rs"),
+    ("FactRPCWeeklyDSMAncillary", "PayableRs", "Rs"),
+    ("FactRPCWeeklyDSMAncillary", "ReceivableRs", "Rs"),
+    ("FactRPCWeeklyDSMAncillary", "NetRs", "Rs"),
+    ("FactRPCMonthlyREAStation", "InstalledCapacityMW", "MW"),
+    ("FactRPCMonthlyREAStation", "PAFMPct", "%"),
+    ("FactRPCMonthlyREAStation", "ScheduledGenerationMU", "MU"),
+    ("FactRPCMonthlyREAStation", "DeemedGenerationMU", "MU"),
+    ("FactRPCMonthlyREAStation", "AuxiliaryConsumptionMU", "MU"),
+    ("FactRPCMonthlyREAAllocation", "AllocatedCapacityMW", "MW"),
+    ("FactRPCMonthlyREAAllocation", "AllocatedEnergyMU", "MU"),
 )
 
 
@@ -432,6 +450,7 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_erldc_curated_tables(conn)
     _ensure_nerldc_curated_tables(conn)
     _ensure_nldc_curated_tables(conn)
+    _ensure_rpc_curated_tables(conn)
     _ensure_canonical_identity_tables(conn)
     _ensure_transmission_country_columns(conn)
     _migrate_curated_lineage_for_raw_lines(conn)
@@ -881,6 +900,100 @@ def _migrate_curated_lineage_for_raw_lines(conn: sqlite3.Connection) -> None:
                Confidence, CreatedAt
         FROM curated_field_lineage_legacy;
         DROP TABLE curated_field_lineage_legacy;
+        """
+    )
+
+
+def _ensure_rpc_curated_tables(conn: sqlite3.Connection) -> None:
+    """Create weekly DSM and monthly REA settlement fact tables.
+
+    RPC facts reference the raw report identity directly. Curated-only
+    in-memory databases omit these tables until ``psp_report_document`` exists.
+    """
+
+    raw_document_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'psp_report_document'"
+    ).fetchone()
+    if not raw_document_exists:
+        return
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS FactRPCWeeklyDSMEntity (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            WeekEndDate TEXT NOT NULL,
+            ScheduledEnergyMU REAL,
+            ActualEnergyMU REAL,
+            DeviationMU REAL,
+            FrequencyLinkedDeviationChargeRs REAL,
+            SustainedDeviationPenaltyRs REAL,
+            SignChangeViolationChargeRs REAL,
+            NetPayableReceivableRs REAL,
+            PRIMARY KEY (ReportDocumentID, DateID, EntityID),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (RegionID) REFERENCES DimRegions(RegionID),
+            FOREIGN KEY (EntityID) REFERENCES DimGridEntities(EntityID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactRPCWeeklyDSMAncillary (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            ServiceType TEXT NOT NULL,
+            WeekEndDate TEXT NOT NULL,
+            PayableRs REAL,
+            ReceivableRs REAL,
+            NetRs REAL,
+            PRIMARY KEY (ReportDocumentID, DateID, EntityID, ServiceType),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (RegionID) REFERENCES DimRegions(RegionID),
+            FOREIGN KEY (EntityID) REFERENCES DimGridEntities(EntityID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactRPCMonthlyREAStation (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            PeriodMonth TEXT NOT NULL,
+            InstalledCapacityMW REAL,
+            PAFMPct REAL,
+            ScheduledGenerationMU REAL,
+            DeemedGenerationMU REAL,
+            AuxiliaryConsumptionMU REAL,
+            PRIMARY KEY (ReportDocumentID, DateID, EntityID),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (RegionID) REFERENCES DimRegions(RegionID),
+            FOREIGN KEY (EntityID) REFERENCES DimGridEntities(EntityID)
+        );
+
+        CREATE TABLE IF NOT EXISTS FactRPCMonthlyREAAllocation (
+            ReportDocumentID INTEGER NOT NULL,
+            DateID INTEGER NOT NULL,
+            RegionID INTEGER NOT NULL,
+            EntityID INTEGER NOT NULL,
+            StationID INTEGER NOT NULL,
+            AllocationWindow TEXT NOT NULL,
+            PeriodMonth TEXT NOT NULL,
+            AllocatedCapacityMW REAL,
+            AllocatedEnergyMU REAL,
+            PRIMARY KEY (
+                ReportDocumentID, DateID, EntityID, StationID, AllocationWindow
+            ),
+            FOREIGN KEY (ReportDocumentID) REFERENCES psp_report_document(id),
+            FOREIGN KEY (DateID) REFERENCES DimDates(DateID),
+            FOREIGN KEY (RegionID) REFERENCES DimRegions(RegionID),
+            FOREIGN KEY (EntityID) REFERENCES DimGridEntities(EntityID),
+            FOREIGN KEY (StationID) REFERENCES DimPowerStations(StationID)
+        );
         """
     )
 
@@ -2585,6 +2698,8 @@ def _inferred_unit_id(conn: sqlite3.Connection, column_name: str) -> int | None:
         ("index", "Index"),
         ("circuits", "Count"),
         ("count", "Count"),
+        ("rs", "Rs"),
+        ("inr", "Rs"),
     )
     for suffix, unit_symbol in suffixes:
         if normalized.endswith(suffix):

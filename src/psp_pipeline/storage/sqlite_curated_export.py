@@ -34,6 +34,10 @@ _DIMENSION_COLUMNS = {
     "MechanismID",
     "IsTotalRow",
     "BlockStartTime",
+    "WeekEndDate",
+    "PeriodMonth",
+    "ServiceType",
+    "AllocationWindow",
 }
 
 
@@ -47,6 +51,7 @@ class TableExportSpec:
     lineage_expressions: tuple[tuple[str, str], ...] = ()
     excluded_numeric_columns: tuple[str, ...] = ()
     block_start_time_column: str | None = None
+    value_role: str = "operational"
 
 
 @dataclass(frozen=True)
@@ -418,6 +423,53 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             ),
         ),
     ),
+    **{
+        source_id: RLDCExportConfig(
+            source_id,
+            "rpc",
+            "rpc_settlement",
+            region,
+            (
+                TableExportSpec(
+                    "FactRPCWeeklyDSMEntity",
+                    f"'{region}:dsm:' || entity.EntityName",
+                    "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                    value_role="settlement",
+                ),
+                TableExportSpec(
+                    "FactRPCWeeklyDSMAncillary",
+                    f"'{region}:dsm:' || entity.EntityName || ':as:' || fact.ServiceType",
+                    "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                    (("ServiceType", "fact.ServiceType"),),
+                    value_role="settlement",
+                ),
+                TableExportSpec(
+                    "FactRPCMonthlyREAStation",
+                    f"'{region}:rea-station:' || entity.EntityName",
+                    "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                    value_role="settlement",
+                ),
+                TableExportSpec(
+                    "FactRPCMonthlyREAAllocation",
+                    (
+                        f"'{region}:rea-alloc:' || entity.EntityName || ':station:' "
+                        "|| station.CanonicalStationName || ':window:' || fact.AllocationWindow"
+                    ),
+                    "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID "
+                    "JOIN DimPowerStations AS station ON station.StationID = fact.StationID",
+                    (("AllocationWindow", "fact.AllocationWindow"),),
+                    value_role="settlement",
+                ),
+            ),
+        )
+        for source_id, region in (
+            ("erpc", "ER"),
+            ("nrpc", "NR"),
+            ("srpc", "SR"),
+            ("wrpc", "WR"),
+            ("nerpc", "NER"),
+        )
+    },
 }
 
 
@@ -443,6 +495,7 @@ def export_registered_daily_observations(
                 lineage_expressions=table.lineage_expressions,
                 excluded_numeric_columns=table.excluded_numeric_columns,
                 block_start_time_column=table.block_start_time_column,
+                value_role=table.value_role,
                 report_document_id=report_document_id,
                 ingested_at=recorded_at,
                 source_id=config.source_id,
@@ -520,6 +573,7 @@ def _export_table(
     lineage_expressions: tuple[tuple[str, str], ...] = (),
     excluded_numeric_columns: tuple[str, ...] = (),
     block_start_time_column: str | None = None,
+    value_role: str = "operational",
     report_document_id: int | None,
     ingested_at: datetime,
     source_id: str,
@@ -611,13 +665,14 @@ def _export_table(
                 valid_from=valid_from.isoformat(),
                 valid_to=valid_to.isoformat() if valid_to else None,
             )
+            measured = float(value)
             observations.append(
                 FactObservation(
                     entity_key=str(entity_key),
                     metric_name=metric_name,
                     time_block=time_block,
-                    operational_value=float(value),
-                    settlement_value=None,
+                    operational_value=None if value_role == "settlement" else measured,
+                    settlement_value=measured if value_role == "settlement" else None,
                     variance_pct=None,
                     report_type=report_type,
                     source_region=source_region,
@@ -739,6 +794,9 @@ def _destination_dimension_matches(
         "MechanismName": ("mechanism",),
         "TimeCategory": ("time",),
         "BlockStartTime": ("block",),
+        "ServiceType": ("service",),
+        "AllocationWindow": ("window",),
+        "StationID": ("station",),
     }.get(column)
     if not key_names:
         return True

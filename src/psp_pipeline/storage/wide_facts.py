@@ -86,11 +86,16 @@ def export_wide_facts(
             {"metrics": {}, "observation": observation},
         )
         metric_name = observation.destination_column or observation.metric_id
-        if not metric_name or observation.operational_value is None:
+        measured = (
+            observation.operational_value
+            if observation.operational_value is not None
+            else observation.settlement_value
+        )
+        if not metric_name or measured is None:
             continue
         metrics = bucket["metrics"]
         assert isinstance(metrics, dict)
-        metrics[str(metric_name)] = float(observation.operational_value)
+        metrics[str(metric_name)] = float(measured)
 
     rows: list[WideFactRow] = []
     for grain, payload in grouped.items():
