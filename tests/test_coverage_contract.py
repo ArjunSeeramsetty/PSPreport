@@ -139,3 +139,36 @@ def test_curated_coverage_stage_is_fail_soft_for_daily_orchestration(
 
     assert payload["passed"] is False
     assert tuple(payload["profiles"]["corpus"]["missing_sources"]) == ("nrldc",)
+
+
+def test_synthetic_profile_enforces_lineage_and_null_rate_floors(tmp_path: Path) -> None:
+    """CI coverage is not just row presence: lineage rate and null rate are gated."""
+
+    db_path = tmp_path / "lineage.sqlite"
+    _seed_mapped_cell(db_path, "srldc")
+
+    results = enforce_coverage_manifest(db_path, _MANIFEST, only_required=True)
+    assert results["synthetic"].actual["srldc.lineage_rate_pct"] == 100.0
+    assert results["synthetic"].actual["srldc.null_rate_pct"] == 0.0
+    assert results["synthetic"].actual["srldc/synthetic.lineage_rate_pct"] == 100.0
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO psp_raw_cell(
+            report_document_id, page_no, table_no, row_no, col_no, cell_text,
+            extraction_method, extracted_at
+        ) VALUES (1, 1, 1, 2, 2, 'orphan', 'fixture', '2026-01-01T00:00:00Z')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    result = evaluate_coverage_floors(
+        db_path,
+        {"srldc": 0.0},
+        lineage_rate_floors={"srldc": 100.0},
+        null_rate_ceilings={"srldc": 0.0},
+    )
+    assert result.passed is False
+    assert any("lineage_rate_pct" in item for item in result.failures)
