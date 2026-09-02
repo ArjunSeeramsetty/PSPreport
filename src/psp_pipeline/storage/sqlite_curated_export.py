@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
 from dataclasses import dataclass
+import logging
 import sqlite3
 from typing import Iterable
 from uuid import NAMESPACE_URL, uuid5
 
 from psp_pipeline.models.contracts import FactObservation, ObservationLineage
+from psp_pipeline.quality.promotion_quarantine import record_promotion_quarantine
 from psp_pipeline.storage.observation_identity import (
     build_revision_uuid,
     build_series_key,
@@ -17,6 +19,7 @@ from psp_pipeline.storage.observation_identity import (
 
 SOURCE_REGION = "SR"
 REPORT_TYPE = "srldc_daily_psp"
+LOGGER = logging.getLogger(__name__)
 _DIMENSION_COLUMNS = {
     "ReportDocumentID",
     "DateID",
@@ -507,6 +510,20 @@ def export_registered_daily_observations(
     return observations
 
 
+class CuratedSourceExportError(RuntimeError):
+    """Raised when a required source exporter fails during multi-source export."""
+
+    def __init__(
+        self,
+        failures: dict[str, str],
+        observations: list[FactObservation],
+    ) -> None:
+        self.failures = dict(failures)
+        self.observations = list(observations)
+        failed = ", ".join(sorted(self.failures))
+        super().__init__(f"Required curated source export failed: {failed}")
+
+
 def export_all_daily_observations(
     conn: sqlite3.Connection,
     rldcs: Iterable[str] | None = None,
@@ -548,6 +565,7 @@ def export_all_daily_observations(
                 target_rldcs = filtered
 
     all_observations: list[FactObservation] = []
+    failures: dict[str, str] = {}
     for rldc in target_rldcs:
         if rldc not in RLDC_EXPORT_CONFIG:
             continue
@@ -559,9 +577,64 @@ def export_all_daily_observations(
                 ingested_at=ingested_at,
             )
             all_observations.extend(obs)
-        except Exception:
-            continue
+        except Exception as exc:
+            LOGGER.exception("curated_source_export_failed source=%s", rldc)
+            failures[rldc] = f"{type(exc).__name__}: {exc}"
+            _record_source_export_failure(
+                conn,
+                source_id=rldc,
+                report_document_id=report_document_id,
+                error=exc,
+            )
+    if failures:
+        raise CuratedSourceExportError(failures, all_observations)
     return all_observations
+
+
+def _record_source_export_failure(
+    conn: sqlite3.Connection,
+    *,
+    source_id: str,
+    report_document_id: int | None,
+    error: BaseException,
+) -> None:
+    """Persist a source-export hold so the failure is visible in run history."""
+
+    has_quarantine = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'promotion_quarantine'"
+    ).fetchone()
+    if not has_quarantine:
+        return
+    report_id = report_document_id
+    if report_id is None:
+        has_documents = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'psp_report_document'"
+        ).fetchone()
+        if has_documents:
+            row = conn.execute(
+                "SELECT MIN(id) FROM psp_report_document WHERE lower(rldc) = ?",
+                (source_id.lower(),),
+            ).fetchone()
+            if row and row[0] is not None:
+                report_id = int(row[0])
+    if report_id is None:
+        LOGGER.error(
+            "curated_source_export_failed_without_report source=%s error=%s",
+            source_id,
+            error,
+        )
+        return
+    record_promotion_quarantine(
+        conn,
+        report_document_id=report_id,
+        source_id=source_id,
+        stage="curated_export",
+        reason_code="source_export_failed",
+        details={
+            "error_type": type(error).__name__,
+            "error": str(error),
+        },
+    )
 
 
 def _export_table(
