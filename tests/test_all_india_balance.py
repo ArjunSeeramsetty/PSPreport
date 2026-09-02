@@ -184,3 +184,57 @@ def test_synthesis_marks_nldc_comparison_complete_for_all_rldcs() -> None:
 
     assert result.sources_missing == ()
     assert result.nldc_comparison_status == "complete"
+
+
+def test_synthesis_flags_missing_headline_measure_with_all_rldcs_present() -> None:
+    """A NULL regional headline measure cannot pass complete coverage."""
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_curated_sqlite_schema(conn)
+    conn.executescript(
+        """
+        CREATE TABLE psp_report_document (
+            id INTEGER PRIMARY KEY,
+            rldc TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            fetched_at TEXT NOT NULL
+        );
+        INSERT INTO DimDates(DateID, ActualDate) VALUES (1, '2026-08-25');
+        INSERT INTO psp_report_document VALUES
+            (1, 'srldc', '2026-08-25', '2026-08-25T08:00:00+00:00'),
+            (2, 'nrldc', '2026-08-25', '2026-08-25T08:00:00+00:00'),
+            (3, 'wrldc', '2026-08-25', '2026-08-25T08:00:00+00:00'),
+            (4, 'erldc', '2026-08-25', '2026-08-25T08:00:00+00:00'),
+            (5, 'nerldc', '2026-08-25', '2026-08-25T08:00:00+00:00'),
+            (6, 'grid_india_national', '2026-08-25', '2026-08-25T09:00:00+00:00');
+        INSERT INTO FactSRLDCRegionalDaily(
+            ReportDocumentID, DateID, RegionID, EveningPeakDemandMetMW, DayEnergyMetMU
+        ) VALUES (1, 1, 3, 100, 10);
+        INSERT INTO FactNRLDCRegionalDaily(
+            ReportDocumentID, DateID, RegionID, EveningPeakDemandMetMW, DayEnergyMetMU
+        ) VALUES (2, 1, 1, 100, 10);
+        INSERT INTO FactWRLDCRegionalDaily(
+            ReportDocumentID, DateID, RegionID, EveningPeakDemandMetMW, DayEnergyMetMU
+        ) VALUES (3, 1, 2, 100, 10);
+        INSERT INTO FactERLDCRegionalDaily(
+            ReportDocumentID, DateID, RegionID, EveningPeakDemandMetMW, DayEnergyMetMU
+        ) VALUES (4, 1, 4, 100, NULL);
+        INSERT INTO FactNERLDCRegionalDaily(
+            ReportDocumentID, DateID, RegionID, EveningPeakDemandMetMW, DayEnergyMetMU
+        ) VALUES (5, 1, 5, 100, 10);
+        INSERT INTO FactAllIndiaDailySummary(
+            DateID, RegionID, EveningPeakDemandMet, EnergyMet
+        ) VALUES (1, NULL, 500, 50);
+        """
+    )
+
+    result = synthesize_all_india_daily_balance(conn, 1)
+
+    assert result.sources_missing == ()
+    assert result.day_energy_met_mu == 40.0
+    assert result.headline_measure_sources_missing == {
+        "evening_peak_demand_met_mw": (),
+        "day_energy_met_mu": ("erldc",),
+    }
+    assert result.nldc_comparison_status == "incomplete_measure_coverage"

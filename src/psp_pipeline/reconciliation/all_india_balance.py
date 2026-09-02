@@ -83,6 +83,7 @@ class AllIndiaBalance:
     sources_missing: tuple[str, ...]
     evening_peak_demand_met_mw: float | None
     day_energy_met_mu: float | None
+    headline_measure_sources_missing: dict[str, tuple[str, ...]]
     fuel_generation_mu: dict[str, float]
     nldc_comparisons: dict[str, MetricComparison]
     nldc_comparison_status: str
@@ -133,6 +134,18 @@ def synthesize_all_india_daily_balance(
 
         demand = _sum_optional(row["EveningPeakDemandMetMW"] for row in source_rows.values())
         energy = _sum_optional(row["DayEnergyMetMU"] for row in source_rows.values())
+        missing_headline_measures = {
+            "evening_peak_demand_met_mw": tuple(
+                source_id
+                for source_id, row in source_rows.items()
+                if row["EveningPeakDemandMetMW"] is None
+            ),
+            "day_energy_met_mu": tuple(
+                source_id
+                for source_id, row in source_rows.items()
+                if row["DayEnergyMetMU"] is None
+            ),
+        }
         nldc_row = _nldc_summary(conn, date_id)
         comparisons: dict[str, MetricComparison] = {}
         if nldc_row is not None:
@@ -157,6 +170,7 @@ def synthesize_all_india_daily_balance(
         comparison_status = _nldc_comparison_status(
             nldc_row=nldc_row,
             sources_present=present,
+            headline_measure_sources_missing=missing_headline_measures,
         )
         return AllIndiaBalance(
             date_id=date_id,
@@ -164,6 +178,7 @@ def synthesize_all_india_daily_balance(
             sources_missing=tuple(source for source in _REGIONAL_FACT_TABLES if source not in source_rows),
             evening_peak_demand_met_mw=demand,
             day_energy_met_mu=energy,
+            headline_measure_sources_missing=missing_headline_measures,
             fuel_generation_mu=dict(sorted(fuel_generation.items())),
             nldc_comparisons=comparisons,
             nldc_comparison_status=comparison_status,
@@ -258,6 +273,7 @@ def _nldc_comparison_status(
     *,
     nldc_row: sqlite3.Row | None,
     sources_present: tuple[str, ...],
+    headline_measure_sources_missing: dict[str, tuple[str, ...]],
 ) -> str:
     """Describe whether an NLDC comparison covers every required RLDC.
 
@@ -268,6 +284,10 @@ def _nldc_comparison_status(
 
     if nldc_row is None:
         return "nldc_not_available"
+    if headline_measure_sources_missing["evening_peak_demand_met_mw"] or (
+        headline_measure_sources_missing["day_energy_met_mu"]
+    ):
+        return "incomplete_measure_coverage"
     if len(sources_present) == len(_REGIONAL_FACT_TABLES):
         return "complete"
     return "incomplete_coverage"

@@ -266,22 +266,65 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 
 def _regional(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:
+    """Promote the Page 1 flattened regional demand and energy summary."""
+
     rows = _rows(conn, report, 1)
     if len(rows) < 4:
         return
     row = rows[3]
-    fields = ({"EveningPeakDemandMetMW": 1, "OffPeakDemandMetMW": 2, "DayEnergyMetMU": 3}
-              if max(row, default=0) <= 3 else {"EveningPeakDemandMetMW": 1, "OffPeakDemandMetMW": 6, "DayEnergyMetMU": 12})
-    values, sources = {}, {}
-    for name, col in fields.items():
-        value, raw = _number(row, col)
-        if value is not None: values[name] = value
-        if raw: sources[name] = raw
-    if not values:
+    fields = _flat_regional_fields(rows[:3], row)
+    if fields is None:
+        logger.warning(
+            "Skipping ERLDC flattened regional summary with unrecognized columns: "
+            "report_id=%s columns=%s",
+            report,
+            sorted(row),
+        )
         return
-    columns = ", ".join(values)
-    conn.execute(f"INSERT OR REPLACE INTO FactERLDCRegionalDaily(ReportDocumentID, DateID, RegionID, {columns}) VALUES (?, ?, ?, {', '.join('?' for _ in values)})", (report, date_id, region_id, *values.values()))
-    _lineage(conn, report, "FactERLDCRegionalDaily", f"report={report};date={date_id};region={region_id}", sources)
+    _insert_regional_values(conn, report, date_id, region_id, row, fields)
+
+
+def _flat_regional_fields(
+    header_rows: list[dict[int, tuple[int, str]]],
+    data_row: dict[int, tuple[int, str]],
+) -> dict[str, int] | None:
+    """Resolve regional summary columns without relying on a row's width.
+
+    Some flattened ERLDC extractions preserve decorative cells to the right of
+    the three-value summary.  Those cells must not make a compact summary look
+    like the legacy wide layout.  Published labels are authoritative when
+    present; the two fixture-backed numeric layouts support older extracts
+    whose labels were collapsed into the section heading.
+    """
+
+    fields = {
+        "EveningPeakDemandMetMW": ("evening", "peak", "demand", "met"),
+        "OffPeakDemandMetMW": ("off", "peak", "demand", "met"),
+        "DayEnergyMetMU": ("day", "energy", "met"),
+    }
+    resolved: dict[str, int] = {}
+    for row in header_rows:
+        for column, (_, text) in row.items():
+            normalized = _compact_text(text)
+            for field, tokens in fields.items():
+                if all(token in normalized for token in tokens):
+                    resolved[field] = column
+    if len(resolved) == len(fields):
+        return resolved
+
+    compact = {
+        "EveningPeakDemandMetMW": 1,
+        "OffPeakDemandMetMW": 2,
+        "DayEnergyMetMU": 3,
+    }
+    wide = {
+        "EveningPeakDemandMetMW": 1,
+        "OffPeakDemandMetMW": 6,
+        "DayEnergyMetMU": 12,
+    }
+    if all(_number(data_row, column)[0] is not None for column in compact.values()):
+        return compact
+    return wide
 
 
 def _split_regional(

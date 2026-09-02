@@ -141,7 +141,7 @@ def test_erldc_promotes_regional_state_and_generation_with_lineage() -> None:
     _insert_cells(conn, 1, 1, 1, 2, {1: "POWER SUPPLY POSITION REPORT"})
     _insert_cells(conn, 1, 1, 1, 3, {1: "1. Demand Met / Availability (MW)"})
     _insert_cells(conn, 1, 1, 1, 4, {
-        1: "25,450", 2: "18,200", 3: "512.4",
+        1: "25,450", 2: "18,200", 3: "512.4", 8: "Page 1",
     })
 
     # Insert Section 2 State Energy Position (Page 1, Table 1)
@@ -183,6 +183,43 @@ def test_erldc_promotes_regional_state_and_generation_with_lineage() -> None:
         "SELECT COUNT(*) FROM curated_field_lineage WHERE ReportDocumentID = 1"
     ).fetchone()[0]
     assert lineage_count >= 8
+
+
+def test_erldc_flat_regional_summary_uses_published_header_columns() -> None:
+    """Flat summaries keep day energy when sparse headers extend past column 3."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (99, 'erldc', 'flat-header-fixture.pdf', '2024-04-16', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 99, 1, 1, 1, {1: "ERLDC"})
+    _insert_cells(conn, 99, 1, 1, 2, {1: "POWER SUPPLY POSITION REPORT"})
+    _insert_cells(conn, 99, 1, 1, 3, {
+        1: "Evening Peak Demand Met",
+        6: "Off Peak Demand Met",
+        12: "Day Energy Met",
+    })
+    _insert_cells(conn, 99, 1, 1, 4, {
+        1: "25,450",
+        6: "18,200",
+        9: "Page 1",
+        12: "512.4",
+    })
+
+    promote_report_to_curated(conn, 99)
+
+    regional = conn.execute(
+        "SELECT EveningPeakDemandMetMW, OffPeakDemandMetMW, DayEnergyMetMU "
+        "FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 99"
+    ).fetchone()
+    assert regional == (25450.0, 18200.0, 512.4)
 
 
 def test_erldc_promotes_frequency_and_reservoirs() -> None:
