@@ -18,10 +18,16 @@ from psp_pipeline.storage.sqlite_erldc_enrichment import (
     transmission_location,
     voltage_node_location,
 )
+from psp_pipeline.parsing.layout_resolution import (
+    LayoutResolution,
+    resolve_exclusive_layouts,
+    resolve_header_layout,
+)
 from psp_pipeline.parsing.rldc.spatial_rows import (
     SpatialTextItem,
     reconstruct_generation_rows,
 )
+from psp_pipeline.quality.promotion_quarantine import record_promotion_quarantine
 
 
 ERLDC_FLAT_TEMPLATE_IDS = frozenset({
@@ -102,6 +108,76 @@ _ERLDC_MARKET_EXTREMA_SPATIAL_TABLES = (
         },
     ),
 )
+
+_ERLDC_REGIONAL_HEADER_TOKENS = {
+    "EveningPeakDemandMetMW": ("evening", "peak", "demand", "met"),
+    "OffPeakDemandMetMW": ("off", "peak", "demand", "met"),
+    "DayEnergyMetMU": ("day", "energy", "met"),
+}
+_ERLDC_REGIONAL_COMPACT = {
+    "EveningPeakDemandMetMW": 1,
+    "OffPeakDemandMetMW": 2,
+    "DayEnergyMetMU": 3,
+}
+_ERLDC_REGIONAL_WIDE = {
+    "EveningPeakDemandMetMW": 1,
+    "OffPeakDemandMetMW": 6,
+    "DayEnergyMetMU": 12,
+}
+_ERLDC_STATE_HEADER_TOKENS = {
+    "ThermalGenerationMU": ("thermal",),
+    "HydroGenerationMU": ("hydro",),
+    "TotalGenerationMU": ("total",),
+    "RequirementMU": ("req",),
+    "ConsumptionMU": ("cons",),
+}
+_ERLDC_STATE_COMPACT = {
+    "ThermalGenerationMU": 2,
+    "HydroGenerationMU": 3,
+    "TotalGenerationMU": 4,
+    "RequirementMU": 5,
+    "ConsumptionMU": 6,
+}
+_ERLDC_STATE_WIDE = {
+    "ThermalGenerationMU": 2,
+    "HydroGenerationMU": 3,
+    "TotalGenerationMU": 7,
+    "RequirementMU": 15,
+    "ConsumptionMU": 18,
+}
+_ERLDC_GENERATION_HEADER_TOKENS = {
+    "GrossEnergyMU": ("gross",),
+    "NetEnergyMU": ("net",),
+    "AverageMW": ("avg",),
+}
+_ERLDC_GENERATION_COMPACT = {
+    "GrossEnergyMU": 3,
+    "NetEnergyMU": 4,
+    "AverageMW": 5,
+}
+_ERLDC_GENERATION_WIDE = {
+    "GrossEnergyMU": 7,
+    "NetEnergyMU": 8,
+    "AverageMW": 9,
+}
+_ERLDC_FREQUENCY_COMPACT = {
+    "MaximumFrequencyHz": 1,
+    "MinimumFrequencyHz": 4,
+    "AverageFrequencyHz": 8,
+    "FrequencyVariationIndex": 10,
+    "StandardDeviationHz": 12,
+    "Maximum15MinuteBlockFrequencyHz": 14,
+    "Minimum15MinuteBlockFrequencyHz": 17,
+}
+_ERLDC_FREQUENCY_WIDE = {
+    "MaximumFrequencyHz": 1,
+    "MinimumFrequencyHz": 6,
+    "AverageFrequencyHz": 12,
+    "FrequencyVariationIndex": 16,
+    "StandardDeviationHz": 20,
+    "Maximum15MinuteBlockFrequencyHz": 23,
+    "Minimum15MinuteBlockFrequencyHz": 27,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +312,45 @@ def _lineage(conn: sqlite3.Connection, report: int, table: str, key: str, source
         conn.execute("INSERT OR IGNORE INTO curated_field_lineage(ReportDocumentID, DestinationTable, DestinationKey, DestinationColumn, RawCellID, ExtractionMethod, Confidence, CreatedAt) VALUES (?, ?, ?, ?, ?, 'pdfplumber', 1.0, ?)", (report, table, key, column, raw_id, now))
 
 
+def _quarantine_layout(
+    conn: sqlite3.Connection,
+    report: int,
+    *,
+    section: str,
+    resolution: LayoutResolution,
+    columns: list[int],
+) -> None:
+    """Hold an extract whose layout is ambiguous or outside fixture signatures."""
+
+    logger.warning(
+        "erldc_layout_%s section=%s report_id=%s layout=%s columns=%s",
+        resolution.status,
+        section,
+        report,
+        resolution.layout_id,
+        columns,
+    )
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'promotion_quarantine'"
+    ).fetchone()
+    if not has_table:
+        return
+    record_promotion_quarantine(
+        conn,
+        report_document_id=report,
+        source_id="erldc",
+        stage="layout_resolution",
+        reason_code=resolution.quarantine_reason or "unsupported_layout",
+        details={
+            "section": section,
+            "status": resolution.status,
+            "layout_id": resolution.layout_id,
+            "evidence": resolution.evidence,
+            "columns": columns,
+        },
+    )
+
+
 def _spatial_lineage(
     conn: sqlite3.Connection,
     report: int,
@@ -272,59 +387,46 @@ def _regional(conn: sqlite3.Connection, report: int, date_id: int, region_id: in
     if len(rows) < 4:
         return
     row = rows[3]
-    fields = _flat_regional_fields(rows[:3], row)
-    if fields is None:
-        logger.warning(
-            "Skipping ERLDC flattened regional summary with unrecognized columns: "
-            "report_id=%s columns=%s",
+    resolution = _flat_regional_fields(rows[:3], row)
+    if not resolution.resolved or not resolution.mapping:
+        _quarantine_layout(
+            conn,
             report,
-            sorted(row),
+            section="regional_summary",
+            resolution=resolution,
+            columns=sorted(row),
         )
         return
-    _insert_regional_values(conn, report, date_id, region_id, row, fields)
+    _insert_regional_values(conn, report, date_id, region_id, row, resolution.mapping)
 
 
 def _flat_regional_fields(
     header_rows: list[dict[int, tuple[int, str]]],
     data_row: dict[int, tuple[int, str]],
-) -> dict[str, int] | None:
+) -> LayoutResolution:
     """Resolve regional summary columns without relying on a row's width.
 
-    Some flattened ERLDC extractions preserve decorative cells to the right of
-    the three-value summary.  Those cells must not make a compact summary look
-    like the legacy wide layout.  Published labels are authoritative when
-    present; the two fixture-backed numeric layouts support older extracts
-    whose labels were collapsed into the section heading.
+    Published labels are authoritative when every headline field binds.
+    Otherwise the compact ``1,2,3`` and wide ``1,6,12`` signatures are chosen
+    only by exclusive numeric occupancy. A label-less row that satisfies both
+    is quarantined instead of guessed.
     """
 
-    fields = {
-        "EveningPeakDemandMetMW": ("evening", "peak", "demand", "met"),
-        "OffPeakDemandMetMW": ("off", "peak", "demand", "met"),
-        "DayEnergyMetMU": ("day", "energy", "met"),
-    }
-    resolved: dict[str, int] = {}
-    for row in header_rows:
-        for column, (_, text) in row.items():
-            normalized = _compact_text(text)
-            for field, tokens in fields.items():
-                if all(token in normalized for token in tokens):
-                    resolved[field] = column
-    if len(resolved) == len(fields):
-        return resolved
-
-    compact = {
-        "EveningPeakDemandMetMW": 1,
-        "OffPeakDemandMetMW": 2,
-        "DayEnergyMetMU": 3,
-    }
-    wide = {
-        "EveningPeakDemandMetMW": 1,
-        "OffPeakDemandMetMW": 6,
-        "DayEnergyMetMU": 12,
-    }
-    if all(_number(data_row, column)[0] is not None for column in compact.values()):
-        return compact
-    return wide
+    header = resolve_header_layout(
+        header_rows,
+        _ERLDC_REGIONAL_HEADER_TOKENS,
+        layout_id="header",
+    )
+    if header.resolved:
+        return header
+    return resolve_exclusive_layouts(
+        layouts={"compact": _ERLDC_REGIONAL_COMPACT, "wide": _ERLDC_REGIONAL_WIDE},
+        exclusive_columns={
+            "compact": frozenset({2, 3}),
+            "wide": frozenset({6, 12}),
+        },
+        populated=lambda column: _number(data_row, column)[0] is not None,
+    )
 
 
 def _split_regional(
@@ -389,7 +491,10 @@ def _insert_regional_values(
 
 
 def _states(conn: sqlite3.Connection, report: int, date_id: int) -> None:
-    for row in _rows(conn, report, 1):
+    rows = _rows(conn, report, 1)
+    header = resolve_header_layout(rows, _ERLDC_STATE_HEADER_TOKENS, layout_id="header")
+    quarantined = False
+    for row in rows:
         label = row.get(1, (0, ""))[1].replace(" ", "").upper()
         state_name = _STATE_ALIASES.get(label)
         if not state_name:
@@ -397,16 +502,42 @@ def _states(conn: sqlite3.Connection, report: int, date_id: int) -> None:
         state = conn.execute("SELECT StateID FROM DimStates WHERE StateName = ?", (state_name,)).fetchone()
         if not state:
             continue
+        if header.resolved and header.mapping:
+            columns = header.mapping
+        else:
+            resolution = resolve_exclusive_layouts(
+                layouts={"compact": _ERLDC_STATE_COMPACT, "wide": _ERLDC_STATE_WIDE},
+                exclusive_columns={
+                    "compact": frozenset({4, 5, 6}),
+                    "wide": frozenset({7, 15, 18}),
+                },
+                populated=lambda column, current=row: _number(current, column)[0] is not None,
+                default_layout_id="compact",
+            )
+            if not resolution.resolved or not resolution.mapping:
+                if not quarantined:
+                    _quarantine_layout(
+                        conn,
+                        report,
+                        section="state_energy",
+                        resolution=resolution,
+                        columns=sorted(row),
+                    )
+                    quarantined = True
+                continue
+            columns = resolution.mapping
         values, sources = {}, {}
-        columns = ({"ThermalGenerationMU": 2, "HydroGenerationMU": 3, "TotalGenerationMU": 4, "RequirementMU": 5, "ConsumptionMU": 6}
-                   if max(row, default=0) <= 6 else {"ThermalGenerationMU": 2, "HydroGenerationMU": 3, "TotalGenerationMU": 7, "RequirementMU": 15, "ConsumptionMU": 18})
         for name, col in columns.items():
             value, raw = _number(row, col)
             if value is not None: values[name] = value
             if raw: sources[name] = raw
         if not values: continue
-        columns = ", ".join(values)
-        conn.execute(f"INSERT OR REPLACE INTO FactERLDCStateDaily(ReportDocumentID, DateID, StateID, {columns}) VALUES (?, ?, ?, {', '.join('?' for _ in values)})", (report, date_id, state[0], *values.values()))
+        names = ", ".join(values)
+        conn.execute(
+            f"INSERT OR REPLACE INTO FactERLDCStateDaily(ReportDocumentID, DateID, StateID, {names}) "
+            f"VALUES (?, ?, ?, {', '.join('?' for _ in values)})",
+            (report, date_id, state[0], *values.values()),
+        )
         _lineage(conn, report, "FactERLDCStateDaily", f"report={report};date={date_id};state={state[0]}", sources)
 
 
@@ -1053,7 +1184,20 @@ def _compact_text(value: str) -> str:
 
 
 def _generation(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:
-    for row in _rows(conn, report, 2):
+    rows = _rows(conn, report, 2)
+    header = resolve_header_layout(rows, _ERLDC_GENERATION_HEADER_TOKENS, layout_id="header")
+    if not header.resolved:
+        header = resolve_header_layout(
+            rows,
+            {
+                "GrossEnergyMU": ("gross",),
+                "NetEnergyMU": ("net",),
+                "AverageMW": ("average",),
+            },
+            layout_id="header",
+        )
+    quarantined = False
+    for row in rows:
         label = row.get(1, (0, ""))[1].strip()
         capacity, cap_raw = _number(row, 2)
         if not label or capacity is None or label.lower().startswith(("station", "total", "sub-total")):
@@ -1068,14 +1212,37 @@ def _generation(conn: sqlite3.Connection, report: int, date_id: int, region_id: 
             conn.execute("INSERT OR IGNORE INTO DimGridEntities(EntityName, EntityType, StateID, RegionID) VALUES (?, 'power_station', ?, ?)", (label, state_id, region_id))
             entity = conn.execute("SELECT EntityID FROM DimGridEntities WHERE EntityName = ?", (label,)).fetchone()
         if not entity: continue
+        if header.resolved and header.mapping:
+            columns = header.mapping
+        else:
+            resolution = resolve_exclusive_layouts(
+                layouts={"compact": _ERLDC_GENERATION_COMPACT, "wide": _ERLDC_GENERATION_WIDE},
+                exclusive_columns={
+                    "compact": frozenset({3, 4, 5}),
+                    "wide": frozenset({7, 8, 9}),
+                },
+                populated=lambda column, current=row: _number(current, column)[0] is not None,
+                default_layout_id="compact",
+            )
+            if not resolution.resolved or not resolution.mapping:
+                if not quarantined:
+                    _quarantine_layout(
+                        conn,
+                        report,
+                        section="legacy_generation",
+                        resolution=resolution,
+                        columns=sorted(row),
+                    )
+                    quarantined = True
+                continue
+            columns = resolution.mapping
         values, sources = {"InstalledCapacityMW": capacity}, {"InstalledCapacityMW": cap_raw}
-        columns = {"GrossEnergyMU": 3, "NetEnergyMU": 4, "AverageMW": 5} if max(row, default=0) <= 5 else {"GrossEnergyMU": 7, "NetEnergyMU": 8, "AverageMW": 9}
         for name, col in columns.items():
             value, raw = _number(row, col)
             if value is not None: values[name] = value
             if raw: sources[name] = raw
-        columns = ", ".join(values)
-        conn.execute(f"INSERT OR REPLACE INTO FactERLDCGenerationDaily(ReportDocumentID, DateID, EntityID, AggregateID, SectionName, {columns}) VALUES (?, ?, ?, ?, 'state_generation', {', '.join('?' for _ in values)})", (report, date_id, entity[0], entity[0], *values.values()))
+        names = ", ".join(values)
+        conn.execute(f"INSERT OR REPLACE INTO FactERLDCGenerationDaily(ReportDocumentID, DateID, EntityID, AggregateID, SectionName, {names}) VALUES (?, ?, ?, ?, 'state_generation', {', '.join('?' for _ in values)})", (report, date_id, entity[0], entity[0], *values.values()))
         _lineage(conn, report, "FactERLDCGenerationDaily", f"report={report};date={date_id};entity={entity[0]};section=state_generation", sources)
 
 
@@ -1563,10 +1730,29 @@ def _frequency(conn: sqlite3.Connection, report: int, date_id: int, region_id: i
     for row in rows:
         if not (45.0 <= (_number(row, 1)[0] or 0) <= 55.0):
             continue
-        wide = max(row, default=0) > 20
-        columns = ({"MaximumFrequencyHz": 1, "MinimumFrequencyHz": 6, "AverageFrequencyHz": 12, "FrequencyVariationIndex": 16, "StandardDeviationHz": 20, "Maximum15MinuteBlockFrequencyHz": 23, "Minimum15MinuteBlockFrequencyHz": 27} if wide else {"MaximumFrequencyHz": 1, "MinimumFrequencyHz": 4, "AverageFrequencyHz": 8, "FrequencyVariationIndex": 10, "StandardDeviationHz": 12, "Maximum15MinuteBlockFrequencyHz": 14, "Minimum15MinuteBlockFrequencyHz": 17})
+        resolution = resolve_exclusive_layouts(
+            layouts={"compact": _ERLDC_FREQUENCY_COMPACT, "wide": _ERLDC_FREQUENCY_WIDE},
+            exclusive_columns={
+                "compact": frozenset({4}),
+                "wide": frozenset({6, 23, 27}),
+            },
+            populated=lambda column, current=row: (
+                _is_frequency(_number(current, column)[0])
+                if column in {4, 6}
+                else _number(current, column)[0] is not None
+            ),
+        )
+        if not resolution.resolved or not resolution.mapping:
+            _quarantine_layout(
+                conn,
+                report,
+                section="frequency",
+                resolution=resolution,
+                columns=sorted(row),
+            )
+            return
         values, sources = {}, {}
-        for name, col in columns.items():
+        for name, col in resolution.mapping.items():
             value, raw = _number(row, col)
             if value is not None: values[name] = value
             if raw: sources[name] = raw

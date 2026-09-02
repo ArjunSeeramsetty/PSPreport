@@ -337,3 +337,55 @@ def test_malformed_dsm_pair_still_promotes_clean_energy_columns() -> None:
         """
     ).fetchone()
     assert row == (50.0, -1.0, None)
+
+
+def test_dsm_rejects_blank_required_energy_and_invalid_numeric_text() -> None:
+    """Partial or garbage energy cells do not promote a truncated DSM fact."""
+
+    table = _table(
+        ("Entity", "Scheduled Energy (MU)", "Actual Energy (MU)", "Deviation (MU)", "DSM Charges (Rs)"),
+        ("Bihar", "", "118.0", "-2.5", "145000"),
+        ("Odisha", "80.0", "not-a-number", "2.1", "1000"),
+        ("Jharkhand", "50.0", "49.0", "-1.0", "2500"),
+        ("Entity", "Scheduled Energy (MU)", "Actual Energy (MU)", "Deviation (MU)", "DSM Charges (Rs)"),
+    )
+    parsed = parse_weekly_dsm_tables((table,))
+    assert parsed.contract_matched is True
+    assert [row.entity_name for row in parsed.entity_rows] == ["Jharkhand"]
+    assert parsed.rejected_row_count == 3
+    assert parsed.rejected_reasons["missing_required_energy"] == 1
+    assert parsed.rejected_reasons["invalid_numeric"] == 1
+    assert parsed.rejected_reasons["repeated_header"] == 1
+
+
+def test_rea_rejects_incomplete_station_row_and_decorative_legacy_width() -> None:
+    """Station rows need capacity, PAFM, and deemed generation; 10-col legacy is refused."""
+
+    station = _table(
+        (
+            "Generating Station",
+            "Installed Capacity (MW)",
+            "PAFM (%)",
+            "Scheduled Generation (MU)",
+            "Deemed Generation (MU)",
+        ),
+        ("Kahalgaon STPS", "2340", "92.5", "140.0", "142.2"),
+        ("Farakka", "2100", "", "11.0", "12.0"),
+        ("Station", "Installed Capacity (MW)", "PAFM (%)", "Scheduled Generation (MU)", "Deemed Generation (MU)"),
+    )
+    parsed = parse_monthly_rea_tables((station,))
+    assert parsed.contract_matched is True
+    assert [row.station_name for row in parsed.station_rows] == ["Kahalgaon STPS"]
+    assert parsed.rejected_row_count == 2
+    assert parsed.rejected_reasons["missing_required_station_measures"] == 1
+    assert parsed.rejected_reasons["repeated_header"] == 1
+
+    legacy = _table(
+        ("Station", "IC", "PAF", "Deemed", "Schedule", "Aux", "Share", "Capacity", "Energy", "Note"),
+        ("Farakka", "2100", "85", "12", "11", "1", "3", "400", "8", "x"),
+        page_no=2,
+    )
+    refused = parse_monthly_rea_tables((legacy,))
+    assert refused.contract_matched is False
+    assert refused.unsupported_family == "rpc_monthly_rea_v2010_9_column_matrix"
+    assert refused.station_rows == ()

@@ -137,6 +137,8 @@ class ReaParseResult:
     contract_matched: bool
     unsupported_family: str | None
     reasons: tuple[str, ...]
+    rejected_row_count: int = 0
+    rejected_reasons: dict[str, int] | None = None
 
 
 def parse_monthly_rea_tables(tables: tuple[ExtractedTable, ...]) -> ReaParseResult:
@@ -151,6 +153,7 @@ def parse_monthly_rea_tables(tables: tuple[ExtractedTable, ...]) -> ReaParseResu
     skipped_fields: list[str] = []
     skipped_reasons: dict[str, str] = {}
     reasons: list[str] = []
+    rejected_reasons: dict[str, int] = {}
     unsupported: str | None = None
     for table in tables:
         if _is_legacy_nine_column_matrix(table):
@@ -161,13 +164,17 @@ def parse_monthly_rea_tables(tables: tuple[ExtractedTable, ...]) -> ReaParseResu
         if station_binding and station_binding.contract_matched:
             skipped_fields.extend(station_binding.skipped_fields)
             skipped_reasons.update(station_binding.skipped_reasons)
-            station_rows.extend(_station_rows(table, station_binding))
+            rows, rejections = _station_rows(table, station_binding)
+            station_rows.extend(rows)
+            _merge_rejection_counts(rejected_reasons, rejections)
             continue
         allocation_binding = _best_binding(table, REA_ALLOCATION_FIELDS)
         if allocation_binding and _allocation_contract_matched(allocation_binding):
             skipped_fields.extend(allocation_binding.skipped_fields)
             skipped_reasons.update(allocation_binding.skipped_reasons)
-            allocation_rows.extend(_allocation_rows(table, allocation_binding))
+            rows, rejections = _allocation_rows(table, allocation_binding)
+            allocation_rows.extend(rows)
+            _merge_rejection_counts(rejected_reasons, rejections)
     matched = bool(station_rows or allocation_rows) and unsupported is None
     return ReaParseResult(
         station_rows=tuple(station_rows),
@@ -177,6 +184,8 @@ def parse_monthly_rea_tables(tables: tuple[ExtractedTable, ...]) -> ReaParseResu
         contract_matched=matched,
         unsupported_family=unsupported,
         reasons=tuple(dict.fromkeys(reasons)),
+        rejected_row_count=sum(rejected_reasons.values()),
+        rejected_reasons=rejected_reasons,
     )
 
 
@@ -205,23 +214,41 @@ def _allocation_contract_matched(binding: ColumnBinding) -> bool:
     return bool(measures.intersection(binding.columns))
 
 
-def _station_rows(table: ExtractedTable, binding: ColumnBinding) -> list[ReaStationRow]:
-    """Materialize ISGS station rows after the located PAFM header."""
+def _station_rows(
+    table: ExtractedTable, binding: ColumnBinding
+) -> tuple[list[ReaStationRow], dict[str, int]]:
+    """Materialize ISGS station rows after the located PAFM header.
+
+    Installed capacity, PAFM, and deemed generation must all parse or the row
+    is rejected rather than promoted as a partial settlement fact.
+    """
 
     header_index = locate_header_row(table.rows, REA_STATION_FIELDS)
     if header_index is None:
-        return []
+        return [], {}
     label_column = binding.columns["station"]
     rows: list[ReaStationRow] = []
+    rejections: dict[str, int] = {}
+    required = ("InstalledCapacityMW", "PAFMPct", "DeemedGenerationMU")
     for offset, raw in enumerate(table.rows[header_index + 1 :], start=header_index + 2):
         cells = header_cells(raw)
         label = cells.get(label_column, "").strip()
-        if _is_total_or_header(label):
+        if _is_repeated_header(label):
+            _bump_rejection(rejections, "repeated_header")
             continue
-        values, sources = _numeric_values(
-            cells, binding, table.page_no, table.table_no, offset, {"station"}
+        if _is_total_row(label):
+            continue
+        values, sources, reason = _numeric_values(
+            cells,
+            binding,
+            table.page_no,
+            table.table_no,
+            offset,
+            {"station"},
+            required_fields=required,
         )
-        if not values:
+        if reason:
+            _bump_rejection(rejections, reason)
             continue
         rows.append(
             ReaStationRow(
@@ -233,43 +260,49 @@ def _station_rows(table: ExtractedTable, binding: ColumnBinding) -> list[ReaStat
                 row_no=offset,
             )
         )
-    return rows
+    return rows, rejections
 
 
 def _allocation_rows(
     table: ExtractedTable, binding: ColumnBinding
-) -> list[ReaAllocationRow]:
+) -> tuple[list[ReaAllocationRow], dict[str, int]]:
     """Expand peak and off-peak capacity columns into windowed allocation rows."""
 
     header_index = locate_header_row(table.rows, REA_ALLOCATION_FIELDS)
     if header_index is None:
-        return []
+        return [], {}
     beneficiary_column = binding.columns["beneficiary"]
     station_column = binding.columns["station"]
     window_column = binding.columns.get("AllocationWindow")
     rows: list[ReaAllocationRow] = []
+    rejections: dict[str, int] = {}
     for offset, raw in enumerate(table.rows[header_index + 1 :], start=header_index + 2):
         cells = header_cells(raw)
         beneficiary = cells.get(beneficiary_column, "").strip()
         station = cells.get(station_column, "").strip()
-        if _is_total_or_header(beneficiary) or not station:
+        if _is_repeated_header(beneficiary):
+            _bump_rejection(rejections, "repeated_header")
+            continue
+        if _is_total_row(beneficiary) or not station:
             continue
         explicit_window = (
             _normalize_window(cells.get(window_column, "")) if window_column else None
         )
-        rows.extend(
-            _windowed_allocations(
-                beneficiary=beneficiary,
-                station=station,
-                explicit_window=explicit_window,
-                cells=cells,
-                binding=binding,
-                page_no=table.page_no,
-                table_no=table.table_no,
-                row_no=offset,
-            )
+        emitted, reason = _windowed_allocations(
+            beneficiary=beneficiary,
+            station=station,
+            explicit_window=explicit_window,
+            cells=cells,
+            binding=binding,
+            page_no=table.page_no,
+            table_no=table.table_no,
+            row_no=offset,
         )
-    return rows
+        if reason:
+            _bump_rejection(rejections, reason)
+            continue
+        rows.extend(emitted)
+    return rows, rejections
 
 
 def _windowed_allocations(
@@ -282,13 +315,19 @@ def _windowed_allocations(
     page_no: int,
     table_no: int,
     row_no: int,
-) -> list[ReaAllocationRow]:
+) -> tuple[list[ReaAllocationRow], str | None]:
     """Emit one allocation row per peak/off-peak window present on the source row."""
 
     windows: list[tuple[str, dict[str, float], dict[str, tuple[int, int, int, int]]]] = []
-    peak = _optional_number(cells, binding.columns.get("PeakCapacityMW"))
-    off_peak = _optional_number(cells, binding.columns.get("OffPeakCapacityMW"))
-    energy = _optional_number(cells, binding.columns.get("AllocatedEnergyMU"))
+    peak, peak_invalid = _optional_number_status(cells, binding.columns.get("PeakCapacityMW"))
+    off_peak, off_invalid = _optional_number_status(
+        cells, binding.columns.get("OffPeakCapacityMW")
+    )
+    energy, energy_invalid = _optional_number_status(
+        cells, binding.columns.get("AllocatedEnergyMU")
+    )
+    if peak_invalid or off_invalid or energy_invalid:
+        return [], "invalid_numeric"
     peak_col = binding.columns.get("PeakCapacityMW")
     off_peak_col = binding.columns.get("OffPeakCapacityMW")
     energy_col = binding.columns.get("AllocatedEnergyMU")
@@ -330,7 +369,7 @@ def _windowed_allocations(
                     {"AllocatedEnergyMU": energy_source},
                 )
             )
-    return [
+    emitted = [
         ReaAllocationRow(
             beneficiary_name=re.sub(r"\s+", " ", beneficiary),
             station_name=re.sub(r"\s+", " ", station),
@@ -344,6 +383,9 @@ def _windowed_allocations(
         for window, values, sources in windows
         if values
     ]
+    if not emitted:
+        return [], "missing_allocation_measure"
+    return emitted, None
 
 
 def _numeric_values(
@@ -353,54 +395,106 @@ def _numeric_values(
     table_no: int,
     row_no: int,
     label_fields: set[str],
-) -> tuple[dict[str, float], dict[str, tuple[int, int, int, int]]]:
-    """Parse bound numeric columns, ignoring label fields and blanks."""
+    *,
+    required_fields: tuple[str, ...] = (),
+) -> tuple[dict[str, float], dict[str, tuple[int, int, int, int]], str | None]:
+    """Parse bound numeric columns and enforce required station measures."""
 
     values: dict[str, float] = {}
     sources: dict[str, tuple[int, int, int, int]] = {}
     for field_name, column in binding.columns.items():
         if field_name in label_fields:
             continue
-        number = _parse_number(cells.get(column, ""))
+        number, invalid = _parse_number_status(cells.get(column, ""))
+        if invalid:
+            return {}, {}, "invalid_numeric"
         if number is None:
             continue
         values[field_name] = number
         sources[field_name] = (page_no, table_no, row_no, column)
-    return values, sources
+    if any(name not in values for name in required_fields):
+        return {}, {}, "missing_required_station_measures"
+    if not values:
+        return {}, {}, "missing_required_station_measures"
+    return values, sources, None
 
 
 def _optional_number(cells: dict[int, str], column: int | None) -> float | None:
     """Return a numeric value when the column exists and parses."""
 
+    number, _invalid = _optional_number_status(cells, column)
+    return number
+
+
+def _optional_number_status(
+    cells: dict[int, str], column: int | None
+) -> tuple[float | None, bool]:
+    """Return ``(value, invalid)`` for one optional allocation measure."""
+
     if column is None:
-        return None
-    return _parse_number(cells.get(column, ""))
+        return None, False
+    return _parse_number_status(cells.get(column, ""))
 
 
 def _parse_number(text: str) -> float | None:
     """Parse a signed numeric cell, including Indian comma grouping."""
 
+    number, _invalid = _parse_number_status(text)
+    return number
+
+
+def _parse_number_status(text: str) -> tuple[float | None, bool]:
+    """Return ``(value, invalid)`` distinguishing blanks from garbage text."""
+
     compact = text.replace(",", "").replace("%", "").strip()
     if not compact or compact in {"-", "--", "NA", "N/A", "nil"}:
-        return None
+        return None, False
     try:
-        return float(compact)
+        return float(compact), False
     except ValueError:
-        return None
+        return None, True
 
 
-def _is_total_or_header(label: str) -> bool:
-    """Skip control totals and repeated header rows."""
+def _is_repeated_header(label: str) -> bool:
+    """Return whether a data-row label is a repeated table heading."""
 
     token = normalize_header_token(label)
-    return not token or token.startswith("total") or token in {
+    return token in {
         "station",
         "beneficiary",
         "constituent",
         "utility",
         "state",
         "isgs",
+        "generatingstation",
+        "powerstation",
     }
+
+
+def _is_total_row(label: str) -> bool:
+    """Skip control-total rows that are not ISGS stations or beneficiaries."""
+
+    token = normalize_header_token(label)
+    return not token or token.startswith("total")
+
+
+def _is_total_or_header(label: str) -> bool:
+    """Skip control totals and repeated header rows."""
+
+    return _is_total_row(label) or _is_repeated_header(label)
+
+
+def _bump_rejection(counts: dict[str, int], reason: str) -> None:
+    """Increment one row-level rejection reason."""
+
+    counts[reason] = counts.get(reason, 0) + 1
+
+
+def _merge_rejection_counts(target: dict[str, int], incoming: dict[str, int]) -> None:
+    """Merge per-table rejection counts into the parse result."""
+
+    for reason, count in incoming.items():
+        target[reason] = target.get(reason, 0) + count
 
 
 def _normalize_window(value: str) -> str:
@@ -422,7 +516,7 @@ def _is_legacy_nine_column_matrix(table: ExtractedTable) -> bool:
     if not table.rows:
         return False
     width = max(len(row) for row in table.rows)
-    if width != 9:
+    if width not in {9, 10}:
         return False
     tokens = {
         normalize_header_token(cell)
