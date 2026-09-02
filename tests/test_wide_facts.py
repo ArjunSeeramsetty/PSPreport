@@ -8,6 +8,7 @@ from uuid import uuid5, NAMESPACE_URL
 from psp_pipeline.models.contracts import FactObservation
 from psp_pipeline.storage.postgres_repo import PostgresRepository
 from psp_pipeline.storage.wide_facts import (
+    WideFactGrainConflictError,
     WideFactMirrorMismatchError,
     WideFactRow,
     build_wide_grain_key,
@@ -181,3 +182,82 @@ def test_wide_fact_mirror_fails_closed_on_metric_divergence() -> None:
         assert row.grain_key in exc.result["mismatched_grain_keys"]
     else:
         raise AssertionError("expected WideFactMirrorMismatchError")
+
+
+def test_wide_fact_mirror_ignores_current_grains_outside_the_export_slice() -> None:
+    """Date-scoped publish must not treat other current days as unexpected."""
+
+    exported = export_wide_facts([_observation()])[0]
+    other = export_wide_facts(
+        [
+            _observation(
+                valid_from=datetime(2026, 4, 30, tzinfo=timezone.utc),
+                destination_key="report=1;date=2;region=1",
+            )
+        ]
+    )[0]
+
+    class Repository:
+        def fetch_current_wide_facts(
+            self,
+            grain_keys: list[str] | None = None,
+        ) -> list[dict[str, object]]:
+            assert grain_keys == [exported.grain_key]
+            return [
+                {
+                    "grain_key": exported.grain_key,
+                    "wide_fact_key": exported.wide_fact_key,
+                    "destination_table": exported.destination_table,
+                    "entity_key": exported.entity_key,
+                    "canonical_entity_id": exported.canonical_entity_id,
+                    "metrics": dict(exported.metrics),
+                },
+                {
+                    "grain_key": other.grain_key,
+                    "wide_fact_key": other.wide_fact_key,
+                    "destination_table": other.destination_table,
+                    "entity_key": other.entity_key,
+                    "canonical_entity_id": other.canonical_entity_id,
+                    "metrics": dict(other.metrics),
+                },
+            ]
+
+    result = verify_exported_wide_fact_mirror([exported], Repository())
+    assert result["is_match"] is True
+    assert result["exported_count"] == 1
+    assert result["current_count"] == 1
+    assert other.grain_key in result["unexpected_grain_keys"]
+
+
+def test_export_wide_facts_selects_latest_report_per_grain() -> None:
+    """Two corrected reports in one batch keep the higher document identity."""
+
+    original = _observation(report_document_id=1, content_hash="hash-a", operational_value=950.0)
+    correction = _observation(
+        report_document_id=2,
+        content_hash="hash-b",
+        operational_value=951.0,
+        version_no=2,
+        ingested_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+    )
+
+    rows = export_wide_facts([original, correction])
+
+    assert len(rows) == 1
+    assert rows[0].report_document_id == 2
+    assert rows[0].content_hash == "hash-b"
+    assert rows[0].metrics == {"DayEnergyMetMU": 951.0}
+
+
+def test_export_wide_facts_rejects_same_rank_metric_conflicts() -> None:
+    """Same-rank versions that disagree on a measure fail closed."""
+
+    first = _observation(report_document_id=4, content_hash="hash-a", operational_value=950.0)
+    conflict = _observation(report_document_id=4, content_hash="hash-b", operational_value=960.0)
+
+    try:
+        export_wide_facts([first, conflict])
+    except WideFactGrainConflictError as exc:
+        assert "same-rank" in str(exc)
+    else:
+        raise AssertionError("expected WideFactGrainConflictError")
