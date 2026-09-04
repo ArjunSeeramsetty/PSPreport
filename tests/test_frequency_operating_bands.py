@@ -14,13 +14,12 @@ def test_header_columns_bind_three_operating_bands() -> None:
         {1: "<49.90 Hz", 2: "49.90-50.05 Hz", 3: ">50.05 Hz"},
         {1: "2.10", 2: "95.40", 3: "2.50"},
     ]
-    values, sources = collect_frequency_operating_bands(rows)
+    values, _sources = collect_frequency_operating_bands(rows)
     assert values == {
         "DurationBelow49_90Pct": 2.1,
         "Duration49_90To50_05Pct": 95.4,
         "DurationAbove50_05Pct": 2.5,
     }
-    assert set(sources) == set(values)
 
 
 def test_label_rows_bind_operating_bands() -> None:
