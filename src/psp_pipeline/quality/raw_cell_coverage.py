@@ -186,6 +186,8 @@ def generate_raw_cell_coverage_report(
             "unresolved_cell_count": totals["unresolved"],
             "accounted_cell_count": accounted_count,
             "accounted_cell_pct": _pct(accounted_count, raw_cell_count),
+            "lineage_rate_pct": _pct(totals["mapped"], raw_cell_count),
+            "null_rate_pct": _pct(totals["unresolved"], raw_cell_count),
             "lineage_cell_count": len(mapped_ids),
             "templates": [
                 {
@@ -198,6 +200,8 @@ def generate_raw_cell_coverage_report(
                     "accounted_cell_pct": _pct(
                         sum(counts.values()) - counts["unresolved"], sum(counts.values())
                     ),
+                    "lineage_rate_pct": _pct(counts["mapped"], sum(counts.values())),
+                    "null_rate_pct": _pct(counts["unresolved"], sum(counts.values())),
                 }
                 for (source, template_id), counts in sorted(templates.items())
             ],
@@ -215,6 +219,7 @@ def generate_raw_cell_coverage_report(
                     unresolved.items(), key=lambda item: (-len(item[1]), item[0])
                 )
             ],
+            "tables": _destination_table_coverage(conn, report_ids, rldc),
         }
         if output_path is not None:
             destination = Path(output_path)
@@ -231,6 +236,55 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
     ).fetchone() is not None
+
+
+def _destination_table_coverage(
+    conn: sqlite3.Connection,
+    report_ids: list[int],
+    rldc: str | None,
+) -> list[dict[str, Any]]:
+    """Summarize lineage completeness per curated destination table."""
+
+    if not report_ids or not _table_exists(conn, "curated_field_lineage"):
+        return []
+    placeholders = ",".join("?" for _ in report_ids)
+    params: list[object] = list(report_ids)
+    rldc_clause = ""
+    if rldc is not None:
+        rldc_clause = " AND document.rldc = ?"
+        params.append(rldc)
+    rows = conn.execute(
+        f"""
+        SELECT document.rldc, lineage.DestinationTable,
+               COUNT(*) AS lineage_count,
+               SUM(CASE WHEN lineage.RawCellID IS NOT NULL THEN 1 ELSE 0 END)
+                 AS mapped_count
+        FROM curated_field_lineage AS lineage
+        JOIN psp_report_document AS document
+          ON document.id = lineage.ReportDocumentID
+        WHERE lineage.ReportDocumentID IN ({placeholders}){rldc_clause}
+        GROUP BY document.rldc, lineage.DestinationTable
+        ORDER BY document.rldc, lineage.DestinationTable
+        """,
+        params,
+    ).fetchall()
+    summaries = []
+    for source, table_name, lineage_count, mapped_count in rows:
+        mapped = int(mapped_count or 0)
+        total = int(lineage_count or 0)
+        missing = total - mapped
+        summaries.append(
+            {
+                "rldc": str(source),
+                "destination_table": str(table_name),
+                "lineage_row_count": total,
+                "mapped_cell_count": mapped,
+                "accounted_cell_pct": _pct(mapped, total),
+                "lineage_rate_pct": _pct(mapped, total),
+                "null_rate_pct": _pct(missing, total),
+            }
+        )
+    return summaries
 
 
 def _mapped_raw_cell_ids(conn: sqlite3.Connection, report_ids: list[int]) -> set[int]:

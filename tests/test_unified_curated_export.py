@@ -13,6 +13,7 @@ from uuid import UUID
 import pytest
 
 from psp_pipeline.storage.sqlite_curated_export import (
+    CuratedSourceExportError,
     export_all_daily_observations,
     export_registered_daily_observations,
 )
@@ -163,6 +164,50 @@ def test_export_all_daily_observations_uses_registry_engine(
     )
 
     assert calls == ["srldc", "nerldc"]
+
+
+def test_export_all_daily_observations_fails_closed_when_a_source_exporter_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    multi_rldc_curated_conn: sqlite3.Connection,
+) -> None:
+    """A required source export error is quarantined instead of silently skipped."""
+
+    original = export_registered_daily_observations
+
+    def boom(conn, rldc, report_document_id=None, ingested_at=None):
+        if rldc == "nerldc":
+            raise RuntimeError("nerldc exporter exploded")
+        return original(
+            conn,
+            rldc,
+            report_document_id=report_document_id,
+            ingested_at=ingested_at,
+        )
+
+    monkeypatch.setattr(
+        "psp_pipeline.storage.sqlite_curated_export.export_registered_daily_observations",
+        boom,
+    )
+
+    try:
+        export_all_daily_observations(
+            multi_rldc_curated_conn,
+            rldcs=["srldc", "nerldc"],
+        )
+    except CuratedSourceExportError as exc:
+        assert "nerldc" in exc.failures
+        assert "srldc" not in exc.failures
+        assert exc.observations
+    else:
+        raise AssertionError("expected CuratedSourceExportError")
+
+    hold = multi_rldc_curated_conn.execute(
+        """
+        SELECT SourceID, Stage, ReasonCode FROM promotion_quarantine
+        WHERE ReasonCode = 'source_export_failed'
+        """
+    ).fetchone()
+    assert hold == ("nerldc", "curated_export", "source_export_failed")
 
 
 def test_export_curated_observations_cli(tmp_path: Path, multi_rldc_curated_conn: sqlite3.Connection) -> None:

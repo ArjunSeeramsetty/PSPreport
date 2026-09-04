@@ -275,18 +275,16 @@ def _nldc_comparison_status(
     sources_present: tuple[str, ...],
     headline_measure_sources_missing: dict[str, tuple[str, ...]],
 ) -> str:
-    """Describe whether an NLDC comparison covers every required RLDC.
+    """Describe whether an NLDC comparison covers every published aggregate.
 
-    A partial regional sum remains useful for diagnostics, but it must never be
-    presented as a complete all-India reconciliation. Callers can use the
-    existing ``sources_missing`` field to identify the absent source reports.
+    Completeness depends on source presence and on every published comparison
+    measure having a non-null value for each present source. Fuel generation is
+    diagnostic and is intentionally not a completeness gate.
     """
 
     if nldc_row is None:
         return "nldc_not_available"
-    if headline_measure_sources_missing["evening_peak_demand_met_mw"] or (
-        headline_measure_sources_missing["day_energy_met_mu"]
-    ):
+    if any(headline_measure_sources_missing.values()):
         return "incomplete_measure_coverage"
     if len(sources_present) == len(_REGIONAL_FACT_TABLES):
         return "complete"

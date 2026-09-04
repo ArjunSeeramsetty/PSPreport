@@ -16,6 +16,39 @@
         "srpc": 100.0,
         "wrpc": 100.0,
         "nerpc": 100.0
+      },
+      "lineage_rate_floors": {
+        "srldc": 100.0,
+        "nrldc": 100.0,
+        "wrldc": 100.0,
+        "erldc": 100.0,
+        "nerldc": 100.0,
+        "grid_india_national": 100.0,
+        "erpc": 100.0,
+        "nrpc": 100.0,
+        "srpc": 100.0,
+        "wrpc": 100.0,
+        "nerpc": 100.0
+      },
+      "null_rate_ceilings": {
+        "srldc": 0.0,
+        "nrldc": 0.0,
+        "wrldc": 0.0,
+        "erldc": 0.0,
+        "nerldc": 0.0,
+        "grid_india_national": 0.0,
+        "erpc": 0.0,
+        "nrpc": 0.0,
+        "srpc": 0.0,
+        "wrpc": 0.0,
+        "nerpc": 0.0
+      },
+      "template_floors": {
+        "srldc/synthetic": {
+          "accounted_cell_pct": 100.0,
+          "lineage_rate_pct": 100.0,
+          "null_rate_pct_max": 0.0
+        }
       }
     },
     "corpus": {

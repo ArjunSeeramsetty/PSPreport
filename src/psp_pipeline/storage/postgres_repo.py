@@ -290,13 +290,23 @@ class PostgresRepository:
             conn.commit()
         return inserted
 
-    def fetch_current_wide_facts(self) -> list[dict[str, object]]:
-        """Return current wide-fact grains for mirror verification."""
+    def fetch_current_wide_facts(
+        self,
+        grain_keys: Iterable[str] | None = None,
+    ) -> list[dict[str, object]]:
+        """Return current wide-fact grains for mirror verification.
 
+        Pass ``grain_keys`` to compare one publish slice without treating
+        other dates already current in Postgres as unexpected extras.
+        An empty key list returns no rows.
+        """
+
+        keys = None if grain_keys is None else [str(key) for key in grain_keys]
+        if keys is not None and not keys:
+            return []
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                query = """
                     SELECT
                         fact.grain_key,
                         fact.wide_fact_key,
@@ -308,7 +318,10 @@ class PostgresRepository:
                     JOIN fact_wide_daily_current AS current_truth
                       ON current_truth.wide_fact_key = fact.wide_fact_key
                     """
-                )
+                if keys is None:
+                    cur.execute(query)
+                else:
+                    cur.execute(query + " WHERE fact.grain_key = ANY(%s)", (keys,))
                 rows = cur.fetchall()
         return [
             {

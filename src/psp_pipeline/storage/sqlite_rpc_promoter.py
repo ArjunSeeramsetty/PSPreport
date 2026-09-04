@@ -82,22 +82,52 @@ def promote_rpc_report_to_curated(conn: sqlite3.Connection, report_id: int) -> N
             _quarantine_unsupported(conn, report_id, source_id, result.unsupported_family)
             return
         if not result.contract_matched:
-            _quarantine_contract_mismatch(conn, report_id, source_id, result.reasons)
+            _quarantine_contract_mismatch(
+            conn,
+            report_id,
+            source_id,
+            result.reasons,
+            rejected_row_count=result.rejected_row_count,
+            rejected_reasons=result.rejected_reasons,
+        )
             return
         period_month = classified.period_month or str(report[1] or "")[:7]
         _promote_rea(conn, report_id, date_id, region_id, source_id, result, period_month)
-        _record_skipped_coverage(conn, report_id, template_id, result.skipped_fields, result.skipped_reasons)
+        _record_skipped_coverage(
+        conn,
+        report_id,
+        template_id,
+        result.skipped_fields,
+        result.skipped_reasons,
+        rejected_row_count=result.rejected_row_count,
+        rejected_reasons=result.rejected_reasons,
+    )
         return
     result = parse_weekly_dsm_tables(tables)
     if "unsupported_ui_era_dsm" in result.reasons:
         _quarantine_unsupported(conn, report_id, source_id, "rpc_weekly_dsm_v2014_ui_charges")
         return
     if not result.contract_matched:
-        _quarantine_contract_mismatch(conn, report_id, source_id, result.reasons)
+        _quarantine_contract_mismatch(
+            conn,
+            report_id,
+            source_id,
+            result.reasons,
+            rejected_row_count=result.rejected_row_count,
+            rejected_reasons=result.rejected_reasons,
+        )
         return
     week_end = (classified.week_end.isoformat() if classified.week_end else _week_end(str(report[1] or "")))
     _promote_dsm(conn, report_id, date_id, region_id, source_id, result, week_end)
-    _record_skipped_coverage(conn, report_id, template_id, result.skipped_fields, result.skipped_reasons)
+    _record_skipped_coverage(
+        conn,
+        report_id,
+        template_id,
+        result.skipped_fields,
+        result.skipped_reasons,
+        rejected_row_count=result.rejected_row_count,
+        rejected_reasons=result.rejected_reasons,
+    )
 
 
 def _tables_from_raw_cells(conn: sqlite3.Connection, report_id: int) -> tuple[ExtractedTable, ...]:
@@ -354,10 +384,13 @@ def _record_skipped_coverage(
     template_id: str,
     skipped_fields: tuple[str, ...],
     skipped_reasons: dict[str, str],
+    *,
+    rejected_row_count: int = 0,
+    rejected_reasons: dict[str, int] | None = None,
 ) -> None:
-    """Mark malformed header pairs as intentionally excluded from coverage."""
+    """Mark malformed header pairs and rejected rows in coverage evidence."""
 
-    if not skipped_fields:
+    if not skipped_fields and not rejected_row_count:
         return
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
@@ -387,6 +420,26 @@ def _record_skipped_coverage(
             ) VALUES (?, ?, 'intentionally_excluded', ?)
             """,
             (int(run_id[0]), field_name, skipped_reasons.get(field_name, "malformed_pair")),
+        )
+    if rejected_row_count:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_coverage_item(
+                CoverageRunID, SourceReference, Disposition, Reason
+            ) VALUES (?, ?, 'intentionally_excluded', ?)
+            """,
+            (
+                int(run_id[0]),
+                "rejected_rows",
+                "rejected_row_count=%s;%s"
+                % (
+                    rejected_row_count,
+                    ",".join(
+                        f"{reason}:{count}"
+                        for reason, count in sorted((rejected_reasons or {}).items())
+                    ),
+                ),
+            ),
         )
 
 
@@ -419,16 +472,26 @@ def _quarantine_contract_mismatch(
     report_id: int,
     source_id: str,
     reasons: tuple[str, ...],
+    *,
+    rejected_row_count: int = 0,
+    rejected_reasons: dict[str, int] | None = None,
 ) -> None:
     """Hold documents whose tables were seen but did not match the schema."""
 
+    mismatch_reasons = list(reasons)
+    if rejected_row_count:
+        mismatch_reasons.append("rejected_required_rows")
     record_promotion_quarantine(
         conn,
         report_document_id=report_id,
         source_id=source_id,
         stage="template_review",
         reason_code="rpc_contract_mismatch",
-        details={"reasons": list(reasons)},
+        details={
+            "reasons": mismatch_reasons,
+            "rejected_row_count": rejected_row_count,
+            "rejected_reasons": rejected_reasons or {},
+        },
     )
 
 

@@ -1474,16 +1474,16 @@ def test_erldc_2024_flat_promotes_spatial_market_extrema_without_hpx_rtm() -> No
 
 def test_erldc_end_to_end_local_pdf_promotion(tmp_path: Path) -> None:
     """Validate end-to-end extraction and promotion on a real local ERLDC PSP PDF."""
+    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15042024.pdf")
+    if not pdf_path.exists():
+        pytest.skip("Local ERLDC test fixture PDF not found in downloads/ERLDC_PSP")
+
     from datetime import date
     from psp_pipeline.pipelines.rldc_daily_psp import (
         LocalReportInput,
         run_rldc_local_pdf_ingestion,
     )
     from psp_pipeline.storage.sqlite_curated_export import export_erldc_daily_observations
-
-    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15042024.pdf")
-    if not pdf_path.exists():
-        pytest.skip("Local ERLDC test fixture PDF not found in downloads/ERLDC_PSP")
 
     db_path = tmp_path / "erldc_test_curated.sqlite"
     result = run_rldc_local_pdf_ingestion(
@@ -1510,15 +1510,15 @@ def test_erldc_end_to_end_local_pdf_promotion(tmp_path: Path) -> None:
 
 def test_erldc_end_to_end_split_local_pdf_promotion(tmp_path: Path) -> None:
     """Validate ingestion and structure extraction on a real 2025 split ERLDC PSP PDF."""
+    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15012025.pdf")
+    if not pdf_path.exists():
+        pytest.skip("Local ERLDC split test fixture PDF not found in downloads/ERLDC_PSP")
+
     from datetime import date
     from psp_pipeline.pipelines.rldc_daily_psp import (
         LocalReportInput,
         run_rldc_local_pdf_ingestion,
     )
-
-    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15012025.pdf")
-    if not pdf_path.exists():
-        pytest.skip("Local ERLDC split test fixture PDF not found in downloads/ERLDC_PSP")
 
     db_path = tmp_path / "erldc_split_test.sqlite"
     result = run_rldc_local_pdf_ingestion(
@@ -1531,3 +1531,189 @@ def test_erldc_end_to_end_split_local_pdf_promotion(tmp_path: Path) -> None:
     raw_cells = conn.execute("SELECT COUNT(*) FROM psp_raw_cell").fetchone()[0]
     assert raw_cells > 200
     conn.close()
+
+
+def test_erldc_stacked_header_regional_promotes_compact_over_occupancy_collision() -> None:
+    """Two-tier headers bind compact columns before numeric occupancy collides."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (42, 'erldc', 'stacked-compact-regional.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 42, 1, 1, 1, {1: "ERLDC"})
+    _insert_cells(conn, 42, 1, 1, 2, {
+        1: "Evening Peak (20:00) MW",
+        2: "Off Peak (03:00) MW",
+        3: "Day Energy (MU)",
+    })
+    _insert_cells(conn, 42, 1, 1, 3, {
+        1: "Demand Met",
+        2: "Demand Met",
+        3: "Met",
+    })
+    _insert_cells(conn, 42, 1, 1, 4, {
+        1: "25,450",
+        2: "18,200",
+        3: "512.4",
+        6: "9,999",
+        12: "1.1",
+    })
+
+    promote_report_to_curated(conn, 42)
+
+    regional = conn.execute(
+        "SELECT EveningPeakDemandMetMW, OffPeakDemandMetMW, DayEnergyMetMU "
+        "FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 42"
+    ).fetchone()
+    assert regional == (25450.0, 18200.0, 512.4)
+    assert conn.execute(
+        """
+        SELECT COUNT(*) FROM promotion_quarantine
+        WHERE ReportDocumentID = 42 AND Stage = 'layout_resolution'
+        """
+    ).fetchone()[0] == 0
+
+
+def test_erldc_stacked_header_regional_promotes_wide_over_occupancy_collision() -> None:
+    """Stacked wide labels keep day energy off compact occupancy columns."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (43, 'erldc', 'stacked-wide-regional.pdf', '2024-04-16', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 43, 1, 1, 1, {1: "ERLDC"})
+    _insert_cells(conn, 43, 1, 1, 2, {
+        1: "Evening Peak (20:00) MW",
+        6: "Off Peak (03:00) MW",
+        12: "Day Energy (MU)",
+    })
+    _insert_cells(conn, 43, 1, 1, 3, {
+        1: "Demand Met",
+        6: "Demand Met",
+        12: "Met",
+    })
+    _insert_cells(conn, 43, 1, 1, 4, {
+        1: "25,450",
+        2: "111.1",
+        3: "222.2",
+        6: "18,200",
+        12: "512.4",
+    })
+
+    promote_report_to_curated(conn, 43)
+
+    regional = conn.execute(
+        "SELECT EveningPeakDemandMetMW, OffPeakDemandMetMW, DayEnergyMetMU "
+        "FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 43"
+    ).fetchone()
+    assert regional == (25450.0, 18200.0, 512.4)
+
+
+def test_erldc_flat_regional_quarantines_ambiguous_compact_and_wide_occupancy() -> None:
+    """A label-less row that fits both regional signatures is not guessed."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (40, 'erldc', 'ambiguous-regional.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 40, 1, 1, 1, {1: "ERLDC"})
+    _insert_cells(conn, 40, 1, 1, 2, {1: "POWER SUPPLY POSITION REPORT"})
+    _insert_cells(conn, 40, 1, 1, 3, {1: "1. Demand Met / Availability (MW)"})
+    _insert_cells(conn, 40, 1, 1, 4, {
+        1: "25,450", 2: "18,200", 3: "512.4", 6: "18,200", 12: "512.4",
+    })
+
+    promote_report_to_curated(conn, 40)
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 40"
+    ).fetchone()[0] == 0
+    hold = conn.execute(
+        """
+        SELECT ReasonCode, Stage FROM promotion_quarantine
+        WHERE ReportDocumentID = 40 AND Stage = 'layout_resolution'
+        """
+    ).fetchone()
+    assert hold == ("ambiguous_layout", "layout_resolution")
+
+
+def test_erldc_flat_layouts_ignore_decorative_trailing_columns() -> None:
+    """State, generation, and frequency keep compact maps when extra cells exist."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (41, 'erldc', 'decorative-columns.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 41, 1, 1, 1, {1: "EASTERN REGIONAL LOAD DESPATCH CENTRE"})
+    _insert_cells(conn, 41, 1, 1, 2, {1: "POWER SUPPLY POSITION REPORT"})
+    _insert_cells(conn, 41, 1, 1, 3, {1: "1. Demand Met / Availability (MW)"})
+    _insert_cells(conn, 41, 1, 1, 4, {1: "25,450", 2: "18,200", 3: "512.4", 20: "Page 1"})
+    _insert_cells(conn, 41, 1, 1, 5, {1: "2. State Energy Details (MU)"})
+    _insert_cells(conn, 41, 1, 1, 6, {1: "State", 2: "Thermal", 3: "Hydro", 4: "Total Gen", 5: "Req", 6: "Cons"})
+    _insert_cells(conn, 41, 1, 1, 8, {
+        1: "WEST BENGAL", 2: "130.5", 3: "14.7", 4: "145.2", 5: "198.5", 6: "198.2", 20: "note",
+    })
+    _insert_cells(conn, 41, 2, 1, 1, {1: "3. Generation Details"})
+    _insert_cells(conn, 41, 2, 1, 2, {1: "Station", 2: "Cap MW", 3: "Gross MU", 4: "Net MU", 5: "Avg MW"})
+    _insert_cells(conn, 41, 2, 1, 3, {
+        1: "FSTPS", 2: "2100", 3: "45.2", 4: "42.1", 5: "1754.2", 12: "spacer",
+    })
+    _insert_cells(conn, 41, 5, 1, 1, {1: "6. FREQUENCY PROFILE"})
+    _insert_cells(conn, 41, 5, 1, 2, {
+        1: "50.18", 4: "49.82", 8: "50.01", 10: "0.02", 12: "0.05", 14: "50.10", 17: "49.90", 25: "25",
+    })
+
+    promote_report_to_curated(conn, 41)
+
+    regional = conn.execute(
+        "SELECT EveningPeakDemandMetMW, OffPeakDemandMetMW, DayEnergyMetMU "
+        "FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 41"
+    ).fetchone()
+    assert regional == (25450.0, 18200.0, 512.4)
+    state_row = conn.execute(
+        """
+        SELECT f.TotalGenerationMU, f.RequirementMU, f.ConsumptionMU
+        FROM FactERLDCStateDaily AS f
+        JOIN DimStates AS s ON s.StateID = f.StateID
+        WHERE f.ReportDocumentID = 41 AND s.StateName = 'West Bengal'
+        """
+    ).fetchone()
+    assert state_row == (145.2, 198.5, 198.2)
+    generation = conn.execute(
+        "SELECT GrossEnergyMU, NetEnergyMU, AverageMW FROM FactERLDCGenerationDaily "
+        "WHERE ReportDocumentID = 41"
+    ).fetchone()
+    assert generation == (45.2, 42.1, 1754.2)
+    freq = conn.execute(
+        "SELECT MaximumFrequencyHz, MinimumFrequencyHz FROM FactERLDCFrequencyDaily "
+        "WHERE ReportDocumentID = 41"
+    ).fetchone()
+    assert freq == (50.18, 49.82)
