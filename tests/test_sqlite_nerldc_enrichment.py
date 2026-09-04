@@ -32,7 +32,7 @@ def test_voltage_node_lookup_normalizes_publisher_punctuation() -> None:
 def test_transmission_lookup_resolves_known_and_unknown_elements() -> None:
     """Known tie lines resolve endpoints; unknown labels remain explicitly unverified."""
 
-    assert len(TRANSMISSION_ELEMENT_REGISTRY) == 10
+    assert len(TRANSMISSION_ELEMENT_REGISTRY) == 13
     known = transmission_location("400KV-BONGAIGAON-ALIPURDUAR-1")
     assert known.from_location.state_name == "Assam"
     assert known.to_location.state_name == "West Bengal"
@@ -42,6 +42,11 @@ def test_transmission_lookup_resolves_known_and_unknown_elements() -> None:
     assert bhutan_tie.from_location.state_name == "Assam"
     assert bhutan_tie.to_location.country_name == "Bhutan"
     assert bhutan_tie.to_location.region_name is None
+
+    bangladesh_tie = transmission_location("132KV-SM-NAGAR-COMILLA")
+    assert bangladesh_tie.from_location.state_name == "Tripura"
+    assert bangladesh_tie.to_location.country_name == "Bangladesh"
+    assert bangladesh_tie.evidence == "grid_india_registry"
 
     unknown = transmission_location("400KV-UNKNOWN-TEST")
     assert unknown.nominal_voltage_kv == 400.0
@@ -56,3 +61,4 @@ def test_generation_aliases_only_normalize_reviewed_station_labels() -> None:
     assert generation_entity_canonical_name("Unreviewed Station (2*100)") == (
         "Unreviewed Station (2*100)"
     )
+    assert generation_entity_canonical_name("Palatana GBPP (2*363.3)") == "OTPC Palatana"

@@ -70,6 +70,21 @@ _HEADER_TERMS = (
     )
 _UNIT_VALUES = {"mw", "mu", "hz", "kv", "%", "hrs", "m", "mcm", "ft"}
 _STRUCTURAL_VALUES = {"-", "--", "nil", "n/a", "na", "none"}
+_LEGEND_PHRASES = (
+    "iegc operating band",
+    "iegc band as per",
+    "as per cerc",
+    "all figures in mw",
+    "all figures in mu",
+    "all values in mw",
+    "all values in mu",
+    "unless otherwise",
+    "shift in-charge",
+    "shift in charge",
+    "prepared by",
+    "checked by",
+    "approved by",
+)
 
 
 def generate_raw_cell_coverage_report(
@@ -348,6 +363,8 @@ def _classify_cell(
         return "approved_exclusion", "published_empty_indicator"
     if normalized in _UNIT_VALUES or _is_header_text(normalized):
         return "approved_exclusion", "recognized_header_or_unit"
+    if _is_legend_text(normalized):
+        return "approved_exclusion", "recognized_legend_or_signoff"
     row_key = (
         int(cell["report_document_id"]),
         int(cell["page_no"]),
@@ -367,6 +384,12 @@ def _is_header_text(normalized: str) -> bool:
     if any(term in normalized for term in _HEADER_TERMS):
         return True
     return bool(re.fullmatch(r"(?:[0-9]+\s*)?(?:mw|mu|hz|kv|%|hrs)", normalized))
+
+
+def _is_legend_text(normalized: str) -> bool:
+    """Return whether text is a published footnote, unit legend, or sign-off."""
+
+    return any(phrase in normalized for phrase in _LEGEND_PHRASES)
 
 
 def _pct(numerator: int, denominator: int) -> float:

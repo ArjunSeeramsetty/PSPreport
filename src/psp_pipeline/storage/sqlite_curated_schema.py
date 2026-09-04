@@ -1794,7 +1794,9 @@ def _ensure_erldc_curated_tables(conn: sqlite3.Connection) -> None:
             MaximumFrequencyHz REAL, MaximumFrequencyTime TEXT, MinimumFrequencyHz REAL,
             MinimumFrequencyTime TEXT, AverageFrequencyHz REAL, FrequencyVariationIndex REAL,
             StandardDeviationHz REAL, Maximum15MinuteBlockFrequencyHz REAL,
-            Minimum15MinuteBlockFrequencyHz REAL, PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+            Minimum15MinuteBlockFrequencyHz REAL, DurationBelow49_90Pct REAL,
+            Duration49_90To50_05Pct REAL, DurationAbove50_05Pct REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, RegionID)
         );
         CREATE TABLE IF NOT EXISTS FactERLDCVoltageProfile (
             ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, VoltageNodeID INTEGER NOT NULL,
@@ -1837,6 +1839,7 @@ def _ensure_erldc_curated_tables(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_erldc_generation_columns(conn)
+    _ensure_frequency_operating_band_columns(conn, "FactERLDCFrequencyDaily")
 
 
 def _ensure_erldc_generation_columns(conn: sqlite3.Connection) -> None:
@@ -1888,7 +1891,9 @@ def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
             MaximumFrequencyHz REAL, MaximumFrequencyTime TEXT, MinimumFrequencyHz REAL,
             MinimumFrequencyTime TEXT, AverageFrequencyHz REAL, FrequencyVariationIndex REAL,
             StandardDeviationHz REAL, Maximum15MinuteBlockFrequencyHz REAL,
-            Minimum15MinuteBlockFrequencyHz REAL, PRIMARY KEY(ReportDocumentID, DateID, RegionID)
+            Minimum15MinuteBlockFrequencyHz REAL, DurationBelow49_90Pct REAL,
+            Duration49_90To50_05Pct REAL, DurationAbove50_05Pct REAL,
+            PRIMARY KEY(ReportDocumentID, DateID, RegionID)
         );
         CREATE TABLE IF NOT EXISTS FactNERLDCVoltageProfile (
             ReportDocumentID INTEGER NOT NULL, DateID INTEGER NOT NULL, VoltageNodeID INTEGER NOT NULL,
@@ -1919,6 +1924,25 @@ def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_nerldc_generation_columns(conn)
+    _ensure_frequency_operating_band_columns(conn, "FactNERLDCFrequencyDaily")
+
+
+def _ensure_frequency_operating_band_columns(
+    conn: sqlite3.Connection,
+    table_name: str,
+) -> None:
+    """Add IEGC operating-band duration columns to existing frequency facts."""
+
+    existing = {
+        row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")
+    }
+    for column_name in (
+        "DurationBelow49_90Pct",
+        "Duration49_90To50_05Pct",
+        "DurationAbove50_05Pct",
+    ):
+        if column_name not in existing:
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} REAL")
 
 
 def _ensure_nerldc_generation_columns(conn: sqlite3.Connection) -> None:

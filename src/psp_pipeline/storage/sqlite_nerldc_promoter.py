@@ -11,6 +11,9 @@ from psp_pipeline.storage.sqlite_dimensions import (
     record_resolution_issue,
     resolve_generation_identity,
 )
+from psp_pipeline.parsing.frequency_operating_bands import (
+    collect_frequency_operating_bands,
+)
 from psp_pipeline.storage.sqlite_nerldc_enrichment import (
     generation_entity_canonical_name,
     transmission_location,
@@ -390,7 +393,53 @@ def _frequency(conn: sqlite3.Connection, report: int, date_id: int, region_id: i
                          (report, date_id, region_id, *values.values()))
             _lineage(conn, report, "FactNERLDCFrequencyDaily", f"report={report};date={date_id};region={region_id}",
                      {name: raw for name, (_, raw) in fields.items() if raw is not None})
+            _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
             return
+    for rows in _all_tables(conn, report):
+        if collect_frequency_operating_bands(rows)[0]:
+            _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
+            return
+
+
+def _merge_frequency_operating_bands(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    rows: list[dict[int, tuple[int, str]]],
+) -> None:
+    """Attach unique IEGC operating-band percentages to the daily frequency fact."""
+
+    values, sources = collect_frequency_operating_bands(rows)
+    if not values:
+        return
+    existing = conn.execute(
+        "SELECT 1 FROM FactNERLDCFrequencyDaily "
+        "WHERE ReportDocumentID = ? AND DateID = ? AND RegionID = ?",
+        (report, date_id, region_id),
+    ).fetchone()
+    assignments = ", ".join(f"{name} = ?" for name in values)
+    if existing:
+        conn.execute(
+            f"UPDATE FactNERLDCFrequencyDaily SET {assignments} "
+            "WHERE ReportDocumentID = ? AND DateID = ? AND RegionID = ?",
+            (*values.values(), report, date_id, region_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO FactNERLDCFrequencyDaily("
+            f"ReportDocumentID, DateID, RegionID, {', '.join(values)}) "
+            f"VALUES (?, ?, ?, {', '.join('?' for _ in values)})",
+            (report, date_id, region_id, *values.values()),
+        )
+    if sources:
+        _lineage(
+            conn,
+            report,
+            "FactNERLDCFrequencyDaily",
+            f"report={report};date={date_id};region={region_id}",
+            sources,
+        )
 
 
 def _voltage(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:

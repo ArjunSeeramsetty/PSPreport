@@ -1717,3 +1717,241 @@ def test_erldc_flat_layouts_ignore_decorative_trailing_columns() -> None:
         "WHERE ReportDocumentID = 41"
     ).fetchone()
     assert freq == (50.18, 49.82)
+
+
+def test_erldc_promotes_frequency_operating_band_percentages() -> None:
+    """IEGC three-bucket duration rows attach to the daily frequency fact."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (44, 'erldc', 'frequency-bands.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 44, 5, 1, 1, {1: "6. FREQUENCY PROFILE"})
+    _insert_cells(conn, 44, 5, 1, 2, {
+        1: "50.18", 4: "49.82", 8: "50.01", 10: "0.02", 12: "0.05", 14: "50.10", 17: "49.90",
+    })
+    _insert_cells(conn, 44, 5, 1, 3, {1: "% time frequency remained below 49.90 Hz", 2: "2.10"})
+    _insert_cells(conn, 44, 5, 1, 4, {1: "49.90-50.05 Hz", 2: "95.40"})
+    _insert_cells(conn, 44, 5, 1, 5, {1: "% time frequency remained above 50.05 Hz", 2: "2.50"})
+
+    promote_report_to_curated(conn, 44)
+
+    freq = conn.execute(
+        """
+        SELECT MaximumFrequencyHz, DurationBelow49_90Pct,
+               Duration49_90To50_05Pct, DurationAbove50_05Pct
+        FROM FactERLDCFrequencyDaily WHERE ReportDocumentID = 44
+        """
+    ).fetchone()
+    assert freq == (50.18, 2.1, 95.4, 2.5)
+    band_lineage = conn.execute(
+        """
+        SELECT COUNT(*) FROM curated_field_lineage
+        WHERE ReportDocumentID = 44
+          AND DestinationTable = 'FactERLDCFrequencyDaily'
+          AND DestinationColumn IN (
+              'DurationBelow49_90Pct', 'Duration49_90To50_05Pct',
+              'DurationAbove50_05Pct'
+          )
+        """
+    ).fetchone()[0]
+    assert band_lineage == 3
+
+
+def test_erldc_2025_flat_promotes_state_entity_owner_generation() -> None:
+    """3(A) CESC and WBPDCL stations keep owner-scoped section names."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (45, 'erldc', 'state-entities.pdf', '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 45, 3, 1, 1, {1: "3(A) State Entities Generation"})
+    _insert_cells(conn, 45, 3, 1, 2, {1: "CESC"})
+    _insert_cells(
+        conn,
+        45,
+        3,
+        1,
+        3,
+        {
+            1: "BUDGE BUDGE",
+            3: "750",
+            5: "620",
+            7: "410",
+            9: "640",
+            10: "07:15",
+            13: "380",
+            15: "14:20",
+            17: "16.01",
+            19: "14.88",
+            21: "620",
+        },
+    )
+    _insert_cells(conn, 45, 3, 1, 4, {1: "WBPDCL"})
+    _insert_cells(
+        conn,
+        45,
+        3,
+        1,
+        5,
+        {
+            1: "BAKRESWAR",
+            3: "1050",
+            5: "800",
+            7: "500",
+            17: "20.10",
+            19: "18.80",
+            21: "783",
+        },
+    )
+    _insert_cells(conn, 45, 3, 1, 6, {1: "3(B) Regional Entities Generation"})
+
+    promote_report_to_curated(conn, 45)
+
+    budge = conn.execute(
+        """
+        SELECT f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW, f.SectionName, s.StateName
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        LEFT JOIN DimStates AS s ON s.StateID = f.StateID
+        WHERE f.ReportDocumentID = 45 AND entity.EntityName = 'BUDGE BUDGE'
+        """
+    ).fetchone()
+    bakreswar = conn.execute(
+        """
+        SELECT f.SectionName, f.NetEnergyMU
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = 45 AND entity.EntityName = 'BAKRESWAR'
+        """
+    ).fetchone()
+    leaked = conn.execute(
+        """
+        SELECT COUNT(*) FROM FactERLDCGenerationDaily
+        WHERE ReportDocumentID = 45 AND SectionName LIKE 'state_generation_%'
+        """
+    ).fetchone()[0]
+    assert budge == (16.01, 14.88, 620.0, "state_entities_generation:cesc", "West Bengal")
+    assert bakreswar == ("state_entities_generation:wbpdcl", 18.8)
+    assert leaked == 0
+
+
+def test_erldc_2025_flat_promotes_interregional_corridor_totals() -> None:
+    """Published ER-NR / ER-WR corridor totals resolve from the registry."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (46, 'erldc', 'corridor-exchanges.pdf', '2026-01-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 46, 4, 1, 1, {1: "4(A) INTER-REGIONAL EXCHANGES"})
+    _insert_cells(
+        conn,
+        46,
+        4,
+        1,
+        2,
+        {
+            1: "1",
+            2: "ER-NR",
+            9: "1200",
+            13: "800",
+            17: "1400",
+            19: "-200",
+            21: "18.4",
+            23: "-2.1",
+            25: "16.3",
+        },
+    )
+    _insert_cells(conn, 46, 4, 1, 3, {1: "4(B) INTER-REGIONAL SCHEDULE"})
+
+    promote_report_to_curated(conn, 46)
+
+    corridor = conn.execute(
+        """
+        SELECT element.ElementName, f.CounterpartyRegion, f.EveningPeakMW, f.NetEnergyMU
+        FROM FactERLDCInterRegionalExchange AS f
+        JOIN DimTransmissionElements AS element ON element.ElementID = f.ElementID
+        WHERE f.ReportDocumentID = 46
+        """
+    ).fetchone()
+    assert corridor == ("ER-NR", "Northern Region", 1200.0, 16.3)
+
+
+def test_erldc_flat_state_drawal_binds_from_published_headers() -> None:
+    """Optional drawal columns promote only when the header tokens are unique."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (47, 'erldc', 'state-drawal.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 47, 1, 1, 1, {1: "ERLDC"})
+    _insert_cells(conn, 47, 1, 1, 2, {1: "POWER SUPPLY POSITION REPORT"})
+    _insert_cells(
+        conn,
+        47,
+        1,
+        1,
+        3,
+        {
+            1: "State",
+            2: "Thermal",
+            3: "Hydro",
+            4: "Total Gen",
+            5: "Req",
+            6: "Cons",
+            7: "Scheduled Drawal",
+            8: "Actual Drawal",
+            9: "UI (MU)",
+        },
+    )
+    _insert_cells(conn, 47, 1, 1, 4, {
+        1: "WEST BENGAL",
+        2: "130.5",
+        3: "14.7",
+        4: "145.2",
+        5: "198.5",
+        6: "198.2",
+        7: "50.1",
+        8: "48.4",
+        9: "-1.7",
+    })
+
+    promote_report_to_curated(conn, 47)
+
+    state_row = conn.execute(
+        """
+        SELECT f.TotalGenerationMU, f.ScheduledDrawalMU, f.ActualDrawalMU, f.UIMU
+        FROM FactERLDCStateDaily AS f
+        JOIN DimStates AS s ON s.StateID = f.StateID
+        WHERE f.ReportDocumentID = 47 AND s.StateName = 'West Bengal'
+        """
+    ).fetchone()
+    assert state_row == (145.2, 50.1, 48.4, -1.7)
