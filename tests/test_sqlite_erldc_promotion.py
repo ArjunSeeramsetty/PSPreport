@@ -1533,6 +1533,96 @@ def test_erldc_end_to_end_split_local_pdf_promotion(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_erldc_stacked_header_regional_promotes_compact_over_occupancy_collision() -> None:
+    """Two-tier headers bind compact columns before numeric occupancy collides."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (42, 'erldc', 'stacked-compact-regional.pdf', '2024-04-15', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 42, 1, 1, 1, {1: "ERLDC"})
+    _insert_cells(conn, 42, 1, 1, 2, {
+        1: "Evening Peak (20:00) MW",
+        2: "Off Peak (03:00) MW",
+        3: "Day Energy (MU)",
+    })
+    _insert_cells(conn, 42, 1, 1, 3, {
+        1: "Demand Met",
+        2: "Demand Met",
+        3: "Met",
+    })
+    _insert_cells(conn, 42, 1, 1, 4, {
+        1: "25,450",
+        2: "18,200",
+        3: "512.4",
+        6: "9,999",
+        12: "1.1",
+    })
+
+    promote_report_to_curated(conn, 42)
+
+    regional = conn.execute(
+        "SELECT EveningPeakDemandMetMW, OffPeakDemandMetMW, DayEnergyMetMU "
+        "FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 42"
+    ).fetchone()
+    assert regional == (25450.0, 18200.0, 512.4)
+    assert conn.execute(
+        """
+        SELECT COUNT(*) FROM promotion_quarantine
+        WHERE ReportDocumentID = 42 AND Stage = 'layout_resolution'
+        """
+    ).fetchone()[0] == 0
+
+
+def test_erldc_stacked_header_regional_promotes_wide_over_occupancy_collision() -> None:
+    """Stacked wide labels keep day energy off compact occupancy columns."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (43, 'erldc', 'stacked-wide-regional.pdf', '2024-04-16', ?, 0)
+        """,
+        (ERLDC_FLAT_2024_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 43, 1, 1, 1, {1: "ERLDC"})
+    _insert_cells(conn, 43, 1, 1, 2, {
+        1: "Evening Peak (20:00) MW",
+        6: "Off Peak (03:00) MW",
+        12: "Day Energy (MU)",
+    })
+    _insert_cells(conn, 43, 1, 1, 3, {
+        1: "Demand Met",
+        6: "Demand Met",
+        12: "Met",
+    })
+    _insert_cells(conn, 43, 1, 1, 4, {
+        1: "25,450",
+        2: "111.1",
+        3: "222.2",
+        6: "18,200",
+        12: "512.4",
+    })
+
+    promote_report_to_curated(conn, 43)
+
+    regional = conn.execute(
+        "SELECT EveningPeakDemandMetMW, OffPeakDemandMetMW, DayEnergyMetMU "
+        "FROM FactERLDCRegionalDaily WHERE ReportDocumentID = 43"
+    ).fetchone()
+    assert regional == (25450.0, 18200.0, 512.4)
+
+
 def test_erldc_flat_regional_quarantines_ambiguous_compact_and_wide_occupancy() -> None:
     """A label-less row that fits both regional signatures is not guessed."""
 
