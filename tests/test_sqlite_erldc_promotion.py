@@ -1474,16 +1474,16 @@ def test_erldc_2024_flat_promotes_spatial_market_extrema_without_hpx_rtm() -> No
 
 def test_erldc_end_to_end_local_pdf_promotion(tmp_path: Path) -> None:
     """Validate end-to-end extraction and promotion on a real local ERLDC PSP PDF."""
+    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15042024.pdf")
+    if not pdf_path.exists():
+        pytest.skip("Local ERLDC test fixture PDF not found in downloads/ERLDC_PSP")
+
     from datetime import date
     from psp_pipeline.pipelines.rldc_daily_psp import (
         LocalReportInput,
         run_rldc_local_pdf_ingestion,
     )
     from psp_pipeline.storage.sqlite_curated_export import export_erldc_daily_observations
-
-    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15042024.pdf")
-    if not pdf_path.exists():
-        pytest.skip("Local ERLDC test fixture PDF not found in downloads/ERLDC_PSP")
 
     db_path = tmp_path / "erldc_test_curated.sqlite"
     result = run_rldc_local_pdf_ingestion(
@@ -1510,15 +1510,15 @@ def test_erldc_end_to_end_local_pdf_promotion(tmp_path: Path) -> None:
 
 def test_erldc_end_to_end_split_local_pdf_promotion(tmp_path: Path) -> None:
     """Validate ingestion and structure extraction on a real 2025 split ERLDC PSP PDF."""
+    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15012025.pdf")
+    if not pdf_path.exists():
+        pytest.skip("Local ERLDC split test fixture PDF not found in downloads/ERLDC_PSP")
+
     from datetime import date
     from psp_pipeline.pipelines.rldc_daily_psp import (
         LocalReportInput,
         run_rldc_local_pdf_ingestion,
     )
-
-    pdf_path = Path("downloads/ERLDC_PSP/Power Supply Position Report_15012025.pdf")
-    if not pdf_path.exists():
-        pytest.skip("Local ERLDC split test fixture PDF not found in downloads/ERLDC_PSP")
 
     db_path = tmp_path / "erldc_split_test.sqlite"
     result = run_rldc_local_pdf_ingestion(
