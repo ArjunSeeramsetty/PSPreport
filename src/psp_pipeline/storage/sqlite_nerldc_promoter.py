@@ -11,6 +11,10 @@ from psp_pipeline.storage.sqlite_dimensions import (
     record_resolution_issue,
     resolve_generation_identity,
 )
+from psp_pipeline.parsing.frequency_operating_bands import (
+    collect_frequency_operating_bands,
+)
+from psp_pipeline.parsing.layout_resolution import resolve_header_layout
 from psp_pipeline.storage.sqlite_nerldc_enrichment import (
     generation_entity_canonical_name,
     transmission_location,
@@ -28,6 +32,35 @@ STATE_NAMES = {
     "ARUNACHALPRADESH": "Arunachal Pradesh", "ASSAM": "Assam",
     "MANIPUR": "Manipur", "MEGHALAYA": "Meghalaya", "MIZORAM": "Mizoram",
     "NAGALAND": "Nagaland", "TRIPURA": "Tripura",
+}
+_REGIONAL_SCHEDULE_FIELDS = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "GrossEnergyMU": 7,
+    "NetEnergyMU": 8,
+    "AverageMW": 9,
+    "ScheduledEnergyMU": 10,
+    "UIMU": 11,
+    "RRASScheduleMU": 12,
+}
+_NINE_COLUMN_REGIONAL_FIELDS = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "GrossEnergyMU": 7,
+    "NetEnergyMU": 8,
+    "AverageMW": 9,
+}
+_REGIONAL_CORE_HEADER_TOKENS = {
+    "InstalledCapacityMW": ("inst",),
+    "GrossEnergyMU": ("gross",),
+    "NetEnergyMU": ("net",),
+    "AverageMW": ("avg",),
 }
 
 
@@ -241,101 +274,155 @@ def _regional_generation(
 ) -> None:
     """Promote the owner-grouped NERLDC regional generation table.
 
-    The table is distinct from state generation: it includes gross energy,
-    schedule, UI, and RRAS schedule. Repeated subtotal names are separated by
-    their published owner group in ``SectionName``.
+    The schedule/UI/RRAS contract stays authoritative when those headers are
+    published. Historical 9-column and wide families without those columns are
+    promoted from unique Installed/Gross/Net/Average headers only. State
+    generation on page 2 is left to ``_generation``.
     """
-    fields = {
+    pairs = conn.execute(
+        "SELECT DISTINCT page_no, table_no FROM psp_raw_cell "
+        "WHERE report_document_id = ? ORDER BY page_no, table_no",
+        (report,),
+    ).fetchall()
+    for page, table in pairs:
+        rows = _rows(conn, report, int(page), int(table))
+        fields = _regional_generation_fields(rows, page=int(page))
+        if fields is None:
+            continue
+        _promote_regional_generation_rows(
+            conn,
+            report,
+            date_id,
+            region_id,
+            rows,
+            fields,
+        )
+
+
+def _regional_generation_fields(
+    rows: list[dict[int, tuple[int, str]]],
+    *,
+    page: int,
+) -> dict[str, int] | None:
+    """Return a verified regional-generation column map, or None."""
+
+    if _is_regional_generation_table(rows):
+        return _REGIONAL_SCHEDULE_FIELDS
+    if page < 3 or not _has_station_constituents_header(rows):
+        return None
+    header = resolve_header_layout(
+        rows[:3],
+        _REGIONAL_CORE_HEADER_TOKENS,
+        layout_id="nerldc_regional_core",
+    )
+    if not header.resolved or not header.mapping:
+        return None
+    if header.mapping == {
         "InstalledCapacityMW": 2,
-        "EveningPeakMW": 3,
-        "OffPeakMW": 4,
-        "DayPeakMW": 5,
-        "DayPeakTime": 6,
         "GrossEnergyMU": 7,
         "NetEnergyMU": 8,
         "AverageMW": 9,
-        "ScheduledEnergyMU": 10,
-        "UIMU": 11,
-        "RRASScheduleMU": 12,
-    }
-    for rows in _all_tables(conn, report):
-        if not _is_regional_generation_table(rows):
+    }:
+        return _NINE_COLUMN_REGIONAL_FIELDS
+    return header.mapping
+
+
+def _promote_regional_generation_rows(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    rows: list[dict[int, tuple[int, str]]],
+    fields: dict[str, int],
+) -> None:
+    """Persist one owner-grouped regional generation table."""
+
+    owner_group: str | None = None
+    for row in rows:
+        label = row.get(1, (0, ""))[1].strip()
+        if not label or "station/constituents" in label.lower():
             continue
-        owner_group: str | None = None
-        for row in rows:
-            label = row.get(1, (0, ""))[1].strip()
-            if not label or "station/constituents" in label.lower():
-                continue
-            capacity, _ = _number(row, fields["InstalledCapacityMW"])
-            is_total = _is_total_generation_row(label)
-            if capacity is None:
-                if not is_total:
-                    owner_group = _owner_group_key(label)
-                continue
-            if owner_group is None:
-                continue
-            values, sources = _values(row, fields)
-            canonical_label = generation_entity_canonical_name(label)
-            try:
-                identity = resolve_generation_identity(
-                    conn,
-                    "nerldc",
-                    canonical_label,
-                    None,
-                    region_id,
-                    None,
-                    capacity,
-                    is_total,
-                )
-            except DimensionResolutionError as error:
-                record_resolution_issue(
-                    conn,
-                    report,
-                    "nerldc",
-                    "generation_entity",
-                    label,
-                    str(error),
-                )
-                continue
-            entity_id = _grid_entity(
+        capacity, _ = _number(row, fields["InstalledCapacityMW"])
+        is_total = _is_total_generation_row(label)
+        if capacity is None:
+            if not is_total:
+                owner_group = _owner_group_key(label)
+            continue
+        if owner_group is None:
+            continue
+        values, sources = _values(row, fields)
+        canonical_label = generation_entity_canonical_name(label)
+        try:
+            identity = resolve_generation_identity(
                 conn,
+                "nerldc",
                 canonical_label,
-                "generation_aggregate" if is_total else "generating_entity",
                 None,
                 region_id,
                 None,
                 capacity,
                 is_total,
-                identity,
             )
-            section = f"regional_generation:{owner_group}"
-            conn.execute(
-                "INSERT OR REPLACE INTO FactNERLDCGenerationDaily("
-                "ReportDocumentID, DateID, EntityID, StateID, StationID, "
-                "GeneratingUnitID, AggregateID, IsTotalRow, GenerationGrain, "
-                f"SectionName, {', '.join(values)}) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {', '.join('?' for _ in values)})",
-                (
-                    report,
-                    date_id,
-                    entity_id,
-                    None,
-                    identity.station_id,
-                    identity.generating_unit_id,
-                    identity.aggregate_id,
-                    int(is_total),
-                    identity.entity_type,
-                    section,
-                    *values.values(),
-                ),
-            )
-            _lineage(
+        except DimensionResolutionError as error:
+            record_resolution_issue(
                 conn,
                 report,
-                "FactNERLDCGenerationDaily",
-                f"report={report};date={date_id};entity={entity_id};section={section}",
-                sources,
+                "nerldc",
+                "generation_entity",
+                label,
+                str(error),
             )
+            continue
+        entity_id = _grid_entity(
+            conn,
+            canonical_label,
+            "generation_aggregate" if is_total else "generating_entity",
+            None,
+            region_id,
+            None,
+            capacity,
+            is_total,
+            identity,
+        )
+        section = f"regional_generation:{owner_group}"
+        conn.execute(
+            "INSERT OR REPLACE INTO FactNERLDCGenerationDaily("
+            "ReportDocumentID, DateID, EntityID, StateID, StationID, "
+            "GeneratingUnitID, AggregateID, IsTotalRow, GenerationGrain, "
+            f"SectionName, {', '.join(values)}) "
+            f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {', '.join('?' for _ in values)})",
+            (
+                report,
+                date_id,
+                entity_id,
+                None,
+                identity.station_id,
+                identity.generating_unit_id,
+                identity.aggregate_id,
+                int(is_total),
+                identity.entity_type,
+                section,
+                *values.values(),
+            ),
+        )
+        _lineage(
+            conn,
+            report,
+            "FactNERLDCGenerationDaily",
+            f"report={report};date={date_id};entity={entity_id};section={section}",
+            sources,
+        )
+
+
+def _has_station_constituents_header(
+    rows: list[dict[int, tuple[int, str]]],
+) -> bool:
+    """Return whether the first rows publish the station/constituents heading."""
+
+    return any(
+        "station/constituents" in row.get(1, (0, ""))[1].lower()
+        for row in rows[:3]
+    )
 
 
 def _is_regional_generation_table(
@@ -344,10 +431,7 @@ def _is_regional_generation_table(
     """Return whether rows are the schedule/UI/RRAS regional generation table."""
 
     header_rows = rows[:3]
-    has_station_header = any(
-        "station/constituents" in row.get(1, (0, ""))[1].lower()
-        for row in header_rows
-    )
+    has_station_header = _has_station_constituents_header(rows)
     has_schedule_header = any(
         "schedule" in row.get(10, (0, ""))[1].lower()
         and row.get(11, (0, ""))[1].strip().upper() == "UI"
@@ -390,7 +474,53 @@ def _frequency(conn: sqlite3.Connection, report: int, date_id: int, region_id: i
                          (report, date_id, region_id, *values.values()))
             _lineage(conn, report, "FactNERLDCFrequencyDaily", f"report={report};date={date_id};region={region_id}",
                      {name: raw for name, (_, raw) in fields.items() if raw is not None})
+            _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
             return
+    for rows in _all_tables(conn, report):
+        if collect_frequency_operating_bands(rows)[0]:
+            _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
+            return
+
+
+def _merge_frequency_operating_bands(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    rows: list[dict[int, tuple[int, str]]],
+) -> None:
+    """Attach unique IEGC operating-band percentages to the daily frequency fact."""
+
+    values, sources = collect_frequency_operating_bands(rows)
+    if not values:
+        return
+    existing = conn.execute(
+        "SELECT 1 FROM FactNERLDCFrequencyDaily "
+        "WHERE ReportDocumentID = ? AND DateID = ? AND RegionID = ?",
+        (report, date_id, region_id),
+    ).fetchone()
+    assignments = ", ".join(f"{name} = ?" for name in values)
+    if existing:
+        conn.execute(
+            f"UPDATE FactNERLDCFrequencyDaily SET {assignments} "
+            "WHERE ReportDocumentID = ? AND DateID = ? AND RegionID = ?",
+            (*values.values(), report, date_id, region_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO FactNERLDCFrequencyDaily("
+            f"ReportDocumentID, DateID, RegionID, {', '.join(values)}) "
+            f"VALUES (?, ?, ?, {', '.join('?' for _ in values)})",
+            (report, date_id, region_id, *values.values()),
+        )
+    if sources:
+        _lineage(
+            conn,
+            report,
+            "FactNERLDCFrequencyDaily",
+            f"report={report};date={date_id};region={region_id}",
+            sources,
+        )
 
 
 def _voltage(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:

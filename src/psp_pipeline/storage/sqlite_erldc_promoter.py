@@ -18,8 +18,12 @@ from psp_pipeline.storage.sqlite_erldc_enrichment import (
     transmission_location,
     voltage_node_location,
 )
+from psp_pipeline.parsing.frequency_operating_bands import (
+    collect_frequency_operating_bands,
+)
 from psp_pipeline.parsing.layout_resolution import (
     LayoutResolution,
+    compact_label,
     resolve_exclusive_layouts,
     resolve_header_layout,
 )
@@ -145,6 +149,20 @@ _ERLDC_STATE_WIDE = {
     "RequirementMU": 15,
     "ConsumptionMU": 18,
 }
+_ERLDC_STATE_OPTIONAL_HEADER_TOKENS = {
+    "ScheduledDrawalMU": ("scheduled", "drawal"),
+    "ActualDrawalMU": ("actual", "drawal"),
+    "UIMU": ("u.i",),
+    "TotalAvailabilityMU": ("availability",),
+    "EnergyShortageMU": ("shortage",),
+}
+_STATE_ENTITY_OWNER_ALIASES = {
+    "CESC": "West Bengal",
+    "WBPDCL": "West Bengal",
+    "OPGC": "Odisha",
+    "JUVNL": "Jharkhand",
+    "DVC": "DVC",
+}
 _ERLDC_GENERATION_HEADER_TOKENS = {
     "GrossEnergyMU": ("gross",),
     "NetEnergyMU": ("net",),
@@ -159,6 +177,29 @@ _ERLDC_GENERATION_WIDE = {
     "GrossEnergyMU": 7,
     "NetEnergyMU": 8,
     "AverageMW": 9,
+}
+_ERLDC_NINE_COLUMN_GENERATION = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "GrossEnergyMU": 7,
+    "NetEnergyMU": 8,
+    "AverageMW": 9,
+}
+_ERLDC_THIRTEEN_COLUMN_REGIONAL_GENERATION = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "MinimumGenerationMW": 7,
+    "MinimumGenerationTime": 8,
+    "ScheduledEnergyMU": 9,
+    "GrossEnergyMU": 10,
+    "NetEnergyMU": 11,
+    "AverageMW": 12,
 }
 _ERLDC_FREQUENCY_COMPACT = {
     "MaximumFrequencyHz": 1,
@@ -240,6 +281,12 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
             date_id,
             int(region[0]),
         )
+        _promote_2025_flat_state_entities_generation(
+            conn,
+            report_id,
+            date_id,
+            int(region[0]),
+        )
         _promote_2025_flat_regional_generation(
             conn,
             report_id,
@@ -247,7 +294,12 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
             int(region[0]),
         )
     else:
-        _generation(conn, report_id, date_id, int(region[0]))
+        _promote_historical_flat_generation(
+            conn,
+            report_id,
+            date_id,
+            int(region[0]),
+        )
     _frequency(conn, report_id, date_id, int(region[0]))
     _reservoirs(conn, report_id, date_id, int(region[0]))
     if report[2] == "erldc_daily_psp_v2025_flat_11_column_generation":
@@ -503,7 +555,7 @@ def _states(conn: sqlite3.Connection, report: int, date_id: int) -> None:
         if not state:
             continue
         if header.resolved and header.mapping:
-            columns = header.mapping
+            columns = dict(header.mapping)
         else:
             resolution = resolve_exclusive_layouts(
                 layouts={"compact": _ERLDC_STATE_COMPACT, "wide": _ERLDC_STATE_WIDE},
@@ -525,7 +577,8 @@ def _states(conn: sqlite3.Connection, report: int, date_id: int) -> None:
                     )
                     quarantined = True
                 continue
-            columns = resolution.mapping
+            columns = dict(resolution.mapping)
+        columns.update(_optional_state_drawal_columns(rows, set(columns.values())))
         values, sources = {}, {}
         for name, col in columns.items():
             value, raw = _number(row, col)
@@ -539,6 +592,39 @@ def _states(conn: sqlite3.Connection, report: int, date_id: int) -> None:
             (report, date_id, state[0], *values.values()),
         )
         _lineage(conn, report, "FactERLDCStateDaily", f"report={report};date={date_id};state={state[0]}", sources)
+
+
+def _optional_state_drawal_columns(
+    header_rows: list[dict[int, tuple[int, str]]],
+    used_columns: set[int],
+) -> dict[str, int]:
+    """Bind drawal fields from published labels without changing occupancy maps.
+
+    These columns exist on split-style state matrices and on some flat headers.
+    They are never inferred from numeric occupancy.
+    """
+
+    optional: dict[str, int] = {}
+    for field_name, tokens in _ERLDC_STATE_OPTIONAL_HEADER_TOKENS.items():
+        hits: list[int] = []
+        for row in header_rows:
+            for column, cell in row.items():
+                column_no = int(column)
+                if column_no in used_columns or column_no in optional.values():
+                    continue
+                normalized = compact_label(cell)
+                if field_name == "UIMU":
+                    if normalized in {"ui", "u.i", "uimu"} or normalized.startswith(
+                        ("ui(", "u.i(")
+                    ):
+                        hits.append(column_no)
+                    continue
+                if normalized and all(token in normalized for token in tokens):
+                    hits.append(column_no)
+        unique = sorted(set(hits))
+        if len(unique) == 1:
+            optional[field_name] = unique[0]
+    return optional
 
 
 def _split_states(conn: sqlite3.Connection, report: int, date_id: int) -> None:
@@ -855,6 +941,12 @@ def _split_frequency(
                 f"report={report};date={date_id};region={region_id}",
                 sources,
             )
+            _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
+            return
+    for _, _, rows in _all_tables(conn, report):
+        bands, _sources = collect_frequency_operating_bands(rows)
+        if bands:
+            _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
             return
 
 
@@ -1183,6 +1275,218 @@ def _compact_text(value: str) -> str:
     return re.sub(r"\s+", "", value).lower()
 
 
+def _promote_historical_flat_generation(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+) -> None:
+    """Promote 2023/2024-flat generation across pages 2-4.
+
+    Page 2 keeps the compact/wide occupancy fallback used by earlier fixtures.
+    Pages 3-4 promote 3(A) owner stations and 3(B) regional entities only after
+    a unique Installed/Gross/Net/Average header match. Promotion stops at 4(A).
+    """
+
+    mode = "state"
+    current_state_id: int | None = None
+    owner_group: str | None = None
+    owner_state_id: int | None = None
+    for page in (2, 3, 4):
+        rows = _rows(conn, report, page)
+        columns = _resolve_historical_generation_columns(rows)
+        if columns is None:
+            if page == 2:
+                _generation(conn, report, date_id, region_id)
+            continue
+        for row in rows:
+            label = row.get(1, (0, ""))[1].strip()
+            normalized = _compact_text(label)
+            if normalized.startswith("4(a)interregionalexchanges"):
+                return
+            if normalized.startswith("3(a)stateentitiesgeneration"):
+                mode = "state_entities"
+                owner_group = None
+                owner_state_id = None
+                current_state_id = None
+                continue
+            if normalized.startswith("3(b)regionalentitiesgeneration"):
+                mode = "regional"
+                owner_group = None
+                owner_state_id = None
+                current_state_id = None
+                continue
+            if not label or _is_generation_header(label):
+                continue
+            capacity, _ = _number(row, columns["InstalledCapacityMW"])
+            if mode == "state_entities":
+                if capacity is None:
+                    if not _is_total_generation_row(label):
+                        owner_group = _regional_owner_key(label)
+                        owner_state_id = _state_id_for_entity_owner(conn, label)
+                    continue
+                if owner_group is None:
+                    continue
+                _insert_2025_flat_state_entities_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    owner_state_id,
+                    owner_group,
+                    label,
+                    row,
+                    columns,
+                )
+                continue
+            if mode == "regional":
+                if capacity is None:
+                    if not _is_total_generation_row(label):
+                        owner_group = _regional_owner_key(label)
+                    continue
+                if owner_group is None:
+                    continue
+                _insert_2025_flat_regional_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    label,
+                    owner_group,
+                    row,
+                    columns,
+                )
+                continue
+            state_id = _state_id(conn, label)
+            if state_id is not None and capacity is None:
+                current_state_id = state_id
+                continue
+            if capacity is None:
+                continue
+            if current_state_id is not None:
+                _insert_2025_flat_state_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    current_state_id,
+                    label,
+                    row,
+                    columns,
+                )
+                continue
+            if page == 2:
+                _insert_legacy_flat_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    label,
+                    row,
+                    columns,
+                )
+
+
+def _resolve_historical_generation_columns(
+    rows: list[dict[int, tuple[int, str]]],
+) -> dict[str, int] | None:
+    """Bind 2023/2024-flat generation columns from unique energy headers."""
+
+    for tokens in (
+        {
+            "GrossEnergyMU": ("gross",),
+            "NetEnergyMU": ("net",),
+            "AverageMW": ("avg",),
+        },
+        {
+            "GrossEnergyMU": ("gross",),
+            "NetEnergyMU": ("net",),
+            "AverageMW": ("average",),
+        },
+    ):
+        header = resolve_header_layout(rows[:4], tokens, layout_id="header")
+        if not header.resolved or not header.mapping:
+            continue
+        energy = header.mapping
+        if energy == {"GrossEnergyMU": 7, "NetEnergyMU": 8, "AverageMW": 9}:
+            return _ERLDC_NINE_COLUMN_GENERATION
+        if energy == {"GrossEnergyMU": 10, "NetEnergyMU": 11, "AverageMW": 12}:
+            return _ERLDC_THIRTEEN_COLUMN_REGIONAL_GENERATION
+        return {"InstalledCapacityMW": 2, **energy}
+    return None
+
+
+def _insert_legacy_flat_generation(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    label: str,
+    row: dict[int, tuple[int, str]],
+    columns: dict[str, int],
+) -> None:
+    """Keep the page-2 station grain used by earlier flattened fixtures."""
+
+    if label.lower().startswith(("station", "total", "sub-total")):
+        return
+    capacity, cap_raw = _number(row, columns["InstalledCapacityMW"])
+    if capacity is None:
+        return
+    entity = conn.execute(
+        "SELECT EntityID FROM DimGridEntities WHERE EntityName = ?",
+        (label,),
+    ).fetchone()
+    if not entity:
+        state_name = generation_entity_state_name(label)
+        state_id = None
+        if state_name:
+            state = conn.execute(
+                "SELECT StateID FROM DimStates WHERE StateName = ?",
+                (state_name,),
+            ).fetchone()
+            state_id = state[0] if state else None
+        conn.execute(
+            "INSERT OR IGNORE INTO DimGridEntities("
+            "EntityName, EntityType, StateID, RegionID) VALUES (?, 'power_station', ?, ?)",
+            (label, state_id, region_id),
+        )
+        entity = conn.execute(
+            "SELECT EntityID FROM DimGridEntities WHERE EntityName = ?",
+            (label,),
+        ).fetchone()
+    if not entity:
+        return
+    values: dict[str, float | str] = {"InstalledCapacityMW": capacity}
+    sources: dict[str, int] = {"InstalledCapacityMW": cap_raw} if cap_raw else {}
+    for name, col in columns.items():
+        if name == "InstalledCapacityMW":
+            continue
+        if name in {"DayPeakTime", "MinimumGenerationTime"}:
+            raw = row.get(col)
+            value = _time(raw[1]) if raw else None
+            raw_id = raw[0] if raw else None
+        else:
+            value, raw_id = _number(row, col)
+        if value is not None:
+            values[name] = value
+        if raw_id is not None:
+            sources[name] = raw_id
+    names = ", ".join(values)
+    conn.execute(
+        f"INSERT OR REPLACE INTO FactERLDCGenerationDaily("
+        f"ReportDocumentID, DateID, EntityID, AggregateID, SectionName, {names}) "
+        f"VALUES (?, ?, ?, ?, 'state_generation', {', '.join('?' for _ in values)})",
+        (report, date_id, entity[0], entity[0], *values.values()),
+    )
+    _lineage(
+        conn,
+        report,
+        "FactERLDCGenerationDaily",
+        f"report={report};date={date_id};entity={entity[0]};section=state_generation",
+        sources,
+    )
+
+
 def _generation(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:
     rows = _rows(conn, report, 2)
     header = resolve_header_layout(rows, _ERLDC_GENERATION_HEADER_TOKENS, layout_id="header")
@@ -1290,7 +1594,9 @@ def _promote_2025_flat_state_generation(
         for row in rows:
             label = row.get(1, (0, ""))[1].strip()
             normalized_label = _compact_text(label)
-            if normalized_label.startswith("3(b)regionalentitiesgeneration"):
+            if normalized_label.startswith(
+                ("3(a)stateentitiesgeneration", "3(b)regionalentitiesgeneration")
+            ):
                 return
             state_id = _state_id(conn, label)
             capacity, _ = _number(row, columns["InstalledCapacityMW"])
@@ -1314,6 +1620,186 @@ def _promote_2025_flat_state_generation(
                 row,
                 columns,
             )
+
+
+def _promote_2025_flat_state_entities_generation(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+) -> None:
+    """Promote 3(A) owner-scoped state and IPP generation on pages 2–3.
+
+    CESC, WBPDCL, OPGC, and JUVNL headings are owner context, not states.
+    Promotion stops at the 3(B) regional-entities heading.
+    """
+
+    compact_columns = {
+        "InstalledCapacityMW": 2,
+        "EveningPeakMW": 3,
+        "OffPeakMW": 4,
+        "DayPeakMW": 5,
+        "DayPeakTime": 6,
+        "MinimumGenerationMW": 7,
+        "MinimumGenerationTime": 8,
+        "GrossEnergyMU": 9,
+        "NetEnergyMU": 10,
+        "AverageMW": 11,
+    }
+    sparse_columns = {
+        "InstalledCapacityMW": 3,
+        "EveningPeakMW": 5,
+        "OffPeakMW": 7,
+        "DayPeakMW": 9,
+        "DayPeakTime": 10,
+        "MinimumGenerationMW": 13,
+        "MinimumGenerationTime": 15,
+        "GrossEnergyMU": 17,
+        "NetEnergyMU": 19,
+        "AverageMW": 21,
+    }
+    in_section = False
+    owner_group: str | None = None
+    owner_state_id: int | None = None
+    for page, columns in ((2, compact_columns), (3, sparse_columns)):
+        for row in _rows(conn, report, page):
+            label = row.get(1, (0, ""))[1].strip()
+            normalized_label = _compact_text(label)
+            if normalized_label.startswith("3(a)stateentitiesgeneration"):
+                in_section = True
+                owner_group = None
+                owner_state_id = None
+                continue
+            if not in_section:
+                continue
+            if normalized_label.startswith("3(b)regionalentitiesgeneration"):
+                return
+            capacity, _ = _number(row, columns["InstalledCapacityMW"])
+            if capacity is None:
+                if label and not _is_generation_header(label) and not _is_total_generation_row(label):
+                    owner_group = _regional_owner_key(label)
+                    owner_state_id = _state_id_for_entity_owner(conn, label)
+                continue
+            if owner_group is None or not label or _is_generation_header(label):
+                continue
+            _insert_2025_flat_state_entities_generation(
+                conn,
+                report,
+                date_id,
+                region_id,
+                owner_state_id,
+                owner_group,
+                label,
+                row,
+                columns,
+            )
+
+
+def _state_id_for_entity_owner(conn: sqlite3.Connection, label: str) -> int | None:
+    """Resolve a 3(A) owner heading to its published host state when known."""
+
+    normalized = re.sub(r"\s+", "", label).upper()
+    state_name = _STATE_ENTITY_OWNER_ALIASES.get(normalized)
+    if state_name is None:
+        state_name = generation_entity_state_name(label)
+    if state_name is None:
+        return None
+    return _state_id_by_name(conn, state_name)
+
+
+def _insert_2025_flat_state_entities_generation(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    state_id: int | None,
+    owner_group: str,
+    label: str,
+    row: dict[int, tuple[int, str]],
+    columns: dict[str, int],
+) -> None:
+    """Insert one 3(A) owner-scoped generation row with raw-cell lineage."""
+
+    values: dict[str, float | str] = {}
+    sources: dict[str, int] = {}
+    for field, column in columns.items():
+        if field in {"DayPeakTime", "MinimumGenerationTime"}:
+            raw = row.get(column)
+            value = _time(raw[1]) if raw else None
+            raw_id = raw[0] if raw else None
+        else:
+            value, raw_id = _number(row, column)
+        if value is not None:
+            values[field] = value
+        if raw_id is not None:
+            sources[field] = raw_id
+    capacity = values.get("InstalledCapacityMW")
+    if not isinstance(capacity, float):
+        return
+    is_total = _is_total_generation_row(label)
+    try:
+        identity = resolve_generation_identity(
+            conn,
+            "erldc",
+            label,
+            state_id,
+            region_id,
+            None,
+            capacity,
+            is_total,
+        )
+    except DimensionResolutionError as error:
+        record_resolution_issue(
+            conn,
+            report,
+            "erldc",
+            "state_entities_generation",
+            label,
+            str(error),
+        )
+        return
+    entity_id = _get_or_create_grid_entity(
+        conn,
+        label,
+        "generation_aggregate" if is_total else "generating_entity",
+        state_id,
+        region_id,
+        None,
+        capacity,
+        is_total,
+        identity,
+    )
+    section = f"state_entities_generation:{owner_group}"
+    field_names = ", ".join(values)
+    placeholders = ", ".join("?" for _ in values)
+    conn.execute(
+        "INSERT OR REPLACE INTO FactERLDCGenerationDaily("
+        "ReportDocumentID, DateID, EntityID, StateID, StationID, "
+        "GeneratingUnitID, AggregateID, IsTotalRow, GenerationGrain, "
+        f"SectionName, {field_names}) "
+        f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {placeholders})",
+        (
+            report,
+            date_id,
+            entity_id,
+            state_id,
+            identity.station_id,
+            identity.generating_unit_id,
+            identity.aggregate_id,
+            int(is_total),
+            identity.entity_type,
+            section,
+            *values.values(),
+        ),
+    )
+    _lineage(
+        conn,
+        report,
+        "FactERLDCGenerationDaily",
+        f"report={report};date={date_id};entity={entity_id};section={section}",
+        sources,
+    )
+    _validate_generation_average(conn, report, label, values)
 
 
 def _insert_2025_flat_state_generation(
@@ -1761,7 +2247,50 @@ def _frequency(conn: sqlite3.Connection, report: int, date_id: int, region_id: i
         names = ", ".join(values)
         conn.execute(f"INSERT OR REPLACE INTO FactERLDCFrequencyDaily(ReportDocumentID, DateID, RegionID, {names}) VALUES (?, ?, ?, {', '.join('?' for _ in values)})", (report, date_id, region_id, *values.values()))
         _lineage(conn, report, "FactERLDCFrequencyDaily", f"report={report};date={date_id};region={region_id}", sources)
+        _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
         return
+    _merge_frequency_operating_bands(conn, report, date_id, region_id, rows)
+
+
+def _merge_frequency_operating_bands(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    rows: list[dict[int, tuple[int, str]]],
+) -> None:
+    """Attach unique IEGC operating-band percentages to the daily frequency fact."""
+
+    values, sources = collect_frequency_operating_bands(rows)
+    if not values:
+        return
+    existing = conn.execute(
+        "SELECT 1 FROM FactERLDCFrequencyDaily "
+        "WHERE ReportDocumentID = ? AND DateID = ? AND RegionID = ?",
+        (report, date_id, region_id),
+    ).fetchone()
+    assignments = ", ".join(f"{name} = ?" for name in values)
+    if existing:
+        conn.execute(
+            f"UPDATE FactERLDCFrequencyDaily SET {assignments} "
+            "WHERE ReportDocumentID = ? AND DateID = ? AND RegionID = ?",
+            (*values.values(), report, date_id, region_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO FactERLDCFrequencyDaily("
+            f"ReportDocumentID, DateID, RegionID, {', '.join(values)}) "
+            f"VALUES (?, ?, ?, {', '.join('?' for _ in values)})",
+            (report, date_id, region_id, *values.values()),
+        )
+    if sources:
+        _lineage(
+            conn,
+            report,
+            "FactERLDCFrequencyDaily",
+            f"report={report};date={date_id};region={region_id}",
+            sources,
+        )
 
 
 def _reservoirs(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:

@@ -127,6 +127,24 @@ TRANSMISSION_ELEMENT_REGISTRY: dict[str, TransmissionLocation] = {
         LocationRef("UP", "Northern Region", "grid_india_registry"),
         "grid_india_registry",
     ),
+    "132KV SM NAGAR COMILLA": TransmissionLocation(
+        "line", 132.0,
+        LocationRef("Tripura", "North Eastern Region", "grid_india_registry"),
+        LocationRef(evidence="grid_india_registry", country_name="Bangladesh"),
+        "grid_india_registry",
+    ),
+    "132KV SURAJMANINAGAR COMILLA": TransmissionLocation(
+        "line", 132.0,
+        LocationRef("Tripura", "North Eastern Region", "grid_india_registry"),
+        LocationRef(evidence="grid_india_registry", country_name="Bangladesh"),
+        "grid_india_registry",
+    ),
+    "400KV SURAJMANINAGAR COMILLA": TransmissionLocation(
+        "line", 400.0,
+        LocationRef("Tripura", "North Eastern Region", "grid_india_registry"),
+        LocationRef(evidence="grid_india_registry", country_name="Bangladesh"),
+        "grid_india_registry",
+    ),
 }
 
 
@@ -158,6 +176,9 @@ GENERATION_ENTITY_CANONICAL_NAMES: dict[str, str] = {
     "Umiam St II": "Umiam St II HEP",
     "Umiam St III": "Umiam St III HEP",
     "Umiam St IV": "Umiam St IV HEP",
+    "OTPC Palatana": "OTPC Palatana",
+    "Palatana": "OTPC Palatana",
+    "Palatana GBPP": "OTPC Palatana",
 }
 
 

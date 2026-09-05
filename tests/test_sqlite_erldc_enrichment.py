@@ -42,7 +42,6 @@ def test_all_registered_transmission_elements_resolve_endpoints() -> None:
     for elem_name, trans_loc in TRANSMISSION_ELEMENT_REGISTRY.items():
         loc = transmission_location(elem_name)
         assert loc.from_location.region_name == "Eastern Region"
-        assert loc.from_location.state_name in ER_STATES
         assert loc.to_location.region_name in {
             "Northern Region",
             "Western Region",
@@ -50,9 +49,13 @@ def test_all_registered_transmission_elements_resolve_endpoints() -> None:
             "Southern Region",
             "International",
         }
+        assert loc.evidence == "grid_india_registry"
+        if loc.element_type == "corridor":
+            assert loc.nominal_voltage_kv is None
+            continue
+        assert loc.from_location.state_name in ER_STATES
         assert loc.nominal_voltage_kv in {220.0, 400.0, 765.0}
         assert loc.element_type in {"line", "hvdc"}
-        assert loc.evidence == "grid_india_registry"
 
 
 def test_registered_generation_entities_resolve_states() -> None:
@@ -62,6 +65,8 @@ def test_registered_generation_entities_resolve_states() -> None:
     assert generation_entity_state_name("MEJIA TPS (4*210+2*250)") == "DVC"
     assert generation_entity_state_name("OPGC (2*210+2*660)") == "Odisha"
     assert generation_entity_state_name("TEESTA-V HPS (3*170)") == "Sikkim"
+    assert generation_entity_state_name("CESC") == "West Bengal"
+    assert generation_entity_state_name("JUVNL TPS") == "Jharkhand"
 
 
 def test_all_registered_reservoirs_resolve_states() -> None:
