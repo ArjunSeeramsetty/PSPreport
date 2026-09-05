@@ -178,6 +178,29 @@ _ERLDC_GENERATION_WIDE = {
     "NetEnergyMU": 8,
     "AverageMW": 9,
 }
+_ERLDC_NINE_COLUMN_GENERATION = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "GrossEnergyMU": 7,
+    "NetEnergyMU": 8,
+    "AverageMW": 9,
+}
+_ERLDC_THIRTEEN_COLUMN_REGIONAL_GENERATION = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 5,
+    "DayPeakTime": 6,
+    "MinimumGenerationMW": 7,
+    "MinimumGenerationTime": 8,
+    "ScheduledEnergyMU": 9,
+    "GrossEnergyMU": 10,
+    "NetEnergyMU": 11,
+    "AverageMW": 12,
+}
 _ERLDC_FREQUENCY_COMPACT = {
     "MaximumFrequencyHz": 1,
     "MinimumFrequencyHz": 4,
@@ -271,7 +294,12 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
             int(region[0]),
         )
     else:
-        _generation(conn, report_id, date_id, int(region[0]))
+        _promote_historical_flat_generation(
+            conn,
+            report_id,
+            date_id,
+            int(region[0]),
+        )
     _frequency(conn, report_id, date_id, int(region[0]))
     _reservoirs(conn, report_id, date_id, int(region[0]))
     if report[2] == "erldc_daily_psp_v2025_flat_11_column_generation":
@@ -1245,6 +1273,218 @@ def _is_frequency(value: float | None) -> bool:
 def _compact_text(value: str) -> str:
     """Normalize PDF whitespace for a structural header comparison."""
     return re.sub(r"\s+", "", value).lower()
+
+
+def _promote_historical_flat_generation(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+) -> None:
+    """Promote 2023/2024-flat generation across pages 2-4.
+
+    Page 2 keeps the compact/wide occupancy fallback used by earlier fixtures.
+    Pages 3-4 promote 3(A) owner stations and 3(B) regional entities only after
+    a unique Installed/Gross/Net/Average header match. Promotion stops at 4(A).
+    """
+
+    mode = "state"
+    current_state_id: int | None = None
+    owner_group: str | None = None
+    owner_state_id: int | None = None
+    for page in (2, 3, 4):
+        rows = _rows(conn, report, page)
+        columns = _resolve_historical_generation_columns(rows)
+        if columns is None:
+            if page == 2:
+                _generation(conn, report, date_id, region_id)
+            continue
+        for row in rows:
+            label = row.get(1, (0, ""))[1].strip()
+            normalized = _compact_text(label)
+            if normalized.startswith("4(a)interregionalexchanges"):
+                return
+            if normalized.startswith("3(a)stateentitiesgeneration"):
+                mode = "state_entities"
+                owner_group = None
+                owner_state_id = None
+                current_state_id = None
+                continue
+            if normalized.startswith("3(b)regionalentitiesgeneration"):
+                mode = "regional"
+                owner_group = None
+                owner_state_id = None
+                current_state_id = None
+                continue
+            if not label or _is_generation_header(label):
+                continue
+            capacity, _ = _number(row, columns["InstalledCapacityMW"])
+            if mode == "state_entities":
+                if capacity is None:
+                    if not _is_total_generation_row(label):
+                        owner_group = _regional_owner_key(label)
+                        owner_state_id = _state_id_for_entity_owner(conn, label)
+                    continue
+                if owner_group is None:
+                    continue
+                _insert_2025_flat_state_entities_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    owner_state_id,
+                    owner_group,
+                    label,
+                    row,
+                    columns,
+                )
+                continue
+            if mode == "regional":
+                if capacity is None:
+                    if not _is_total_generation_row(label):
+                        owner_group = _regional_owner_key(label)
+                    continue
+                if owner_group is None:
+                    continue
+                _insert_2025_flat_regional_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    label,
+                    owner_group,
+                    row,
+                    columns,
+                )
+                continue
+            state_id = _state_id(conn, label)
+            if state_id is not None and capacity is None:
+                current_state_id = state_id
+                continue
+            if capacity is None:
+                continue
+            if current_state_id is not None:
+                _insert_2025_flat_state_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    current_state_id,
+                    label,
+                    row,
+                    columns,
+                )
+                continue
+            if page == 2:
+                _insert_legacy_flat_generation(
+                    conn,
+                    report,
+                    date_id,
+                    region_id,
+                    label,
+                    row,
+                    columns,
+                )
+
+
+def _resolve_historical_generation_columns(
+    rows: list[dict[int, tuple[int, str]]],
+) -> dict[str, int] | None:
+    """Bind 2023/2024-flat generation columns from unique energy headers."""
+
+    for tokens in (
+        {
+            "GrossEnergyMU": ("gross",),
+            "NetEnergyMU": ("net",),
+            "AverageMW": ("avg",),
+        },
+        {
+            "GrossEnergyMU": ("gross",),
+            "NetEnergyMU": ("net",),
+            "AverageMW": ("average",),
+        },
+    ):
+        header = resolve_header_layout(rows[:4], tokens, layout_id="header")
+        if not header.resolved or not header.mapping:
+            continue
+        energy = header.mapping
+        if energy == {"GrossEnergyMU": 7, "NetEnergyMU": 8, "AverageMW": 9}:
+            return _ERLDC_NINE_COLUMN_GENERATION
+        if energy == {"GrossEnergyMU": 10, "NetEnergyMU": 11, "AverageMW": 12}:
+            return _ERLDC_THIRTEEN_COLUMN_REGIONAL_GENERATION
+        return {"InstalledCapacityMW": 2, **energy}
+    return None
+
+
+def _insert_legacy_flat_generation(
+    conn: sqlite3.Connection,
+    report: int,
+    date_id: int,
+    region_id: int,
+    label: str,
+    row: dict[int, tuple[int, str]],
+    columns: dict[str, int],
+) -> None:
+    """Keep the page-2 station grain used by earlier flattened fixtures."""
+
+    if label.lower().startswith(("station", "total", "sub-total")):
+        return
+    capacity, cap_raw = _number(row, columns["InstalledCapacityMW"])
+    if capacity is None:
+        return
+    entity = conn.execute(
+        "SELECT EntityID FROM DimGridEntities WHERE EntityName = ?",
+        (label,),
+    ).fetchone()
+    if not entity:
+        state_name = generation_entity_state_name(label)
+        state_id = None
+        if state_name:
+            state = conn.execute(
+                "SELECT StateID FROM DimStates WHERE StateName = ?",
+                (state_name,),
+            ).fetchone()
+            state_id = state[0] if state else None
+        conn.execute(
+            "INSERT OR IGNORE INTO DimGridEntities("
+            "EntityName, EntityType, StateID, RegionID) VALUES (?, 'power_station', ?, ?)",
+            (label, state_id, region_id),
+        )
+        entity = conn.execute(
+            "SELECT EntityID FROM DimGridEntities WHERE EntityName = ?",
+            (label,),
+        ).fetchone()
+    if not entity:
+        return
+    values: dict[str, float | str] = {"InstalledCapacityMW": capacity}
+    sources: dict[str, int] = {"InstalledCapacityMW": cap_raw} if cap_raw else {}
+    for name, col in columns.items():
+        if name == "InstalledCapacityMW":
+            continue
+        if name in {"DayPeakTime", "MinimumGenerationTime"}:
+            raw = row.get(col)
+            value = _time(raw[1]) if raw else None
+            raw_id = raw[0] if raw else None
+        else:
+            value, raw_id = _number(row, col)
+        if value is not None:
+            values[name] = value
+        if raw_id is not None:
+            sources[name] = raw_id
+    names = ", ".join(values)
+    conn.execute(
+        f"INSERT OR REPLACE INTO FactERLDCGenerationDaily("
+        f"ReportDocumentID, DateID, EntityID, AggregateID, SectionName, {names}) "
+        f"VALUES (?, ?, ?, ?, 'state_generation', {', '.join('?' for _ in values)})",
+        (report, date_id, entity[0], entity[0], *values.values()),
+    )
+    _lineage(
+        conn,
+        report,
+        "FactERLDCGenerationDaily",
+        f"report={report};date={date_id};entity={entity[0]};section=state_generation",
+        sources,
+    )
 
 
 def _generation(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:

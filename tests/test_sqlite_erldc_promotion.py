@@ -1955,3 +1955,208 @@ def test_erldc_flat_state_drawal_binds_from_published_headers() -> None:
         """
     ).fetchone()
     assert state_row == (145.2, 50.1, 48.4, -1.7)
+
+
+@pytest.mark.parametrize(
+    ("report_id", "template_id"),
+    [
+        (50, ERLDC_FLAT_2023_TEMPLATE_ID),
+        (51, ERLDC_FLAT_2024_TEMPLATE_ID),
+    ],
+)
+def test_erldc_historical_flat_promotes_nine_column_state_and_regional_generation(
+    report_id: int,
+    template_id: str,
+) -> None:
+    """2023/2024-flat page 2-3 tables keep state and 3(B) owner grains."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (?, 'erldc', 'historical-flat.pdf', '2023-04-01', ?, 0)
+        """,
+        (report_id, template_id),
+    )
+    _insert_cells(conn, report_id, 2, 1, 1, {1: "WEST BENGAL"})
+    _insert_cells(
+        conn,
+        report_id,
+        2,
+        1,
+        2,
+        {
+            1: "Station/Constituents",
+            2: "Inst.Capacity",
+            3: "19:00 Peak",
+            4: "Off Peak",
+            5: "Day Peak",
+            6: "Hrs",
+            7: "Gross(MU)",
+            8: "Net(MU)",
+            9: "AVG.MW",
+        },
+    )
+    _insert_cells(
+        conn,
+        report_id,
+        2,
+        1,
+        3,
+        {
+            1: "KOLAGHAT",
+            2: "1260",
+            3: "900",
+            4: "700",
+            5: "950",
+            6: "19:10",
+            7: "9.50",
+            8: "9.00",
+            9: "375",
+        },
+    )
+    _insert_cells(conn, report_id, 3, 1, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, report_id, 3, 1, 2, {1: "NTPC"})
+    _insert_cells(
+        conn,
+        report_id,
+        3,
+        1,
+        3,
+        {
+            1: "Station/Constituents",
+            2: "Inst.Capacity",
+            3: "Peak",
+            4: "OffPeak",
+            5: "DayPeak",
+            6: "Hrs",
+            7: "Min",
+            8: "Hrs",
+            9: "Schd(MU)",
+            10: "Gross(MU)",
+            11: "Net(MU)",
+            12: "AVG.MW",
+        },
+    )
+    _insert_cells(
+        conn,
+        report_id,
+        3,
+        1,
+        4,
+        {
+            1: "BARH ST-II(2*660)",
+            2: "1320",
+            3: "1100",
+            4: "800",
+            5: "1150",
+            6: "19:20",
+            7: "750",
+            8: "14:00",
+            9: "13.29",
+            10: "14.14",
+            11: "12.88",
+            12: "537",
+        },
+    )
+    _insert_cells(conn, report_id, 3, 1, 5, {1: "4(A) Inter-Regional Exchanges"})
+
+    promote_report_to_curated(conn, report_id)
+
+    kolaghat = conn.execute(
+        """
+        SELECT f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW, f.EveningPeakMW,
+               f.SectionName, s.StateName
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        JOIN DimStates AS s ON s.StateID = f.StateID
+        WHERE f.ReportDocumentID = ? AND entity.EntityName = 'KOLAGHAT'
+        """,
+        (report_id,),
+    ).fetchone()
+    barh = conn.execute(
+        """
+        SELECT f.ScheduledEnergyMU, f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW,
+               f.SectionName
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        WHERE f.ReportDocumentID = ? AND entity.EntityName = 'BARH ST-II(2*660)'
+        """,
+        (report_id,),
+    ).fetchone()
+    west_bengal_id = conn.execute(
+        "SELECT StateID FROM DimStates WHERE StateName = 'West Bengal'"
+    ).fetchone()[0]
+    assert kolaghat == (
+        9.5,
+        9.0,
+        375.0,
+        900.0,
+        f"state_generation_{west_bengal_id}",
+        "West Bengal",
+    )
+    assert barh == (13.29, 14.14, 12.88, 537.0, "regional_entities_generation:ntpc")
+
+
+def test_erldc_historical_flat_promotes_three_a_owner_generation() -> None:
+    """2023-flat 3(A) CESC stations keep owner-scoped section names."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (52, 'erldc', 'historical-3a.pdf', '2023-04-01', ?, 0)
+        """,
+        (ERLDC_FLAT_2023_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 52, 2, 1, 1, {1: "3(A) State Entities Generation"})
+    _insert_cells(conn, 52, 2, 1, 2, {1: "CESC"})
+    _insert_cells(
+        conn,
+        52,
+        2,
+        1,
+        3,
+        {
+            1: "Station/Constituents",
+            2: "Inst.Capacity",
+            7: "Gross(MU)",
+            8: "Net(MU)",
+            9: "AVG.MW",
+        },
+    )
+    _insert_cells(
+        conn,
+        52,
+        2,
+        1,
+        4,
+        {1: "BUDGE BUDGE", 2: "750", 7: "16.01", 8: "14.88", 9: "620"},
+    )
+    _insert_cells(conn, 52, 2, 1, 5, {1: "3(B) Regional Entities Generation"})
+
+    promote_report_to_curated(conn, 52)
+
+    budge = conn.execute(
+        """
+        SELECT f.GrossEnergyMU, f.NetEnergyMU, f.AverageMW, f.SectionName, s.StateName
+        FROM FactERLDCGenerationDaily AS f
+        JOIN DimGridEntities AS entity ON entity.EntityID = f.EntityID
+        LEFT JOIN DimStates AS s ON s.StateID = f.StateID
+        WHERE f.ReportDocumentID = 52 AND entity.EntityName = 'BUDGE BUDGE'
+        """
+    ).fetchone()
+    leaked = conn.execute(
+        """
+        SELECT COUNT(*) FROM FactERLDCGenerationDaily
+        WHERE ReportDocumentID = 52 AND SectionName LIKE 'state_generation_%'
+        """
+    ).fetchone()[0]
+    assert budge == (16.01, 14.88, 620.0, "state_entities_generation:cesc", "West Bengal")
+    assert leaked == 0
