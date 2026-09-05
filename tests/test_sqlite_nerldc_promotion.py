@@ -90,7 +90,7 @@ def test_nerldc_2025_local_fixture_promotes_core_curated_facts(
     ),
     [
         ("NER-PSP-REPORT-DATED-01-04-2023.pdf", date(2023, 4, 1), True, 9),
-        ("NER-PSP-REPORT-DATED-01-01-2024.pdf", date(2024, 1, 1), False, 9),
+        ("NER-PSP-REPORT-DATED-01-01-2024.pdf", date(2024, 1, 1), True, 9),
         ("NER-PSP-REPORT-DATED-01-01-2026.pdf", date(2026, 1, 1), True, 10),
     ],
 )
