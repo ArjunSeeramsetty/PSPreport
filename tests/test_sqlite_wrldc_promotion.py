@@ -858,3 +858,110 @@ def test_wrldc_revised_families_promote_native_market_extrema(
         ("PXILGDAM", 0.0, 0.0),
         ("TGNABilateral", 40.0, 1.0),
     ]
+
+
+def test_wrldc_nine_column_promotes_single_header_regional_generation() -> None:
+    """Page-3 9-column regional tables promote after a complete header match."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (20, 'wrldc', 'WRLDC_PSP_Report_01-04-2023.pdf', '2023-04-01', ?, 0)
+        """,
+        (WRLDC_9_COLUMN_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 20, 3, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 20, 3, 2, {1: "ISGS"})
+    _insert_cells(conn, 20, 3, 3, {
+        1: "Station/Constituents", 2: "Inst.Capacity", 3: "19:00 PeakMW",
+        4: "03:00 OffPeakMW", 5: "DayPeak(MW)", 6: "Hrs",
+        7: "Gross(MU)", 8: "Net(MU)", 9: "AVG.MW",
+    })
+    _insert_cells(conn, 20, 3, 4, {
+        2: "MW", 3: "PeakMW", 4: "OffPeakMW", 5: "MW", 6: "Hrs",
+        7: "GrossMU", 8: "NetMU", 9: "AvgMW",
+    })
+    _insert_cells(conn, 20, 3, 5, {
+        1: "KSTPS(3*210+4*500)", 2: "2630", 3: "2100", 4: "1800",
+        5: "2200", 6: "19:30", 7: "48.10", 8: "45.20", 9: "1883",
+    })
+
+    promote_report_to_curated(conn, 20)
+
+    row = conn.execute(
+        """
+        SELECT entity.EntityName, fact.SectionName, fact.OffPeakMW,
+               fact.GrossEnergyMU, fact.NetEnergyMU, fact.AverageMW,
+               fact.MinimumGenerationMW, fact.ScheduledEnergyMU
+        FROM FactWRLDCGenerationDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        WHERE fact.ReportDocumentID = 20
+        """
+    ).fetchone()
+    assert row == (
+        "KSTPS(3*210+4*500)",
+        "regional_generation_isgs",
+        1800.0,
+        48.1,
+        45.2,
+        1883.0,
+        None,
+        None,
+    )
+
+
+def test_wrldc_2024_revised_promotes_header_validated_conventional_generation() -> None:
+    """The 2024-revised family reuses the verified 11-column conventional maps."""
+
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, local_path, report_date, template_id, semantic_pass_required
+        ) VALUES (21, 'wrldc', 'WRLDC_PSP_Report_15-12-2024.pdf', '2024-12-15', ?, 0)
+        """,
+        (WRLDC_2024_REVISED_TEMPLATE_ID,),
+    )
+    _insert_cells(conn, 21, 3, 1, {1: "3(B) Regional Entities Generation"})
+    _insert_cells(conn, 21, 3, 2, {1: "ISGS"})
+    _insert_cells(conn, 21, 3, 3, {
+        1: "Station/Constituents", 2: "Inst.Capacity", 3: "19:00 PeakMW",
+        4: "03:00 OffPeakMW", 6: "DayPeak(MW)", 8: "Hrs",
+        10: "MinGeneration(MW)", 12: "Hrs", 13: "DayEnergy",
+        15: "Gross(MU)", 17: "Net(MU)", 19: "AVG.MW",
+    })
+    _insert_cells(conn, 21, 3, 4, {
+        2: "MW", 3: "PeakMW", 4: "OffPeakMW", 6: "MW", 8: "Hrs",
+        10: "MW", 12: "Hrs", 13: "SCHD(MU)", 15: "GrossMU",
+        17: "NetMU", 19: "AvgMW",
+    })
+    _insert_cells(conn, 21, 3, 5, {
+        1: "GADARWARA(2*800)", 2: "1600", 3: "1484", 4: "865",
+        6: "1532", 8: "19:48", 10: "785", 12: "13:02", 13: "29.05",
+        15: "30.67", 17: "28.49", 19: "1187",
+    })
+
+    promote_report_to_curated(conn, 21)
+
+    row = conn.execute(
+        """
+        SELECT entity.EntityName, fact.SectionName, fact.ScheduledEnergyMU,
+               fact.GrossEnergyMU, fact.NetEnergyMU
+        FROM FactWRLDCGenerationDaily AS fact
+        JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID
+        WHERE fact.ReportDocumentID = 21
+        """
+    ).fetchone()
+    assert row == (
+        "GADARWARA(2*800)",
+        "regional_generation_isgs",
+        29.05,
+        30.67,
+        28.49,
+    )

@@ -204,11 +204,33 @@ _IPP_JV_GENERATION_COLUMNS = {
     "NetEnergyMU": 11,
     "AverageMW": 12,
 }
-_CONVENTIONAL_GENERATION_TEMPLATE_IDS = frozenset(
-    {
-        WRLDC_2025_TEMPLATE.template_id,
-        WRLDC_2026_EARLY_TEMPLATE.template_id,
-    }
+_CONVENTIONAL_GENERATION_TEMPLATE_IDS = WRLDC_GENERATION_TEMPLATE_IDS
+_NINE_COLUMN_REGIONAL_GENERATION_COLUMNS = {
+    "InstalledCapacityMW": 2,
+    "EveningPeakMW": 3,
+    "OffPeakMW": 4,
+    "DayPeakMW": 6,
+    "DayPeakTime": 8,
+    "MinimumGenerationMW": 10,
+    "MinimumGenerationTime": 12,
+    "GrossEnergyMU": 14,
+    "NetEnergyMU": 16,
+    "AverageMW": 18,
+}
+_CONVENTIONAL_STATE_COLUMN_CANDIDATES = (
+    _STATE_SPARSE_GENERATION_COLUMNS,
+    _NINE_COLUMN_GENERATION_COLUMNS,
+    _NINE_COLUMN_REGIONAL_GENERATION_COLUMNS,
+)
+_CONVENTIONAL_REGIONAL_COLUMN_CANDIDATES = (
+    _REGIONAL_SPARSE_GENERATION_COLUMNS,
+    _NINE_COLUMN_REGIONAL_GENERATION_COLUMNS,
+    _NINE_COLUMN_GENERATION_COLUMNS,
+)
+_CONVENTIONAL_CONTINUATION_COLUMN_CANDIDATES = (
+    _IPP_JV_GENERATION_COLUMNS,
+    _NINE_COLUMN_REGIONAL_GENERATION_COLUMNS,
+    _NINE_COLUMN_GENERATION_COLUMNS,
 )
 _GENERATION_HEADER_TOKENS = {
     "InstalledCapacityMW": "instcapacity",
@@ -242,9 +264,11 @@ def promote_wrldc_report_to_curated(
     """Promote verified WRLDC PSP facts with raw-cell lineage.
 
     Approved nine- and eleven-column state-generation layouts are supported.
-    The 2024-revised, 2024-transition, 2025, and 2026 families also promote
-    verified operational and market sections when those pages match a
-    fixture-backed contract.
+    Conventional page-three and page-four grids promote for every approved
+    family after a complete two-row header match. The 2024-revised,
+    2024-transition, 2025, and 2026 families also promote verified
+    operational and market sections when those pages match a fixture-backed
+    contract.
     """
     ensure_curated_sqlite_schema(conn)
     report = _fetch_report(conn, report_document_id)
@@ -507,11 +531,12 @@ def _promote_conventional_generation(
     region_id: int,
     mapped_cells: set[int],
 ) -> None:
-    """Promote verified 2025/2026 conventional grids from pages three and four.
+    """Promote header-validated conventional grids from pages three and four.
 
-    These three publisher layouts deliberately use separate column maps.  A
-    complete two-row header contract is required before each block is read so
-    a later layout revision cannot silently shift source values.
+    Eleven-column families keep their sparse 2025/2026 maps. Nine-column
+    families bind only when a complete two-row header matches a fixture map,
+    including the single-header regional table that starts page 3 after
+    state generation finished on page 2.
     """
 
     page_three_rows = _table_rows(conn, report_id, 3, 1)
@@ -523,60 +548,105 @@ def _promote_conventional_generation(
             report_id,
             page_three_rows[:state_header_index],
         )
-        if (
-            state_id is not None
-            and _generation_header_matches(
-                page_three_rows,
-                state_header_index,
-                _STATE_SPARSE_GENERATION_COLUMNS,
-            )
-        ):
+        state_columns = _first_matching_generation_columns(
+            page_three_rows,
+            state_header_index,
+            _CONVENTIONAL_STATE_COLUMN_CANDIDATES,
+        )
+        if state_id is not None and state_columns is not None:
             _promote_conventional_block(
                 conn,
                 report_id,
                 date_id,
                 region_id,
                 page_three_rows[state_header_index + 2:regional_header_index],
-                _STATE_SPARSE_GENERATION_COLUMNS,
+                state_columns,
                 state_id,
                 f"state_generation_{state_id}",
                 mapped_cells,
             )
-        if _generation_header_matches(
+        regional_columns = _first_matching_generation_columns(
             page_three_rows,
             regional_header_index,
-            _REGIONAL_SPARSE_GENERATION_COLUMNS,
-        ):
+            _CONVENTIONAL_REGIONAL_COLUMN_CANDIDATES,
+        )
+        if regional_columns is not None:
             _promote_conventional_block(
                 conn,
                 report_id,
                 date_id,
                 region_id,
                 page_three_rows[regional_header_index + 2:],
-                _REGIONAL_SPARSE_GENERATION_COLUMNS,
+                regional_columns,
                 None,
                 "regional_generation_isgs",
                 mapped_cells,
             )
+    elif len(header_indexes) == 1:
+        header_index = header_indexes[0]
+        preceding = page_three_rows[:header_index]
+        state_id = _preceding_state_id(conn, report_id, preceding)
+        if _has_regional_entities_heading(preceding) or state_id is None:
+            regional_columns = _first_matching_generation_columns(
+                page_three_rows,
+                header_index,
+                _CONVENTIONAL_REGIONAL_COLUMN_CANDIDATES,
+            )
+            if regional_columns is not None:
+                _promote_conventional_block(
+                    conn,
+                    report_id,
+                    date_id,
+                    region_id,
+                    page_three_rows[header_index + 2:],
+                    regional_columns,
+                    None,
+                    "regional_generation_isgs",
+                    mapped_cells,
+                )
+        else:
+            state_columns = _first_matching_generation_columns(
+                page_three_rows,
+                header_index,
+                _CONVENTIONAL_STATE_COLUMN_CANDIDATES,
+            )
+            if state_columns is not None:
+                _promote_conventional_block(
+                    conn,
+                    report_id,
+                    date_id,
+                    region_id,
+                    page_three_rows[header_index + 2:],
+                    state_columns,
+                    state_id,
+                    f"state_generation_{state_id}",
+                    mapped_cells,
+                )
 
     page_four_rows = _table_rows(conn, report_id, 4, 1)
     page_four_headers = _station_header_indexes(page_four_rows)
     if page_four_headers:
         header_index = page_four_headers[0]
-        if _generation_header_matches(
+        columns = _first_matching_generation_columns(
             page_four_rows,
             header_index,
-            _IPP_JV_GENERATION_COLUMNS,
-        ):
+            _CONVENTIONAL_CONTINUATION_COLUMN_CANDIDATES,
+        )
+        if columns is not None:
+            section_name = (
+                "regional_generation_ipp_jv"
+                if columns == _IPP_JV_GENERATION_COLUMNS
+                else "regional_generation_isgs"
+            )
             _promote_conventional_block(
                 conn,
                 report_id,
                 date_id,
                 region_id,
                 page_four_rows[header_index + 2:],
-                _IPP_JV_GENERATION_COLUMNS,
+                columns,
                 None,
-                "regional_generation_ipp_jv",
+                section_name,
                 mapped_cells,
             )
 
@@ -631,6 +701,31 @@ def _generation_header_matches(
         if expected not in normalized:
             return False
     return True
+
+
+def _first_matching_generation_columns(
+    rows: list[dict[int, tuple[int, str]]],
+    header_index: int,
+    candidates: tuple[dict[str, int], ...],
+) -> dict[str, int] | None:
+    """Return the first fixture map whose two-row header is complete."""
+
+    for columns in candidates:
+        if _generation_header_matches(rows, header_index, columns):
+            return columns
+    return None
+
+
+def _has_regional_entities_heading(
+    rows: list[dict[int, tuple[int, str]]],
+) -> bool:
+    """Return whether preceding rows publish the 3(B) regional heading."""
+
+    for row in rows:
+        label = re.sub(r"\s+", "", _clean_label(row.get(1, (0, ""))[1])).lower()
+        if label.startswith("3(b)") or "regionalentitiesgeneration" in label:
+            return True
+    return False
 
 
 def _promote_conventional_block(
