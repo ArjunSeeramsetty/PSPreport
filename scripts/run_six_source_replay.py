@@ -25,6 +25,7 @@ from psp_pipeline.quality.coverage_contract import (
     default_coverage_manifest_path,
     enforce_coverage_manifest,
 )
+from psp_pipeline.quality.coverage_completeness import assess_coverage_completeness
 from psp_pipeline.quality.fixture_acquisition import hash_local_fixtures
 from psp_pipeline.reconciliation.all_india_balance import synthesize_all_india_daily_balance
 from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
@@ -203,6 +204,13 @@ def run_replay_for_date(
         "balance_reconciliation": balance_dict,
         "fixture_checksums": list(fixture_checksums),
         "coverage": {name: result.as_dict() for name, result in coverage.items()},
+        "coverage_completeness": assess_coverage_completeness(
+            coverage["corpus"],
+            db_path=str(db_path),
+            fact_table_counts=fact_table_counts,
+            balance=balance_dict,
+            present_documents=source_docs.keys(),
+        ).as_dict(),
         "timescale_result": timescale_result,
         "neo4j_result": neo4j_result,
     }

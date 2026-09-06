@@ -27,11 +27,21 @@ class CoverageProfileResult:
 
         return not self.failures and not self.missing_sources
 
+    @property
+    def full_cell_coverage(self) -> bool:
+        """Return whether every present source is 100% accounted, not merely above floor."""
+
+        pcts = [value for source, value in self.actual.items() if "." not in source]
+        return bool(pcts) and not self.missing_sources and all(
+            value >= 100.0 for value in pcts
+        )
+
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-ready coverage evaluation for replay and DAG XCom."""
 
         payload = asdict(self)
         payload["passed"] = self.passed
+        payload["full_cell_coverage"] = self.full_cell_coverage
         return payload
 
 

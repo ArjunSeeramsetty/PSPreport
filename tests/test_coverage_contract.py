@@ -65,6 +65,8 @@ def test_manifest_declares_required_synthetic_and_optional_corpus_profiles() -> 
     manifest = load_coverage_manifest(_MANIFEST)
     assert manifest["profiles"]["synthetic"]["required"] is True
     assert manifest["profiles"]["corpus"]["required"] is False
+    assert "not 100%" in manifest["profiles"]["corpus"]["description"]
+    assert "RPC" in manifest["profiles"]["corpus"]["description"]
 
 
 def test_coverage_floor_gate_rejects_a_source_below_its_contract(tmp_path: Path) -> None:
@@ -139,6 +141,9 @@ def test_curated_coverage_stage_is_fail_soft_for_daily_orchestration(
 
     assert payload["passed"] is False
     assert tuple(payload["profiles"]["corpus"]["missing_sources"]) == ("nrldc",)
+    assert payload["profiles"]["corpus"]["full_cell_coverage"] is False
+    assert payload["full_psp_and_rpc_coverage"] is False
+    assert payload["coverage_completeness"]["rpc_status"] == "not_demonstrated"
     assert payload["odcs"]["skipped"] is True
     assert "columnLineage" in payload["openlineage"]["outputs"][0]["facets"]
 

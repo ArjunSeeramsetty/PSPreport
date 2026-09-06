@@ -60,6 +60,9 @@ def test_run_national_replay_mocked(tmp_path: Path) -> None:
     assert "final_dimension_audit" in report
     assert "coverage" in report
     assert "corpus" in report["coverage"]
+    assert report["coverage"]["corpus"]["full_cell_coverage"] is False
+    assert report["coverage_completeness"]["full_psp_and_rpc_coverage"] is False
+    assert report["coverage_completeness"]["rpc_status"] == "not_demonstrated"
 
 
 def test_run_national_replay_with_balance_synthesis(tmp_path: Path) -> None:

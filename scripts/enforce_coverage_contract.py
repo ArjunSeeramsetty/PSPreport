@@ -11,6 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from psp_pipeline.quality.coverage_completeness import assess_coverage_completeness
 from psp_pipeline.quality.coverage_contract import (
     default_coverage_manifest_path,
     enforce_coverage_manifest,
@@ -35,7 +36,14 @@ def main() -> int:
         require_sources=args.require_source or None,
     )
     payload = {
-        name: result.as_dict() for name, result in results.items()
+        name: {
+            **result.as_dict(),
+            "coverage_completeness": assess_coverage_completeness(
+                result,
+                db_path=str(args.db),
+            ).as_dict(),
+        }
+        for name, result in results.items()
     }
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.output:

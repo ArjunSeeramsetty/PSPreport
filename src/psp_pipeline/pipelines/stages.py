@@ -29,6 +29,7 @@ from psp_pipeline.quality.coverage_contract import (
     enforce_coverage_manifest,
     evaluate_coverage_manifest,
 )
+from psp_pipeline.quality.coverage_completeness import assess_coverage_completeness
 from psp_pipeline.quality.odcs_contract import evaluate_odcs_directory
 from psp_pipeline.quality.timescale_mirror_reconciliation import (
     CurrentRowFetcher,
@@ -740,6 +741,10 @@ def evaluate_curated_coverage_contract(
     Daily orchestration uses ``fail_hard=False`` so a coverage regression is
     visible in XCom without blocking Timescale or graph publication. Replay and
     CI callers pass ``fail_hard=True`` for the profile they intend to gate.
+
+    ``passed`` means the selected floors (and ODCS, when present) held. It is
+    not full PSP and RPC report coverage; callers must read
+    ``full_psp_and_rpc_coverage`` for that verdict.
     """
 
     if not sqlite_db_path.exists():
@@ -759,6 +764,10 @@ def evaluate_curated_coverage_contract(
         require_sources=require_sources,
     )
     selected = results[profile_name]
+    completeness = assess_coverage_completeness(
+        selected,
+        db_path=str(sqlite_db_path),
+    )
     odcs = evaluate_odcs_directory(sqlite_db_path)
     lineage_event = build_column_lineage_event(
         sqlite_db_path,
@@ -774,6 +783,8 @@ def evaluate_curated_coverage_contract(
         "profile_name": profile_name,
         "passed": selected.passed and (odcs.passed or odcs.skipped),
         "skipped": False,
+        "full_psp_and_rpc_coverage": completeness.full_psp_and_rpc_coverage,
+        "coverage_completeness": completeness.as_dict(),
         "profiles": {name: result.as_dict() for name, result in results.items()},
         "odcs": odcs.as_dict(),
         "openlineage": lineage_event,

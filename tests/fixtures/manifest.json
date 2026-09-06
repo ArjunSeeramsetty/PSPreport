@@ -53,6 +53,7 @@
     },
     "corpus": {
       "required": false,
+      "description": "Accounted-cell floors for daily PSP sources. Passing these floors is not 100% report coverage, does not include RPC reports, and does not certify energy reconciliation.",
       "coverage_floors": {
         "srldc": 95.0,
         "nrldc": 80.0,

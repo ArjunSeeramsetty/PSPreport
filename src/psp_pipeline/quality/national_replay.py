@@ -15,6 +15,7 @@ from psp_pipeline.quality.coverage_contract import (
     default_coverage_manifest_path,
     evaluate_coverage_manifest,
 )
+from psp_pipeline.quality.coverage_completeness import assess_coverage_completeness
 from psp_pipeline.quality.national_dimension_audit import audit_national_dimensions
 from psp_pipeline.reconciliation.all_india_balance import synthesize_all_india_daily_balance
 from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
@@ -171,6 +172,7 @@ def run_national_replay(
     except Exception as exc:
         final_audit = {"error": str(exc)}
 
+    coverage_results: dict[str, Any] = {}
     try:
         coverage_results = evaluate_coverage_manifest(
             db_path,
@@ -197,6 +199,12 @@ def run_national_replay(
     )
     report_dict = asdict(report)
     report_dict["coverage"] = final_coverage
+    corpus = coverage_results.get("corpus")
+    if corpus is not None:
+        report_dict["coverage_completeness"] = assess_coverage_completeness(
+            corpus,
+            db_path=str(db_path),
+        ).as_dict()
 
     if output_path is not None:
         out_file = Path(output_path)
