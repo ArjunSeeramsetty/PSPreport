@@ -68,6 +68,7 @@ def run_replay_for_date(
     *,
     load_timescale: bool = True,
     sync_neo4j: bool = True,
+    ingest_rpc_fixtures: bool = False,
 ) -> dict:
     """Run full 6-source replay for a single date across SQLite, Timescale, and Neo4j."""
     if target_date_str not in APPROVED_2026_FILES:
@@ -87,6 +88,12 @@ def run_replay_for_date(
 
     LOGGER.info("Starting 6-source local SQLite ingestion for %s", target_date_str)
     ingestion = run_rldc_local_pdf_ingestion(db_path, inputs)
+    rpc_fixtures = None
+    if ingest_rpc_fixtures:
+        from psp_pipeline.quality.rpc_fixtures import ingest_rpc_fixture_reports
+
+        LOGGER.info("Ingesting local RPC settlement fixtures into %s", db_path)
+        rpc_fixtures = ingest_rpc_fixture_reports(db_path)
     fixture_checksums = hash_local_fixtures(
         (f"{rldc}-{target_date_str}", path) for rldc, path in file_map.items()
     )
@@ -213,6 +220,7 @@ def run_replay_for_date(
         ).as_dict(),
         "timescale_result": timescale_result,
         "neo4j_result": neo4j_result,
+        "rpc_fixtures": rpc_fixtures,
     }
 
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -227,6 +235,11 @@ def main() -> None:
     parser.add_argument("--summary", type=Path, default=ROOT / "data" / "diagnostics" / "six_source_replay_2026_01_01.json")
     parser.add_argument("--no-timescale", action="store_true", help="Skip TimescaleDB load")
     parser.add_argument("--no-neo4j", action="store_true", help="Skip Neo4j sync")
+    parser.add_argument(
+        "--rpc-fixtures",
+        action="store_true",
+        help="Ingest canonical local RPC DSM/REA fixtures after daily PSP reports",
+    )
     args = parser.parse_args()
 
     configure_logging("INFO")
@@ -236,6 +249,7 @@ def main() -> None:
         args.summary,
         load_timescale=not args.no_timescale,
         sync_neo4j=not args.no_neo4j,
+        ingest_rpc_fixtures=args.rpc_fixtures,
     )
 
 
