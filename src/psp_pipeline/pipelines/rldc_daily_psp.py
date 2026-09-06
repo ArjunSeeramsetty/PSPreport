@@ -30,6 +30,7 @@ from psp_pipeline.acquisition.adapters import (
     WRLDCAdapter,
     grid_india_verified_client,
 )
+from psp_pipeline.parsing.page_profiler import extract_profile_text, profile_pdf
 from psp_pipeline.parsing.rldc.pdf_tables import extract_page_tables
 from psp_pipeline.parsing.rldc.templates import TemplateMatch, inspect_report_structure, match_report_template
 from psp_pipeline.storage.sqlite_curated_promoter import promote_report_to_curated
@@ -195,22 +196,27 @@ def _hash_file(path: Path) -> str:
 
 
 def _read_sample_text(pdf_path: Path, max_pages: int = 2) -> str:
-    chunks: list[str] = []
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        for page in pdf.pages[:max_pages]:
-            text = page.extract_text() or ""
-            if text:
-                chunks.append(text)
-    return "\n".join(chunks)
+    """Read a cheap native-text sample for OCR scoring without opening pdfplumber."""
+
+    return extract_profile_text(pdf_path, max_pages=max_pages)
 
 
 def _extract_pdfplumber_raw(pdf_path: Path) -> tuple[str, list[RawLine], list[RawCell]]:
-    """Extract raw text lines and table cells using pdfplumber."""
+    """Extract raw text lines and table cells using pdfplumber.
 
+    A pypdf/PyMuPDF profile routes only dense or uncertain pages into geometric
+    table extraction. Text is still taken from every page. Sparse cover pages
+    skip table extraction; profiler failure dispatches every page.
+    """
+
+    profile = profile_pdf(pdf_path)
+    dense_pages = profile.pages_for_pdfplumber()
     chunks: list[str] = []
     raw_lines: list[RawLine] = []
     raw_cells: list[RawCell] = []
     with pdfplumber.open(str(pdf_path)) as pdf:
+        page_numbers = range(1, len(pdf.pages) + 1)
+        extract_tables_on = dense_pages or frozenset(page_numbers)
         for page_idx, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
             if text:
@@ -225,19 +231,26 @@ def _extract_pdfplumber_raw(pdf_path: Path) -> tuple[str, list[RawLine], list[Ra
                             extraction_method="pdfplumber",
                         )
                     )
-            for table_idx, table in enumerate(extract_page_tables(page), start=1):
-                for row_idx, row in enumerate(table or [], start=1):
-                    for col_idx, cell in enumerate(row or [], start=1):
-                        raw_cells.append(
-                            RawCell(
-                                page_no=page_idx,
-                                table_no=table_idx,
-                                row_no=row_idx,
-                                col_no=col_idx,
-                                cell_text=str(cell).strip() if cell is not None else "",
-                                extraction_method="pdfplumber",
+            if page_idx in extract_tables_on:
+                for table_idx, table in enumerate(extract_page_tables(page), start=1):
+                    for row_idx, row in enumerate(table or [], start=1):
+                        for col_idx, cell in enumerate(row or [], start=1):
+                            raw_cells.append(
+                                RawCell(
+                                    page_no=page_idx,
+                                    table_no=table_idx,
+                                    row_no=row_idx,
+                                    col_no=col_idx,
+                                    cell_text=str(cell).strip() if cell is not None else "",
+                                    extraction_method="pdfplumber",
+                                )
                             )
-                        )
+            else:
+                logger.info(
+                    "pdfplumber_skip_tables path=%s page=%s reason=sparse_profile",
+                    pdf_path,
+                    page_idx,
+                )
             page.flush_cache()
     return "\n".join(chunks), raw_lines, raw_cells
 
@@ -447,9 +460,9 @@ PSP_VALIDATION_RULES = {
 def validate_report_family(pdf_path: Path, declared_family: str) -> bool:
     if declared_family != "psp":
         return True
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        page_count = len(pdf.pages)
-        text = " ".join((page.extract_text() or "") for page in pdf.pages[:3]).lower()
+    profile = profile_pdf(pdf_path)
+    page_count = profile.page_count
+    text = extract_profile_text(pdf_path, max_pages=3).lower()
     keyword_hits = sum(1 for kw in PSP_VALIDATION_RULES["required_keywords"] if kw in text)
     if keyword_hits < PSP_VALIDATION_RULES["min_keyword_hits"]:
         logger.warning("report_family_mismatch path=%s keyword_hits=%s", pdf_path, keyword_hits)
