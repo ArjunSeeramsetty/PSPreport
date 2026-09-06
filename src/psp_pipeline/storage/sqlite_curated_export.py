@@ -42,6 +42,9 @@ _DIMENSION_COLUMNS = {
     "ServiceType",
     "AllocationWindow",
 }
+_NON_MEASURE_COLUMNS = {
+    "IegcBandViolation",
+}
 
 
 @dataclass(frozen=True)
@@ -244,6 +247,9 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
                 "FactSRLDCRegionalDaily",
                 "'SR:region:' || region.RegionName",
                 "JOIN DimRegions AS region ON region.RegionID = fact.RegionID",
+                excluded_numeric_columns=(
+                    "IegcBandViolation",
+                ),
             ),
             TableExportSpec(
                 "FactSRLDCStateDaily",
@@ -1026,5 +1032,6 @@ def _numeric_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
             f"PRAGMA table_info({table_name})"
         )
         if str(name) not in _DIMENSION_COLUMNS
+        and str(name) not in _NON_MEASURE_COLUMNS
         and str(column_type).upper() in {"REAL", "INTEGER"}
     ]
