@@ -131,6 +131,34 @@ TRANSMISSION_ELEMENT_REGISTRY: dict[str, TransmissionLocation] = {
         to_location=LocationRef("Nepal", "International", "grid_india_registry"),
         evidence="grid_india_registry",
     ),
+    "ER-NR": TransmissionLocation(
+        element_type="corridor",
+        nominal_voltage_kv=None,
+        from_location=LocationRef(None, "Eastern Region", "grid_india_registry"),
+        to_location=LocationRef(None, "Northern Region", "grid_india_registry"),
+        evidence="grid_india_registry",
+    ),
+    "ER-WR": TransmissionLocation(
+        element_type="corridor",
+        nominal_voltage_kv=None,
+        from_location=LocationRef(None, "Eastern Region", "grid_india_registry"),
+        to_location=LocationRef(None, "Western Region", "grid_india_registry"),
+        evidence="grid_india_registry",
+    ),
+    "ER-SR": TransmissionLocation(
+        element_type="corridor",
+        nominal_voltage_kv=None,
+        from_location=LocationRef(None, "Eastern Region", "grid_india_registry"),
+        to_location=LocationRef(None, "Southern Region", "grid_india_registry"),
+        evidence="grid_india_registry",
+    ),
+    "ER-NER": TransmissionLocation(
+        element_type="corridor",
+        nominal_voltage_kv=None,
+        from_location=LocationRef(None, "Eastern Region", "grid_india_registry"),
+        to_location=LocationRef(None, "North Eastern Region", "grid_india_registry"),
+        evidence="grid_india_registry",
+    ),
 }
 
 # Authoritative state and owner mapping for major Eastern Region generation entities
@@ -174,6 +202,9 @@ GENERATION_ENTITY_STATE_REGISTRY: dict[str, str] = {
     "CHUZACHEN": "Sikkim",
     "JORETHANG": "Sikkim",
     "TASHIDING": "Sikkim",
+    "CESC": "West Bengal",
+    "WBPDCL": "West Bengal",
+    "JUVNL": "Jharkhand",
 }
 
 # Authoritative state mapping for major Eastern Region hydro reservoirs

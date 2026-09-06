@@ -72,6 +72,48 @@ def test_raw_cell_coverage_distinguishes_mapped_excluded_and_unresolved(
     assert group["examples"][0]["value"] == "Unclassified note"
 
 
+def test_raw_cell_coverage_excludes_published_legends_and_signoffs(
+    tmp_path: Path,
+) -> None:
+    """Footnotes and SLDC sign-off stamps are approved exclusions, not facts."""
+
+    db_path = tmp_path / "legend.sqlite"
+    conn = sqlite3.connect(db_path)
+    ensure_sqlite_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, source_url, local_path, content_hash, fetched_at,
+            ocr_score, ocr_used, ocr_reason, extracted_char_count, template_id
+        ) VALUES (1, 'erldc', 'local', 'fixture.pdf', 'hash', '2026-08-30T00:00:00Z',
+                  1.0, 0, 'native', 1000, 'erldc_fixture')
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO psp_raw_cell(
+            report_document_id, page_no, table_no, row_no, col_no, cell_text,
+            extraction_method, extracted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pdfplumber', '2026-08-30T00:00:00Z')
+        """,
+        (
+            (1, 5, 1, 1, 1, "IEGC Operating Band as per CERC regulations"),
+            (1, 5, 1, 2, 1, "All figures in MW unless otherwise noted"),
+            (1, 5, 1, 3, 1, "Prepared by Shift In-Charge"),
+            (1, 5, 1, 4, 1, "4523.5"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    report = generate_raw_cell_coverage_report(db_path, rldc="erldc")
+
+    assert report["raw_nonempty_cell_count"] == 4
+    assert report["approved_exclusion_count"] == 3
+    assert report["unresolved_cell_count"] == 1
+    assert report["unresolved_groups"][0]["examples"][0]["value"] == "4523.5"
+
+
 def test_raw_cell_coverage_honors_existing_approved_dispositions(tmp_path: Path) -> None:
     """Existing per-source coverage decisions are reused rather than overwritten."""
 
