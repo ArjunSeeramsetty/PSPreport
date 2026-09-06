@@ -146,6 +146,11 @@ def test_curated_coverage_stage_is_fail_soft_for_daily_orchestration(
     assert payload["coverage_completeness"]["rpc_status"] == "not_demonstrated"
     assert payload["odcs"]["skipped"] is True
     assert "columnLineage" in payload["openlineage"]["outputs"][0]["facets"]
+    assert "dataQualityAssertions" in payload["openlineage"]["outputs"][0]["facets"]
+    assert "coverageCompleteness" in payload["openlineage"]["outputs"][0]["facets"]
+    assert payload["openlineage"]["outputs"][0]["facets"]["coverageCompleteness"][
+        "full_psp_and_rpc_coverage"
+    ] is False
 
 
 def test_synthetic_profile_enforces_lineage_and_null_rate_floors(tmp_path: Path) -> None:

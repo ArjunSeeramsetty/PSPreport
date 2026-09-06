@@ -57,6 +57,20 @@ def test_column_lineage_facet_points_at_the_raw_cell_coordinate(
     assert source["name"] == "2024-04-15.pdf"
     assert source["field"] == "p1_t1_r3_c1"
     assert event["run"]["runId"] == "run-1"
+    facets = event["outputs"][0]["facets"]
+    assert "dataQualityAssertions" in facets
+    assert "coverageCompleteness" in facets
+    names = {item["assertion"] for item in facets["dataQualityAssertions"]["assertions"]}
+    assert names == {
+        "floor_pass",
+        "full_cell_coverage",
+        "all_psp_documents_present",
+        "rpc_status",
+        "energy_reconciliation_certified",
+    }
+    assert facets["coverageCompleteness"]["rpc_status"] == "not_demonstrated"
+    assert facets["coverageCompleteness"]["full_psp_and_rpc_coverage"] is False
+    assert facets["coverageCompleteness"]["accounted_cell_pct_by_source"]["srldc"] == 100.0
 
 
 def test_text_item_lineage_includes_bounding_box(tmp_path: Path) -> None:

@@ -773,6 +773,7 @@ def evaluate_curated_coverage_contract(
         sqlite_db_path,
         run_id=f"coverage:{profile_name}",
         job_name="psp.evaluate_curated_coverage_contract",
+        completeness=completeness,
     )
     if fail_hard and not odcs.passed and not odcs.skipped:
         raise AssertionError(
