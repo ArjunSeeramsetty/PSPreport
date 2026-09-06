@@ -61,6 +61,8 @@ def run_national_replay(
     config_path: Path | str | None = None,
     output_path: Path | str | None = None,
     collection_runner: Any = None,
+    timescale_sink: Any = None,
+    graph_sink: Any = None,
 ) -> dict[str, Any]:
     """Execute a sequential multi-day replay across all 5 Indian RLDCs.
 
@@ -205,6 +207,16 @@ def run_national_replay(
             corpus,
             db_path=str(db_path),
         ).as_dict()
+    if timescale_sink is not None or graph_sink is not None:
+        from psp_pipeline.quality.dual_write_rehearsal import run_dual_write_rehearsal
+
+        report_dict["dual_write"] = run_dual_write_rehearsal(
+            db_path,
+            start_date,
+            end_date,
+            timescale_sink=timescale_sink,
+            graph_sink=graph_sink,
+        )
 
     if output_path is not None:
         out_file = Path(output_path)
