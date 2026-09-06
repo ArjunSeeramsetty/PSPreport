@@ -1,0 +1,58 @@
+apiVersion: v3.0.2
+kind: DataContract
+id: urn:datacontract:psp:fact-srldc-regional-daily
+info:
+  title: SRLDC Regional Daily Facts
+  version: 1.0.0
+  description: >
+    Fail-closed grain for FactSRLDCRegionalDaily. Adding optional columns is a
+    minor bump; dropping a required measure is a breaking change.
+  owner: psp-pipeline
+schema:
+  - name: FactSRLDCRegionalDaily
+    physicalName: FactSRLDCRegionalDaily
+    physicalType: table
+    properties:
+      - name: ReportDocumentID
+        type: integer
+        required: true
+        primary: true
+      - name: DateID
+        type: integer
+        required: true
+        primary: true
+      - name: RegionID
+        type: integer
+        required: true
+        primary: true
+      - name: EveningPeakDemandMetMW
+        type: number
+        required: true
+        quality:
+          - type: library
+            description: Demand met must be positive when present.
+            mustBeGreaterThan: 0
+      - name: EveningPeakShortageMW
+        type: number
+        required: true
+      - name: DayEnergyMetMU
+        type: number
+        required: true
+        quality:
+          - type: library
+            description: Energy met must be positive when present.
+            mustBeGreaterThan: 0
+      - name: AverageFrequencyHz
+        type: number
+        required: false
+        quality:
+          - type: library
+            description: Physical envelope; IEGC band violations are flagged not dropped.
+            mustBeGreaterThan: 30
+            mustBeLessThan: 70
+      - name: IegcBandViolation
+        type: integer
+        required: false
+      - name: FrequencyIntegrity
+        type: string
+        required: false

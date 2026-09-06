@@ -726,6 +726,9 @@ def promote_report_to_curated(conn: sqlite3.Connection, report_document_id: int)
         populated_fields,
         validation_failures,
     )
+    from psp_pipeline.quality.iegc_compliance import apply_iegc_frequency_flags
+
+    apply_iegc_frequency_flags(conn, report_document_id)
 
 
 def repromote_srldc_reports(conn: sqlite3.Connection) -> dict[str, int]:

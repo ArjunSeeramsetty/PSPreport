@@ -1,0 +1,48 @@
+apiVersion: v3.0.2
+kind: DataContract
+id: urn:datacontract:psp:fact-erldc-frequency-daily
+info:
+  title: ERLDC Frequency Daily Facts
+  version: 1.0.0
+  description: >
+    IEGC 2023 frequency extrema. Values inside 30-70 Hz promote; values
+    outside 49.90-50.05 Hz set IegcBandViolation without quarantining.
+  owner: psp-pipeline
+schema:
+  - name: FactERLDCFrequencyDaily
+    physicalName: FactERLDCFrequencyDaily
+    physicalType: table
+    properties:
+      - name: ReportDocumentID
+        type: integer
+        required: true
+        primary: true
+      - name: DateID
+        type: integer
+        required: true
+        primary: true
+      - name: RegionID
+        type: integer
+        required: true
+        primary: true
+      - name: MaximumFrequencyHz
+        type: number
+        required: false
+        quality:
+          - type: library
+            description: Physical impossibility envelope for OCR gating.
+            mustBeGreaterThan: 30
+            mustBeLessThan: 70
+      - name: AverageFrequencyHz
+        type: number
+        required: false
+        quality:
+          - type: library
+            mustBeGreaterThan: 30
+            mustBeLessThan: 70
+      - name: IegcBandViolation
+        type: integer
+        required: false
+      - name: FrequencyIntegrity
+        type: string
+        required: false

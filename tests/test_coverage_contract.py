@@ -139,6 +139,8 @@ def test_curated_coverage_stage_is_fail_soft_for_daily_orchestration(
 
     assert payload["passed"] is False
     assert tuple(payload["profiles"]["corpus"]["missing_sources"]) == ("nrldc",)
+    assert payload["odcs"]["skipped"] is True
+    assert "columnLineage" in payload["openlineage"]["outputs"][0]["facets"]
 
 
 def test_synthetic_profile_enforces_lineage_and_null_rate_floors(tmp_path: Path) -> None:

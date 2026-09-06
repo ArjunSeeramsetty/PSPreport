@@ -83,6 +83,9 @@ def promote_nldc_report_to_curated(conn: sqlite3.Connection, report_id: int) -> 
     _promote_physical_exchanges(conn, report_id, date_id)
     _promote_15_minute_grid_snapshots(conn, report_id, date_id)
     _promote_cross_border_exchange(conn, report_id, date_id)
+    from psp_pipeline.quality.iegc_compliance import apply_iegc_frequency_flags
+
+    apply_iegc_frequency_flags(conn, report_id)
 
 
 def _date_id(conn: sqlite3.Connection, report_date: str) -> int | None:

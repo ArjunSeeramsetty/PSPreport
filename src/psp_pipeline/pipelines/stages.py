@@ -15,6 +15,7 @@ from psp_pipeline.agents.report_fetch_agent import ReportFetchAgent
 from psp_pipeline.agents.schema_drift_agent import SchemaDriftAgent
 from psp_pipeline.agents.source_discovery_agent import SourceDiscoveryAgent
 from psp_pipeline.core.settings import AppSettings
+from psp_pipeline.lineage.openlineage import build_column_lineage_event
 from psp_pipeline.models.contracts import (
     FactObservation,
     FetchArtifact,
@@ -28,6 +29,7 @@ from psp_pipeline.quality.coverage_contract import (
     enforce_coverage_manifest,
     evaluate_coverage_manifest,
 )
+from psp_pipeline.quality.odcs_contract import evaluate_odcs_directory
 from psp_pipeline.quality.timescale_mirror_reconciliation import (
     CurrentRowFetcher,
     verify_exported_current_mirror,
@@ -757,12 +759,24 @@ def evaluate_curated_coverage_contract(
         require_sources=require_sources,
     )
     selected = results[profile_name]
+    odcs = evaluate_odcs_directory(sqlite_db_path)
+    lineage_event = build_column_lineage_event(
+        sqlite_db_path,
+        run_id=f"coverage:{profile_name}",
+        job_name="psp.evaluate_curated_coverage_contract",
+    )
+    if fail_hard and not odcs.passed and not odcs.skipped:
+        raise AssertionError(
+            "ODCS contract failures: " + "; ".join(odcs.failures)
+        )
     return {
         "database_path": str(sqlite_db_path),
         "profile_name": profile_name,
-        "passed": selected.passed,
+        "passed": selected.passed and (odcs.passed or odcs.skipped),
         "skipped": False,
         "profiles": {name: result.as_dict() for name, result in results.items()},
+        "odcs": odcs.as_dict(),
+        "openlineage": lineage_event,
     }
 
 

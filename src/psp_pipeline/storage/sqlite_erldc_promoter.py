@@ -271,6 +271,9 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
         _split_reservoirs(conn, report_id, date_id, int(region[0]))
         _split_voltage_and_exchanges(conn, report_id, date_id, int(region[0]))
         _promote_market_sections(conn, report_id, date_id)
+        from psp_pipeline.quality.iegc_compliance import apply_iegc_frequency_flags
+
+        apply_iegc_frequency_flags(conn, report_id)
         return
     _regional(conn, report_id, date_id, int(region[0]))
     _states(conn, report_id, date_id)
@@ -312,6 +315,9 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
     else:
         _voltage_and_exchanges(conn, report_id, date_id, int(region[0]))
     _promote_market_sections(conn, report_id, date_id)
+    from psp_pipeline.quality.iegc_compliance import apply_iegc_frequency_flags
+
+    apply_iegc_frequency_flags(conn, report_id)
 
 
 def _date_id(conn: sqlite3.Connection, value: str) -> int | None:

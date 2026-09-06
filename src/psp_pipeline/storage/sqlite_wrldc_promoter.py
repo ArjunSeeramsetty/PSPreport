@@ -361,6 +361,9 @@ def promote_wrldc_report_to_curated(
             _promote_market_points_and_extrema(
                 conn, report_document_id, date_id, region_id, mapped_cells
             )
+    from psp_pipeline.quality.iegc_compliance import apply_iegc_frequency_flags
+
+    apply_iegc_frequency_flags(conn, report_document_id)
 
 
 def _scope_is_affected(report: sqlite3.Row) -> bool:

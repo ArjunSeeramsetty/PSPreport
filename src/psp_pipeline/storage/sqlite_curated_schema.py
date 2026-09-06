@@ -460,6 +460,7 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _backfill_nerldc_dimension_locations(conn)
     seed_srldc_schema_registry(conn)
     _seed_metric_registry(conn)
+    _ensure_iegc_frequency_columns(conn)
     conn.commit()
 
 
@@ -1925,6 +1926,32 @@ def _ensure_nerldc_curated_tables(conn: sqlite3.Connection) -> None:
     )
     _ensure_nerldc_generation_columns(conn)
     _ensure_frequency_operating_band_columns(conn, "FactNERLDCFrequencyDaily")
+
+
+def _ensure_iegc_frequency_columns(conn: sqlite3.Connection) -> None:
+    """Add IEGC integrity flags to frequency fact tables without rewriting them."""
+
+    for table_name in (
+        "FactSRLDCRegionalDaily",
+        "FactNRLDCFrequencyDaily",
+        "FactWRLDCFrequencyDaily",
+        "FactERLDCFrequencyDaily",
+        "FactNERLDCFrequencyDaily",
+        "FactNLDCDailyFrequency",
+    ):
+        existing = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")
+        }
+        if not existing:
+            continue
+        if "IegcBandViolation" not in existing:
+            conn.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN IegcBandViolation INTEGER NOT NULL DEFAULT 0"
+            )
+        if "FrequencyIntegrity" not in existing:
+            conn.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN FrequencyIntegrity TEXT NOT NULL DEFAULT 'ok'"
+            )
 
 
 def _ensure_frequency_operating_band_columns(

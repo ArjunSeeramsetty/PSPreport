@@ -343,6 +343,9 @@ def promote_nrldc_report_to_curated(
     _record_initial_coverage(
         conn, report_document_id, template_id, mapped_cells, validation_failures
     )
+    from psp_pipeline.quality.iegc_compliance import apply_iegc_frequency_flags
+
+    apply_iegc_frequency_flags(conn, report_document_id)
 
 
 def _has_curated_scope_deviation(report: sqlite3.Row) -> bool:
