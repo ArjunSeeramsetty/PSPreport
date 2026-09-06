@@ -115,6 +115,7 @@ def test_greenfield_schema_file_is_the_current_dual_write_contract() -> None:
     assert "decided_at" in script
     assert "decided_by" in script
     assert "create_hypertable('fact_observation'" in script
+    assert "fact_wbes_block" in script
     assert "SET sys_to = ordered_versions.next_system_from" not in script
 
 
