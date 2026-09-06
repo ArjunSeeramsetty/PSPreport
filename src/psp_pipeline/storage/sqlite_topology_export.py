@@ -5,6 +5,16 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from psp_pipeline.storage.cim_ontology import (
+    annotate_grid_entity,
+    annotate_region,
+    annotate_state,
+    annotate_station,
+    annotate_transmission_line,
+    annotate_unit,
+    annotate_voltage_node,
+)
+
 
 _REGION_CODES = {
     "Northern Region": "NR",
@@ -118,14 +128,14 @@ def export_curated_topology(conn: sqlite3.Connection) -> dict[str, list[dict[str
     ]
     lines = _transmission_rows(conn, region_codes)
     return {
-        "regions": regions,
-        "states": states,
+        "regions": [annotate_region(row) for row in regions],
+        "states": [annotate_state(row) for row in states],
         "countries": countries,
-        "stations": stations,
-        "units": units,
-        "grid_entities": grid_entities,
-        "voltage_nodes": voltage_nodes,
-        "transmission_lines": lines,
+        "stations": [annotate_station(row) for row in stations],
+        "units": [annotate_unit(row) for row in units],
+        "grid_entities": [annotate_grid_entity(row) for row in grid_entities],
+        "voltage_nodes": [annotate_voltage_node(row) for row in voltage_nodes],
+        "transmission_lines": [annotate_transmission_line(row) for row in lines],
     }
 
 

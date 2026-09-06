@@ -42,3 +42,13 @@ FOR (station:PowerStation) REQUIRE station.key IS UNIQUE;
 
 CREATE CONSTRAINT canonical_entity_id IF NOT EXISTS
 FOR (entity:CanonicalEntity) REQUIRE entity.entity_id IS UNIQUE;
+
+CREATE CONSTRAINT ac_line_segment_mrid IF NOT EXISTS
+FOR (line:ACLineSegment) REQUIRE line.mrid IS UNIQUE;
+
+CREATE CONSTRAINT generating_unit_mrid IF NOT EXISTS
+FOR (unit:GeneratingUnit) REQUIRE unit.mrid IS UNIQUE;
+
+CREATE CONSTRAINT plant_mrid IF NOT EXISTS
+FOR (station:Plant) REQUIRE station.mrid IS UNIQUE;
+

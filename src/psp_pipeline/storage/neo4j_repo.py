@@ -255,7 +255,12 @@ def _iso_datetime(value: object | None) -> str | None:
 
 
 def _run_batches(session: Any, query: str, rows: list[Mapping[str, Any]]) -> None:
-    """Run bounded parameterized batches to limit lock contention."""
+    """Run bounded parameterized batches to limit lock contention.
+
+    Native ``UNWIND`` batches replace ``apoc.periodic.iterate``. Callers that
+    need Neo4j 5 ``CALL { } IN TRANSACTIONS OF 1000 ROWS`` can wrap the same
+    query text; the Python driver still sends bounded maps to keep memory flat.
+    """
 
     for start in range(0, len(rows), 500):
         session.run(query, {"rows": rows[start:start + 500]})
@@ -266,7 +271,10 @@ UNWIND $rows AS row
 MERGE (region:Region {code: row.code})
 ON CREATE SET region.name = row.name, region.created_at = datetime()
 ON MATCH SET region.name = row.name, region.last_seen_at = datetime()
-SET region.canonical_entity_id = coalesce(row.canonical_entity_id, region.canonical_entity_id)
+SET region.canonical_entity_id = coalesce(row.canonical_entity_id, region.canonical_entity_id),
+    region.mrid = coalesce(row.mrid, row.code),
+    region.cim_class = 'cim:SubGeographicalRegion'
+SET region:SubGeographicalRegion
 """
 
 _COUNTRY_QUERY = """
@@ -274,7 +282,8 @@ UNWIND $rows AS row
 MERGE (country:Country {code: row.code})
 ON CREATE SET country.name = row.name, country.created_at = datetime()
 ON MATCH SET country.name = row.name, country.last_seen_at = datetime()
-SET country.canonical_entity_id = coalesce(row.canonical_entity_id, country.canonical_entity_id)
+SET country.canonical_entity_id = coalesce(row.canonical_entity_id, country.canonical_entity_id),
+    country.mrid = coalesce(row.mrid, row.code)
 """
 
 _STATE_QUERY = """
@@ -282,7 +291,10 @@ UNWIND $rows AS row
 MERGE (state:State {code: row.code})
 ON CREATE SET state.name = row.name, state.created_at = datetime()
 ON MATCH SET state.name = row.name, state.last_seen_at = datetime()
-SET state.canonical_entity_id = coalesce(row.canonical_entity_id, state.canonical_entity_id)
+SET state.canonical_entity_id = coalesce(row.canonical_entity_id, state.canonical_entity_id),
+    state.mrid = coalesce(row.mrid, row.code),
+    state.cim_class = 'cim:GeographicalRegion'
+SET state:GeographicalRegion
 WITH row, state
 FOREACH (_ IN CASE WHEN row.region_code IS NULL THEN [] ELSE [1] END |
   MERGE (region:Region {code: row.region_code})
@@ -301,7 +313,10 @@ MERGE (station:GridEntity:PowerStation {key: row.key})
 ON CREATE SET station.name = row.name, station.created_at = datetime()
 ON MATCH SET station.name = row.name, station.last_seen_at = datetime()
 SET station.capacity_mw = row.capacity_mw,
-    station.canonical_entity_id = coalesce(row.canonical_entity_id, station.canonical_entity_id)
+    station.canonical_entity_id = coalesce(row.canonical_entity_id, station.canonical_entity_id),
+    station.mrid = coalesce(row.mrid, row.key),
+    station.cim_class = 'cim:Plant'
+SET station:Plant
 WITH row, station
 FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.state_code})
@@ -315,7 +330,10 @@ MERGE (unit:GridEntity:GeneratingUnit {key: row.key})
 ON CREATE SET unit.name = row.name, unit.created_at = datetime()
 ON MATCH SET unit.name = row.name, unit.last_seen_at = datetime()
 SET unit.unit_number = row.unit_number, unit.capacity_mw = row.capacity_mw,
-    unit.canonical_entity_id = coalesce(row.canonical_entity_id, unit.canonical_entity_id)
+    unit.canonical_entity_id = coalesce(row.canonical_entity_id, unit.canonical_entity_id),
+    unit.mrid = coalesce(row.mrid, row.key),
+    unit.cim_class = 'cim:GeneratingUnit'
+SET unit:SynchronousMachine
 WITH row, unit
 MERGE (station:GridEntity:PowerStation {key: row.station_key})
 MERGE (unit)-[:UNIT_OF]->(station)
@@ -330,8 +348,28 @@ ON MATCH SET entity.name = row.name, entity.entity_type = row.entity_type,
              entity.last_seen_at = datetime()
 SET entity.capacity_mw = row.capacity_mw,
     entity.observation_entity_key = row.observation_entity_key,
-    entity.canonical_entity_id = coalesce(row.canonical_entity_id, entity.canonical_entity_id)
+    entity.canonical_entity_id = coalesce(row.canonical_entity_id, entity.canonical_entity_id),
+    entity.mrid = coalesce(row.mrid, row.key),
+    entity.cim_class = CASE row.entity_type
+      WHEN 'power_station' THEN 'cim:Plant'
+      WHEN 'control_area' THEN 'cim:ControlArea'
+      WHEN 'market_participant' THEN 'cim:EnergySchedulingCoordinator'
+      WHEN 'beneficiary' THEN 'cim:EnergyConsumer'
+      ELSE 'cim:IdentifiedObject'
+    END
 WITH row, entity
+FOREACH (_ IN CASE WHEN row.entity_type = 'power_station' THEN [1] ELSE [] END |
+  SET entity:Plant
+)
+FOREACH (_ IN CASE WHEN row.entity_type = 'control_area' THEN [1] ELSE [] END |
+  SET entity:ControlArea
+)
+FOREACH (_ IN CASE WHEN row.entity_type = 'market_participant' THEN [1] ELSE [] END |
+  SET entity:EnergySchedulingCoordinator
+)
+FOREACH (_ IN CASE WHEN row.entity_type IN ['beneficiary', 'state'] THEN [1] ELSE [] END |
+  SET entity:EnergyConsumer
+)
 FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.state_code})
   MERGE (entity)-[:LOCATED_IN]->(state)
@@ -349,7 +387,10 @@ ON CREATE SET node.name = row.name, node.created_at = datetime()
 ON MATCH SET node.name = row.name, node.last_seen_at = datetime()
 SET node.nominal_voltage_kv = row.nominal_voltage_kv,
     node.observation_entity_key = row.observation_entity_key,
-    node.canonical_entity_id = coalesce(row.canonical_entity_id, node.canonical_entity_id)
+    node.canonical_entity_id = coalesce(row.canonical_entity_id, node.canonical_entity_id),
+    node.mrid = coalesce(row.mrid, row.key),
+    node.cim_class = 'cim:VoltageLevel'
+SET node:VoltageLevel
 WITH row, node
 FOREACH (_ IN CASE WHEN row.state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.state_code})
@@ -369,7 +410,11 @@ ON MATCH SET line.name = row.name, line.last_seen_at = datetime()
 SET line.element_type = row.element_type,
     line.nominal_voltage_kv = row.nominal_voltage_kv,
     line.observation_entity_key = row.observation_entity_key,
-    line.canonical_entity_id = coalesce(row.canonical_entity_id, line.canonical_entity_id)
+    line.canonical_entity_id = coalesce(row.canonical_entity_id, line.canonical_entity_id),
+    line.mrid = coalesce(row.mrid, row.key),
+    line.cim_class = 'cim:ACLineSegment',
+    line.timescale_uuid = coalesce(row.timescale_uuid, line.timescale_uuid)
+SET line:ACLineSegment
 WITH row, line
 FOREACH (_ IN CASE WHEN row.from_state_code IS NULL THEN [] ELSE [1] END |
   MERGE (state:State {code: row.from_state_code})
