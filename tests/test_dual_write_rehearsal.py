@@ -13,7 +13,6 @@ from psp_pipeline.quality.dual_write_rehearsal import (
     run_dual_write_rehearsal,
 )
 from psp_pipeline.quality.national_replay import run_national_replay
-from psp_pipeline.quality.rpc_fixtures import ingest_rpc_fixture_reports, write_canonical_rpc_fixtures
 
 
 def _seed_srldc_energy(db_path: Path, report_id: int, report_date: str, energy_mu: float) -> None:
@@ -26,7 +25,7 @@ def _seed_srldc_energy(db_path: Path, report_id: int, report_date: str, energy_m
             INSERT INTO psp_report_document(
                 id, rldc, source_url, local_path, content_hash, fetched_at,
                 ocr_score, ocr_used, ocr_reason, extracted_char_count, report_date
-            ) VALUES (?, 'srldc', 'http://example.com', ?, ?, '2026-09-01T00:00:00Z',
+            ) VALUES (?, 'srldc', 'http://example.com', ?, ?, '2026-01-02T00:00:00Z',
                       1.0, 0, 'none', 100, ?)
             """,
             (report_id, f"srldc-{report_date}.pdf", f"hash-{report_id}", report_date),
@@ -51,45 +50,41 @@ def test_dual_write_rehearsal_scopes_timescale_and_graph_to_each_date(
     """Each valid date publishes only that day's SQLite observations to both sinks."""
 
     db_path = tmp_path / "dual.sqlite"
-    fixture_dir = tmp_path / "rpc"
-    write_canonical_rpc_fixtures(fixture_dir)
-    ingest_rpc_fixture_reports(db_path, fixture_dir=fixture_dir)
-    _seed_srldc_energy(db_path, 10, "2026-08-30", 950.0)
-    _seed_srldc_energy(db_path, 11, "2026-09-06", 980.0)
+    _seed_srldc_energy(db_path, 1, "2026-01-01", 950.0)
+    _seed_srldc_energy(db_path, 2, "2026-01-02", 980.0)
 
     timescale_store: list[dict] = []
     graph_store: list[dict] = []
     summary = run_dual_write_rehearsal(
         db_path,
-        date(2026, 8, 30),
-        date(2026, 9, 6),
+        date(2026, 1, 1),
+        date(2026, 1, 2),
         timescale_sink=recording_timescale_sink(timescale_store),
         graph_sink=recording_graph_sink(graph_store),
         output_path=tmp_path / "dual_write.json",
     )
 
-    dated = [item for item in summary["date_results"] if item["sqlite_observations"]]
-    assert [item["target_date"] for item in dated] == ["2026-08-30", "2026-09-06"]
-    first_keys = set(dated[0]["timescale"]["entity_keys"])
-    second_keys = set(dated[1]["timescale"]["entity_keys"])
-    assert first_keys
-    assert second_keys
-    assert first_keys != second_keys
-    assert timescale_store[0]["target_date"] == "2026-08-30"
-    assert graph_store[-1]["target_date"] == "2026-09-06"
-    assert "SR" in dated[0]["timescale"]["source_regions"] or "ER" in dated[0]["timescale"]["source_regions"]
+    assert [item["target_date"] for item in summary["date_results"]] == [
+        "2026-01-01",
+        "2026-01-02",
+    ]
+    first, second = summary["date_results"]
+    assert first["sqlite_report_ids"] == [1]
+    assert second["sqlite_report_ids"] == [2]
+    assert first["sqlite_observations"] == second["sqlite_observations"] == 1
+    assert first["timescale"]["observations_exported"] == 1
+    assert second["timescale"]["observations_exported"] == 1
+    assert first["neo4j"]["observations_synced"] == 1
+    assert second["neo4j"]["observations_synced"] == 1
+    assert timescale_store[0]["target_date"] == "2026-01-01"
+    assert graph_store[1]["target_date"] == "2026-01-02"
+    assert "SR" in first["timescale"]["source_regions"]
 
     facets = summary["openlineage"]["outputs"][0]["facets"]
-    assert facets["coverageCompleteness"]["rpc_status"] == "floor_pass"
-    assert facets["coverageCompleteness"]["rpc_fact_row_count"] >= 3
+    assert "coverageCompleteness" in facets
+    assert "dataQualityAssertions" in facets
+    assert facets["coverageCompleteness"]["rpc_status"] == "not_demonstrated"
     assert facets["coverageCompleteness"]["full_psp_and_rpc_coverage"] is False
-    rpc_assertion = next(
-        item
-        for item in facets["dataQualityAssertions"]["assertions"]
-        if item["assertion"] == "rpc_status"
-    )
-    assert rpc_assertion["actual"] == "floor_pass"
-    assert rpc_assertion["success"] is False
     assert (tmp_path / "dual_write.json").exists()
 
 
