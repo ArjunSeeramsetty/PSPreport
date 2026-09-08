@@ -19,6 +19,7 @@ downloads/
 data/raw/
 data/sqlite/
 data/wbes_probe/
+data/wbes/
 data/diagnostics/
 data/airflow_staging/
 data/exports/
