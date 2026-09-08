@@ -24,6 +24,13 @@ _EXCLUDED_DISPOSITIONS = {
     "decorative",
     "intentionally_excluded",
 }
+_EXACT_HEADER_LABELS = {
+    "entity",
+    "service type",
+    "servicetype",
+    "product",
+    "service",
+}
 _HEADER_TERMS = (
     "station",
     "constituent",
@@ -45,38 +52,38 @@ _HEADER_TERMS = (
     "maximum",
     "minimum",
     "average",
-        "peak",
-        "off peak",
-        "time",
-        "shortage",
-        "actual",
-        "requirement",
-        "gross",
-        "net",
-        "total",
-        "sl. no",
-        "dsm",
-        "deviation",
-        "pafm",
-        "deemed",
-        "allocation",
-        "ancillary",
-        "payable",
-        "receivable",
-        "scheduled",
-        "constituent",
-        "utility",
-        "beneficiary",
-        "designed",
-        "present",
-        "last year",
-        "last day",
-        "mddl",
-        "frl",
-        "spillage",
-        "usage",
-        "level",
-    )
+    "peak",
+    "off peak",
+    "time",
+    "shortage",
+    "actual",
+    "requirement",
+    "gross",
+    "net",
+    "total",
+    "sl. no",
+    "dsm",
+    "deviation",
+    "pafm",
+    "deemed",
+    "allocation",
+    "ancillary",
+    "payable",
+    "receivable",
+    "scheduled",
+    "constituent",
+    "utility",
+    "beneficiary",
+    "designed",
+    "present",
+    "last year",
+    "last day",
+    "mddl",
+    "frl",
+    "spillage",
+    "usage",
+    "level",
+)
 _UNIT_VALUES = {"mw", "mu", "hz", "kv", "%", "hrs", "m", "mcm", "ft"}
 _STRUCTURAL_VALUES = {"-", "--", "nil", "n/a", "na", "none"}
 _LEGEND_PHRASES = (
@@ -355,7 +362,12 @@ def _classify_cell(
     approved: dict[int, str],
     mapped_rows: set[tuple[int, int, int, int]],
 ) -> tuple[str, str]:
-    """Classify one non-empty raw cell without inferring a fact mapping."""
+    """Classify one non-empty raw cell without inferring a fact mapping.
+
+    Column-1 labels and other non-numeric labels on a row that already has a
+    mapped measure are approved exclusions. Unmapped numeric cells on that row
+    stay unresolved.
+    """
 
     cell_id = int(cell["id"])
     if cell_id in mapped_ids:
@@ -382,6 +394,8 @@ def _classify_cell(
     )
     if int(cell["col_no"]) == 1 and row_key in mapped_rows:
         return "approved_exclusion", "dimension_label_for_mapped_row"
+    if row_key in mapped_rows and not _is_numeric_measure(text):
+        return "approved_exclusion", "dimension_label_for_mapped_row"
     return "unresolved", "nonempty_cell_without_lineage_or_approved_exclusion"
 
 
@@ -390,9 +404,24 @@ def _is_header_text(normalized: str) -> bool:
 
     if normalized in {"s.no", "s.no.", "sl.no", "sl.no.", "total", "avg", "hrs"}:
         return True
+    if normalized in _EXACT_HEADER_LABELS:
+        return True
     if any(term in normalized for term in _HEADER_TERMS):
         return True
     return bool(re.fullmatch(r"(?:[0-9]+\s*)?(?:mw|mu|hz|kv|%|hrs)", normalized))
+
+
+def _is_numeric_measure(text: str) -> bool:
+    """Return whether a cell looks like a published numeric measure, not a label."""
+
+    compact = text.replace(",", "").replace("₹", "").strip()
+    if compact.startswith("(") and compact.endswith(")"):
+        compact = f"-{compact[1:-1]}"
+    try:
+        float(compact)
+    except ValueError:
+        return False
+    return True
 
 
 def _is_legend_text(normalized: str) -> bool:

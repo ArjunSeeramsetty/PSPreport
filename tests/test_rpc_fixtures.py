@@ -58,9 +58,10 @@ def test_canonical_rpc_fixtures_promote_settlement_facts(tmp_path: Path) -> None
         db_path=str(db_path),
         fact_table_counts=result["fact_table_counts"],
     )
-    assert verdict.rpc_status in {"floor_pass", "full"}
+    assert verdict.rpc_status == "full"
     assert verdict.rpc_fact_row_count >= 8
     assert verdict.full_psp_and_rpc_coverage is False
+    assert verdict.full_cell_coverage is True
     assert set(verdict.accounted_cell_pct_by_source) >= {
         "erpc",
         "nrpc",
@@ -68,10 +69,15 @@ def test_canonical_rpc_fixtures_promote_settlement_facts(tmp_path: Path) -> None
         "wrpc",
         "nerpc",
     }
+    assert all(
+        pct >= 100.0
+        for source, pct in verdict.accounted_cell_pct_by_source.items()
+        if source in {"erpc", "nrpc", "srpc", "wrpc", "nerpc"}
+    )
 
 
 def test_coverage_stage_openlineage_facet_shows_demonstrated_rpc(tmp_path: Path) -> None:
-    """DAG coverage XCom stamps RPC floor-pass into the OpenLineage dataset facet."""
+    """DAG coverage XCom stamps RPC full cell coverage into the OpenLineage dataset facet."""
 
     fixture_dir = tmp_path / "rpc"
     write_canonical_rpc_fixtures(fixture_dir)
@@ -90,9 +96,14 @@ def test_coverage_stage_openlineage_facet_shows_demonstrated_rpc(tmp_path: Path)
             "assertions"
         ]
     }
-    assert facet["rpc_status"] in {"floor_pass", "full"}
+    assert facet["rpc_status"] == "full"
     assert facet["rpc_fact_row_count"] >= 8
     assert facet["full_psp_and_rpc_coverage"] is False
-    assert assertions["rpc_status"]["actual"] in {"floor_pass", "full"}
-    assert assertions["rpc_status"]["success"] is (assertions["rpc_status"]["actual"] == "full")
+    assert assertions["rpc_status"]["actual"] == "full"
+    assert assertions["rpc_status"]["success"] is True
     assert set(facet["accounted_cell_pct_by_source"]) >= {"erpc", "nrpc", "srpc", "wrpc", "nerpc"}
+    assert all(
+        pct >= 100.0
+        for source, pct in facet["accounted_cell_pct_by_source"].items()
+        if source in {"erpc", "nrpc", "srpc", "wrpc", "nerpc"}
+    )
