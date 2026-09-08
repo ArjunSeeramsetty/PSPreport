@@ -71,7 +71,6 @@ _HEADER_TERMS = (
     "payable",
     "receivable",
     "scheduled",
-    "constituent",
     "utility",
     "beneficiary",
     "designed",
