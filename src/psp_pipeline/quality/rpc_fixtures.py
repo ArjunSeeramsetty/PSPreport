@@ -24,52 +24,113 @@ DEFAULT_RPC_FIXTURE_DIR = (
 )
 _SOURCE_PREFIXES = ("erpc", "nrpc", "srpc", "wrpc", "nerpc")
 
+_DSM_HEADERS = (
+    "Entity",
+    "Scheduled Energy (MU)",
+    "Actual Energy (MU)",
+    "Deviation (MU)",
+    "Frequency Linked Charges (Rs)",
+)
+_DSM_ANCILLARY_HEADERS = ("Entity", "Service Type", "Payable (Rs)", "Receivable (Rs)")
+_REA_STATION_HEADERS = (
+    "Generating Station",
+    "Installed Capacity (MW)",
+    "PAFM (%)",
+    "Deemed Generation (MU)",
+)
+_REA_ALLOCATION_HEADERS = (
+    "Beneficiary",
+    "Station",
+    "Peak Allocation (MW)",
+    "Off-Peak Allocation (MW)",
+    "Energy Share (MU)",
+)
+
 CANONICAL_RPC_FIXTURES = (
     {
         "filename": "ERPC_DSM_Account_Week_35_of_2026.xlsx",
         "source_id": "erpc",
         "family": "weekly_dsm",
-        "sheet": "DSM",
-        "rows": (
-            (
-                "Entity",
-                "Scheduled Energy (MU)",
-                "Actual Energy (MU)",
-                "Deviation (MU)",
-                "Frequency Linked Charges (Rs)",
-            ),
-            ("West Bengal", 200.0, 198.5, -1.5, 25000),
+        "sheets": (
+            {
+                "title": "DSM",
+                "rows": (
+                    _DSM_HEADERS,
+                    ("West Bengal", 200.0, 198.5, -1.5, 25000),
+                ),
+            },
+            {
+                "title": "Ancillary",
+                "rows": (
+                    _DSM_ANCILLARY_HEADERS,
+                    ("West Bengal", "SRAS", 1200, 0),
+                ),
+            },
+        ),
+    },
+    {
+        "filename": "NRPC_DSM_Account_Week_35_of_2026.xlsx",
+        "source_id": "nrpc",
+        "family": "weekly_dsm",
+        "sheets": (
+            {
+                "title": "DSM",
+                "rows": (_DSM_HEADERS, ("Delhi", 95.0, 94.2, -0.8, 4100)),
+            },
+        ),
+    },
+    {
+        "filename": "SRPC_DSM_Account_Week_35_of_2026.xlsx",
+        "source_id": "srpc",
+        "family": "weekly_dsm",
+        "sheets": (
+            {
+                "title": "DSM",
+                "rows": (_DSM_HEADERS, ("Karnataka", 310.0, 308.5, -1.5, 8200)),
+            },
+        ),
+    },
+    {
+        "filename": "WRPC_DSM_Account_Week_35_of_2026.xlsx",
+        "source_id": "wrpc",
+        "family": "weekly_dsm",
+        "sheets": (
+            {
+                "title": "DSM",
+                "rows": (_DSM_HEADERS, ("Maharashtra", 410.0, 412.2, 2.2, 6400)),
+            },
+        ),
+    },
+    {
+        "filename": "NERPC_DSM_Account_Week_35_of_2026.xlsx",
+        "source_id": "nerpc",
+        "family": "weekly_dsm",
+        "sheets": (
+            {
+                "title": "DSM",
+                "rows": (_DSM_HEADERS, ("Assam", 28.0, 27.4, -0.6, 900)),
+            },
         ),
     },
     {
         "filename": "ERPC_REA_August_2026.xlsx",
         "source_id": "erpc",
         "family": "monthly_rea",
-        "sheet": "REA",
-        "rows": (
-            (
-                "Generating Station",
-                "Installed Capacity (MW)",
-                "PAFM (%)",
-                "Deemed Generation (MU)",
-            ),
-            ("Farakka STPS", 2100, 88.0, 155.4),
-        ),
-    },
-    {
-        "filename": "NRPC_DSM_Account_Week_36_of_2026.xlsx",
-        "source_id": "nrpc",
-        "family": "weekly_dsm",
-        "sheet": "DSM",
-        "rows": (
-            (
-                "Entity",
-                "Scheduled Energy (MU)",
-                "Actual Energy (MU)",
-                "Deviation (MU)",
-                "Frequency Linked Charges (Rs)",
-            ),
-            ("Delhi", 95.0, 94.2, -0.8, 4100),
+        "sheets": (
+            {
+                "title": "REA",
+                "rows": (
+                    _REA_STATION_HEADERS,
+                    ("Farakka STPS", 2100, 88.0, 155.4),
+                ),
+            },
+            {
+                "title": "Allocation",
+                "rows": (
+                    _REA_ALLOCATION_HEADERS,
+                    ("Bihar", "Farakka STPS", 450, 380, 95.5),
+                ),
+            },
         ),
     },
 )
@@ -88,14 +149,24 @@ def write_canonical_rpc_fixtures(directory: Path | str | None = None) -> tuple[P
 
     root = Path(directory) if directory is not None else default_rpc_fixture_dir()
     root.mkdir(parents=True, exist_ok=True)
+    expected = {str(spec["filename"]) for spec in CANONICAL_RPC_FIXTURES}
+    for stale in root.glob("*.xlsx"):
+        if stale.name not in expected:
+            stale.unlink()
     written: list[Path] = []
     for spec in CANONICAL_RPC_FIXTURES:
         path = root / str(spec["filename"])
         workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = str(spec["sheet"])
-        for row in spec["rows"]:
-            sheet.append(list(row))
+        sheets = spec.get("sheets") or (
+            {"title": spec["sheet"], "rows": spec["rows"]},
+        )
+        first = True
+        for sheet_spec in sheets:
+            sheet = workbook.active if first else workbook.create_sheet()
+            first = False
+            sheet.title = str(sheet_spec["title"])
+            for row in sheet_spec["rows"]:
+                sheet.append(list(row))
         workbook.save(path)
         written.append(path)
     return tuple(written)
@@ -114,8 +185,7 @@ def ingest_rpc_fixture_reports(
     paths = [Path(item) for item in (fixture_paths or ())]
     if not paths:
         root = Path(fixture_dir) if fixture_dir is not None else default_rpc_fixture_dir()
-        if not any(root.glob("*.xlsx")):
-            write_canonical_rpc_fixtures(root)
+        write_canonical_rpc_fixtures(root)
         paths = sorted(root.glob("*.xlsx"))
     persisted: list[dict[str, Any]] = []
     fact_counts: dict[str, int] = {}

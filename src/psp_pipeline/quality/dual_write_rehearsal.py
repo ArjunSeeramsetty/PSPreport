@@ -40,21 +40,37 @@ def run_dual_write_rehearsal(
     timescale_sink: TimescaleSink | None = None,
     graph_sink: GraphSink | None = None,
     output_path: Path | str | None = None,
+    ingest_rpc_fixtures: bool = False,
+    skip_empty_dates: bool = False,
 ) -> dict[str, Any]:
     """Walk each date in the window and dual-write that slice off SQLite.
 
     Injected sinks keep the rehearsal runnable without live Timescale or Neo4j.
     Production callers pass wrappers around ``load_curated_observations_to_timescale``
-    and ``GraphSyncAgent``.
+    and ``GraphSyncAgent``. ``ingest_rpc_fixtures`` promotes canonical DSM/REA
+    workbooks first so ``FactRPC*`` counts can leave ``not_demonstrated``.
     """
 
     db_path = Path(sqlite_db_path)
+    rpc_ingest: dict[str, Any] | None = None
+    if ingest_rpc_fixtures:
+        from psp_pipeline.quality.rpc_fixtures import (
+            ingest_rpc_fixture_reports,
+            write_canonical_rpc_fixtures,
+        )
+
+        write_canonical_rpc_fixtures()
+        rpc_ingest = ingest_rpc_fixture_reports(db_path)
     if not db_path.exists():
         raise FileNotFoundError(f"Curated SQLite database not found at {db_path}")
     date_results: list[dict[str, Any]] = []
     current = start_date
     while current <= end_date:
-        date_results.append(_rehearse_one_date(db_path, current, timescale_sink, graph_sink))
+        result = _rehearse_one_date(db_path, current, timescale_sink, graph_sink)
+        if skip_empty_dates and not result["sqlite_report_ids"]:
+            current += timedelta(days=1)
+            continue
+        date_results.append(result)
         current += timedelta(days=1)
 
     coverage = evaluate_coverage_manifest(
@@ -82,6 +98,7 @@ def run_dual_write_rehearsal(
         "coverage_completeness": completeness.as_dict(),
         "full_psp_and_rpc_coverage": completeness.full_psp_and_rpc_coverage,
         "openlineage": lineage,
+        "rpc_fixtures": rpc_ingest,
     }
     if output_path is not None:
         out_file = Path(output_path)

@@ -26,6 +26,16 @@ def main() -> int:
         action="store_true",
         help="Publish each date through Timescale and Neo4j using AppSettings DSNs",
     )
+    parser.add_argument(
+        "--rpc-fixtures",
+        action="store_true",
+        help="Ingest canonical RPC DSM/REA fixtures before dual-write",
+    )
+    parser.add_argument(
+        "--skip-empty-dates",
+        action="store_true",
+        help="Skip dates that have no persisted report documents",
+    )
     args = parser.parse_args()
     timescale_sink = None
     graph_sink = None
@@ -38,6 +48,8 @@ def main() -> int:
         timescale_sink=timescale_sink,
         graph_sink=graph_sink,
         output_path=args.output,
+        ingest_rpc_fixtures=args.rpc_fixtures,
+        skip_empty_dates=args.skip_empty_dates,
     )
     return 0
 

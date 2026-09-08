@@ -113,3 +113,42 @@ def test_national_replay_attaches_dual_write_when_sinks_are_provided(
     assert report["dual_write"]["openlineage"]["outputs"][0]["facets"]["coverageCompleteness"][
         "full_psp_and_rpc_coverage"
     ] is False
+
+
+def test_dual_write_rehearsal_publishes_rpc_fixture_settlement(tmp_path: Path) -> None:
+    """Canonical RPC fixtures dual-write settlement observations and leave not_demonstrated."""
+
+    db_path = tmp_path / "rpc-dual.sqlite"
+    timescale_store: list[dict] = []
+    graph_store: list[dict] = []
+    summary = run_dual_write_rehearsal(
+        db_path,
+        date(2026, 8, 1),
+        date(2026, 8, 30),
+        timescale_sink=recording_timescale_sink(timescale_store),
+        graph_sink=recording_graph_sink(graph_store),
+        ingest_rpc_fixtures=True,
+        skip_empty_dates=True,
+        output_path=tmp_path / "rpc_dual_write.json",
+    )
+
+    dates = [item["target_date"] for item in summary["date_results"]]
+    assert dates == ["2026-08-01", "2026-08-30"]
+    rea, dsm = summary["date_results"]
+    assert rea["sqlite_observations"] >= 1
+    assert dsm["sqlite_observations"] >= 5
+    regions = set(dsm["timescale"]["source_regions"])
+    assert {"ER", "NR", "SR", "WR", "NER"} <= regions
+    completeness = summary["coverage_completeness"]
+    assert completeness["rpc_status"] in {"floor_pass", "full"}
+    assert completeness["rpc_fact_row_count"] >= 8
+    assert completeness["full_psp_and_rpc_coverage"] is False
+    assert set(completeness["accounted_cell_pct_by_source"]) >= {
+        "erpc",
+        "nrpc",
+        "srpc",
+        "wrpc",
+        "nerpc",
+    }
+    assert summary["rpc_fixtures"]["reports_persisted"] == 6
+    assert (tmp_path / "rpc_dual_write.json").exists()
