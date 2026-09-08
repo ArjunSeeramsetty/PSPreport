@@ -52,8 +52,9 @@ def test_wbes_package_does_not_reference_neo4j() -> None:
 
 
 def test_greenfield_timescale_schema_does_not_include_wbes_tables() -> None:
-    greenfield = _read(default_greenfield_schema_path())
-    assert "fact_wbes_block" not in greenfield
+    from psp_pipeline.storage.timescale_bootstrap import REQUIRED_TABLES
+
+    assert "fact_wbes_block" not in REQUIRED_TABLES
     wbes_sql = _read(default_wbes_schema_path())
     assert "CREATE TABLE IF NOT EXISTS fact_wbes_block" in wbes_sql
     assert "create_hypertable('fact_wbes_block'" in wbes_sql
