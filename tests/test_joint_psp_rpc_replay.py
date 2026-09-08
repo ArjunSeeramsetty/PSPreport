@@ -199,9 +199,10 @@ def test_six_source_replay_stamps_joint_openlineage_with_rpc_fixtures(
     assert completeness["all_psp_documents_present"] is True
     assert completeness["rpc_status"] in {"floor_pass", "full"}
     assert completeness["full_psp_and_rpc_coverage"] is False
-    assert completeness["energy_reconciliation_certified"] is False
+    assert completeness["energy_reconciliation_certified"] is True
     assert facet["all_psp_documents_present"] is True
     assert facet["rpc_status"] == completeness["rpc_status"]
     assert facet["full_psp_and_rpc_coverage"] is False
+    assert facet["energy_reconciliation_certified"] is True
     assert summary["rpc_fixtures"]["reports_persisted"] == 6
     assert summary["openlineage"]["job"]["name"] == "psp.six_source_replay"
