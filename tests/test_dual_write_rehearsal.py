@@ -116,7 +116,7 @@ def test_national_replay_attaches_dual_write_when_sinks_are_provided(
 
 
 def test_dual_write_rehearsal_publishes_rpc_fixture_settlement(tmp_path: Path) -> None:
-    """Canonical RPC fixtures dual-write settlement observations and leave not_demonstrated."""
+    """Canonical RPC fixtures dual-write settlement observations at full RPC cell coverage."""
 
     db_path = tmp_path / "rpc-dual.sqlite"
     timescale_store: list[dict] = []
@@ -141,7 +141,7 @@ def test_dual_write_rehearsal_publishes_rpc_fixture_settlement(tmp_path: Path) -
     regions = set(dsm["timescale"]["source_regions"])
     assert {"ER", "NR", "SR", "WR", "NER"} <= regions
     completeness = summary["coverage_completeness"]
-    assert completeness["rpc_status"] in {"floor_pass", "full"}
+    assert completeness["rpc_status"] == "full"
     assert completeness["rpc_fact_row_count"] >= 8
     assert completeness["full_psp_and_rpc_coverage"] is False
     assert set(completeness["accounted_cell_pct_by_source"]) >= {
