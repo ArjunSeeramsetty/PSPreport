@@ -25,8 +25,8 @@ from psp_pipeline.quality.coverage_contract import (
     default_coverage_manifest_path,
     enforce_coverage_manifest,
 )
-from psp_pipeline.quality.coverage_completeness import assess_coverage_completeness
 from psp_pipeline.quality.fixture_acquisition import hash_local_fixtures
+from psp_pipeline.quality.joint_psp_rpc_replay import build_replay_lineage_summary
 from psp_pipeline.reconciliation.all_india_balance import synthesize_all_india_daily_balance
 from psp_pipeline.storage.sqlite_curated_export import export_all_daily_observations
 from psp_pipeline.storage.timescale_loader import load_curated_observations_to_timescale
@@ -70,7 +70,12 @@ def run_replay_for_date(
     sync_neo4j: bool = True,
     ingest_rpc_fixtures: bool = False,
 ) -> dict:
-    """Run full 6-source replay for a single date across SQLite, Timescale, and Neo4j."""
+    """Run full 6-source replay for a single date across SQLite, Timescale, and Neo4j.
+
+    Optional ``ingest_rpc_fixtures`` adds the canonical DSM/REA workbooks to the
+    same SQLite database. The summary OpenLineage facets then show six PSP
+    documents together with RPC ``floor_pass`` without claiming full coverage.
+    """
     if target_date_str not in APPROVED_2026_FILES:
         raise ValueError(f"Target date {target_date_str} not in approved 2026 files registry.")
 
@@ -115,9 +120,6 @@ def run_replay_for_date(
         balance_dict = balance.as_dict()
 
         # Count facts and observations per source
-        doc_rows = conn.execute("SELECT id, rldc, local_path, report_date FROM psp_report_document").fetchall()
-        source_docs = {r[1]: r[0] for r in doc_rows}
-
         obs = export_all_daily_observations(conn)
         obs_by_source: dict[str, int] = {}
         for o in obs:
@@ -200,6 +202,15 @@ def run_replay_for_date(
             LOGGER.warning("Neo4j sync encountered error: %s", exc)
             neo4j_result = {"error": str(exc)}
 
+    lineage_summary = build_replay_lineage_summary(
+        db_path,
+        coverage,
+        profile_name="corpus",
+        balance=balance_dict,
+        fact_table_counts=fact_table_counts,
+        run_id=f"six-source:{target_date_str}",
+        job_name="psp.six_source_replay",
+    )
     summary = {
         "target_date": target_date_str,
         "sqlite_db_path": str(db_path),
@@ -211,16 +222,10 @@ def run_replay_for_date(
         "balance_reconciliation": balance_dict,
         "fixture_checksums": list(fixture_checksums),
         "coverage": {name: result.as_dict() for name, result in coverage.items()},
-        "coverage_completeness": assess_coverage_completeness(
-            coverage["corpus"],
-            db_path=str(db_path),
-            fact_table_counts=fact_table_counts,
-            balance=balance_dict,
-            present_documents=source_docs.keys(),
-        ).as_dict(),
         "timescale_result": timescale_result,
         "neo4j_result": neo4j_result,
         "rpc_fixtures": rpc_fixtures,
+        **lineage_summary,
     }
 
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
