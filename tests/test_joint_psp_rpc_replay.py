@@ -49,6 +49,15 @@ def _seed_psp_document(db_path: Path, source: str, report_id: int) -> None:
         """,
         (report_id, f"report={report_id}", raw_cell_id),
     )
+    conn.execute(
+        """
+        INSERT INTO psp_raw_cell(
+            report_document_id, page_no, table_no, row_no, col_no, cell_text,
+            extraction_method, extracted_at
+        ) VALUES (?, 1, 1, 2, 2, '999', 'fixture', '2026-01-01T00:00:00Z')
+        """,
+        (report_id,),
+    )
     conn.commit()
     conn.close()
 
@@ -156,7 +165,9 @@ def test_rpc_floor_pass_does_not_hide_a_missing_psp_document(tmp_path: Path) -> 
     assert completeness["full_psp_and_rpc_coverage"] is False
     assertions = _assertions(payload)
     assert assertions["all_psp_documents_present"]["success"] is False
-    assert assertions["rpc_status"]["success"] is False
+    assert assertions["rpc_status"]["success"] is (
+        assertions["rpc_status"]["actual"] == "full"
+    )
 
 
 _ATTEMPT2_PDFS = (
@@ -199,9 +210,10 @@ def test_six_source_replay_stamps_joint_openlineage_with_rpc_fixtures(
     assert completeness["all_psp_documents_present"] is True
     assert completeness["rpc_status"] in {"floor_pass", "full"}
     assert completeness["full_psp_and_rpc_coverage"] is False
-    assert completeness["energy_reconciliation_certified"] is False
+    assert completeness["energy_reconciliation_certified"] is True
     assert facet["all_psp_documents_present"] is True
     assert facet["rpc_status"] == completeness["rpc_status"]
     assert facet["full_psp_and_rpc_coverage"] is False
+    assert facet["energy_reconciliation_certified"] is True
     assert summary["rpc_fixtures"]["reports_persisted"] == 6
     assert summary["openlineage"]["job"]["name"] == "psp.six_source_replay"
