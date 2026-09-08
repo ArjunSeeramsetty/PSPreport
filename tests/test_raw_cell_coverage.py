@@ -161,3 +161,83 @@ def test_raw_cell_coverage_honors_existing_approved_dispositions(tmp_path: Path)
 
     assert report["approved_exclusion_count"] == 1
     assert report["unresolved_cell_count"] == 0
+
+
+def test_rpc_entity_service_and_station_labels_are_accounted(tmp_path: Path) -> None:
+    """RPC header labels and extra dimension columns on mapped rows are exclusions.
+
+    An unmapped numeric on the same row stays unresolved so a missing charge
+    cannot hide behind the service-type or station name.
+    """
+
+    db_path = tmp_path / "rpc_labels.sqlite"
+    conn = sqlite3.connect(db_path)
+    ensure_sqlite_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO psp_report_document(
+            id, rldc, source_url, local_path, content_hash, fetched_at,
+            ocr_score, ocr_used, ocr_reason, extracted_char_count, template_id
+        ) VALUES (1, 'erpc', 'local', 'fixture.xlsx', 'hash', '2026-08-30T00:00:00Z',
+                  1.0, 0, 'native', 100, 'rpc_weekly_dsm_v2022_entity_charges')
+        """
+    )
+    cells = (
+        (1, 1, 1, 1, 1, "Entity"),
+        (1, 1, 1, 1, 2, "Service Type"),
+        (1, 1, 1, 1, 3, "Payable (Rs)"),
+        (1, 1, 1, 2, 1, "West Bengal"),
+        (1, 1, 1, 2, 2, "SRAS"),
+        (1, 1, 1, 2, 3, "1200"),
+        (1, 1, 1, 2, 4, "88"),
+        (1, 1, 2, 1, 1, "Beneficiary"),
+        (1, 1, 2, 1, 2, "Station"),
+        (1, 1, 2, 2, 1, "Bihar"),
+        (1, 1, 2, 2, 2, "Farakka STPS"),
+        (1, 1, 2, 2, 3, "450"),
+    )
+    conn.executemany(
+        """
+        INSERT INTO psp_raw_cell(
+            report_document_id, page_no, table_no, row_no, col_no, cell_text,
+            extraction_method, extracted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'rpc_table', '2026-08-30T00:00:00Z')
+        """,
+        cells,
+    )
+    payable_id = conn.execute(
+        "SELECT id FROM psp_raw_cell WHERE cell_text = '1200'"
+    ).fetchone()[0]
+    allocation_id = conn.execute(
+        "SELECT id FROM psp_raw_cell WHERE cell_text = '450'"
+    ).fetchone()[0]
+    conn.execute(
+        """
+        INSERT INTO curated_field_lineage(
+            ReportDocumentID, DestinationTable, DestinationKey, DestinationColumn,
+            RawCellID, ExtractionMethod, Confidence, CreatedAt
+        ) VALUES
+            (1, 'FactRPCWeeklyDSMAncillary', 'entity:wb', 'PayableRs',
+             ?, 'rpc_header', 1.0, '2026-08-30T00:00:00Z'),
+            (1, 'FactRPCMonthlyREAAllocation', 'entity:bihar', 'AllocatedCapacityMW',
+             ?, 'rpc_header', 1.0, '2026-08-30T00:00:00Z')
+        """,
+        (payable_id, allocation_id),
+    )
+    conn.commit()
+    conn.close()
+
+    report = generate_raw_cell_coverage_report(db_path, rldc="erpc")
+    unresolved = {
+        example["value"]
+        for group in report["unresolved_groups"]
+        for example in group["examples"]
+    }
+
+    assert "Entity" not in unresolved
+    assert "Service Type" not in unresolved
+    assert "SRAS" not in unresolved
+    assert "Farakka STPS" not in unresolved
+    assert unresolved == {"88"}
+    assert report["unresolved_cell_count"] == 1
+
