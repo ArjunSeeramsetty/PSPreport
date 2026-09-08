@@ -371,6 +371,12 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             TableExportSpec("FactERLDCInterRegionalExchange", "'ER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactERLDCInternationalExchange", "'ER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
             TableExportSpec(
+                "FactERLDCMarketPointDaily",
+                "'ER:market-participant:' || entity.EntityName || ':market:point:' || fact.TimeCategory || ':' || fact.Mechanism",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                (("TimeCategory", "fact.TimeCategory"), ("Mechanism", "fact.Mechanism")),
+            ),
+            TableExportSpec(
                 "FactERLDCMarketEnergyDaily",
                 "'ER:market-participant:' || entity.EntityName || ':market:day-energy'",
                 "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
@@ -408,6 +414,23 @@ RLDC_EXPORT_CONFIG: dict[str, RLDCExportConfig] = {
             ),
             TableExportSpec("FactNERLDCInterRegionalExchange", "'NER:line:' || element.ElementName", "JOIN DimTransmissionElements AS element ON element.ElementID = fact.ElementID"),
             TableExportSpec("FactNERLDCInternationalExchange", "'NER:country:' || country.CountryName", "JOIN DimCountries AS country ON country.CountryID = fact.CountryID"),
+            TableExportSpec(
+                "FactNERLDCMarketPointDaily",
+                "'NER:market-participant:' || entity.EntityName || ':market:point:' || fact.TimeCategory || ':' || fact.Mechanism",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                (("TimeCategory", "fact.TimeCategory"), ("Mechanism", "fact.Mechanism")),
+            ),
+            TableExportSpec(
+                "FactNERLDCMarketEnergyDaily",
+                "'NER:market-participant:' || entity.EntityName || ':market:day-energy'",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+            ),
+            TableExportSpec(
+                "FactNERLDCMarketExtremaDaily",
+                "'NER:market-participant:' || entity.EntityName || ':market:extrema:' || fact.Mechanism",
+                "JOIN DimGridEntities AS entity ON entity.EntityID = fact.EntityID",
+                (("Mechanism", "fact.Mechanism"),),
+            ),
         ),
     ),
     "grid_india_national": RLDCExportConfig(

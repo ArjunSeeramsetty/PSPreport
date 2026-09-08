@@ -449,6 +449,9 @@ def ensure_curated_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_wrldc_curated_tables(conn)
     _ensure_erldc_curated_tables(conn)
     _ensure_nerldc_curated_tables(conn)
+    from psp_pipeline.storage.sqlite_market_promoter import ensure_market_tables
+
+    ensure_market_tables(conn)
     _ensure_nldc_curated_tables(conn)
     _ensure_rpc_curated_tables(conn)
     _ensure_canonical_identity_tables(conn)

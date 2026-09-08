@@ -261,6 +261,7 @@ def promote_erldc_report_to_curated(conn: sqlite3.Connection, report_id: int) ->
         "FactERLDCInternationalExchange",
         "FactERLDCMarketEnergyDaily",
         "FactERLDCMarketExtremaDaily",
+        "FactERLDCMarketPointDaily",
     ):
         conn.execute(f"DELETE FROM {table} WHERE ReportDocumentID = ?", (report_id,))
     if report[2] in ERLDC_SPLIT_TEMPLATE_IDS:
@@ -2356,7 +2357,14 @@ def _promote_market_sections(
     labeled ``Minimum``. Nepal line-detail is not handled here.
     """
 
+    from psp_pipeline.storage.sqlite_market_promoter import promote_market_rows
+
+    def participant(label: str) -> tuple[int, int | None]:
+        state_id = _market_state_id(conn, label)
+        return _market_participant_entity_id(conn, label, state_id), state_id
+
     for page_no, _table_no, rows in _all_tables(conn, report):
+        promote_market_rows(conn, report, date_id, "ERLDC", rows, participant)
         _promote_market_day_energy_from_rows(conn, report, date_id, rows)
         _promote_market_extrema_from_native_rows(conn, report, date_id, rows)
         if _market_extrema_headers_are_verified(rows):

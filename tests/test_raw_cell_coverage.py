@@ -161,3 +161,42 @@ def test_raw_cell_coverage_honors_existing_approved_dispositions(tmp_path: Path)
 
     assert report["approved_exclusion_count"] == 1
     assert report["unresolved_cell_count"] == 0
+
+
+def test_reservoir_headers_are_approved_without_excluding_measure_cells(
+    tmp_path: Path,
+) -> None:
+    """Reservoir column headings are presentation cells; values still need lineage."""
+
+    db_path = tmp_path / "reservoir_headers.sqlite"
+    conn = sqlite3.connect(db_path)
+    ensure_sqlite_schema(conn)
+    conn.execute(
+        """INSERT INTO psp_report_document(
+            id, rldc, source_url, local_path, content_hash, fetched_at,
+            ocr_score, ocr_used, ocr_reason, extracted_char_count, template_id
+        ) VALUES (1, 'nerldc', 'local', 'fixture.pdf', 'hash',
+                  '2026-08-30T00:00:00Z', 1.0, 0, 'native', 1000,
+                  'nerldc_fixture')"""
+    )
+    conn.executemany(
+        """INSERT INTO psp_raw_cell(
+            report_document_id, page_no, table_no, row_no, col_no, cell_text,
+            extraction_method, extracted_at
+        ) VALUES (?, 4, 6, ?, ?, ?, 'pdfplumber', '2026-08-30T00:00:00Z')""",
+        (
+            (1, 1, 2, "DESIGNED"), (1, 2, 2, "MDDL (Mts)"),
+            (1, 2, 3, "FRL (Mts)"), (1, 3, 1, "Kopili"),
+            (1, 3, 2, "9696"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    report = generate_raw_cell_coverage_report(db_path, rldc="nerldc")
+
+    assert report["approved_exclusion_count"] == 3
+    assert report["unresolved_cell_count"] == 2
+    assert report["unresolved_groups"][0]["examples"][0]["value"] in {
+        "Kopili", "9696"
+    }

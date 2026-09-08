@@ -67,6 +67,15 @@ _HEADER_TERMS = (
         "constituent",
         "utility",
         "beneficiary",
+        "designed",
+        "present",
+        "last year",
+        "last day",
+        "mddl",
+        "frl",
+        "spillage",
+        "usage",
+        "level",
     )
 _UNIT_VALUES = {"mw", "mu", "hz", "kv", "%", "hrs", "m", "mcm", "ft"}
 _STRUCTURAL_VALUES = {"-", "--", "nil", "n/a", "na", "none"}

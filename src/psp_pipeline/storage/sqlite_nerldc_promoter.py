@@ -88,9 +88,35 @@ def promote_nerldc_report_to_curated(conn: sqlite3.Connection, report_id: int) -
     _voltage(conn, report_id, date_id, region_id)
     _reservoirs(conn, report_id, date_id, region_id)
     _exchanges(conn, report_id, date_id)
+    _markets(conn, report_id, date_id, region_id)
     from psp_pipeline.quality.iegc_compliance import apply_iegc_frequency_flags
 
     apply_iegc_frequency_flags(conn, report_id)
+
+
+def _markets(conn: sqlite3.Connection, report: int, date_id: int, region_id: int) -> None:
+    from psp_pipeline.storage.sqlite_market_promoter import promote_market_rows
+
+    def participant(label: str) -> tuple[int, int | None] | None:
+        state_id = _state_id(conn, label)
+        if state_id is None:
+            return None
+        name = conn.execute("SELECT StateName FROM DimStates WHERE StateID = ?", (state_id,)).fetchone()[0]
+        existing = conn.execute(
+            "SELECT EntityID FROM DimGridEntities WHERE EntityType = 'market_participant' "
+            "AND StateID = ? AND RegionID = ? AND EntityName = ?",
+            (state_id, region_id, name),
+        ).fetchone()
+        if existing:
+            return int(existing[0]), state_id
+        cursor = conn.execute(
+            "INSERT INTO DimGridEntities(EntityName, EntityType, StateID, RegionID) "
+            "VALUES (?, 'market_participant', ?, ?)", (name, state_id, region_id),
+        )
+        return int(cursor.lastrowid), state_id
+
+    for rows in _all_tables(conn, report):
+        promote_market_rows(conn, report, date_id, "NERLDC", rows, participant)
 
 
 def _date_id(conn: sqlite3.Connection, report_date: str) -> int | None:
@@ -105,6 +131,8 @@ def _clear(conn: sqlite3.Connection, report_id: int) -> None:
         "FactNERLDCFrequencyDaily", "FactNERLDCVoltageProfile",
         "FactNERLDCReservoirDaily",
         "FactNERLDCInterRegionalExchange", "FactNERLDCInternationalExchange",
+        "FactNERLDCMarketPointDaily", "FactNERLDCMarketEnergyDaily",
+        "FactNERLDCMarketExtremaDaily",
     ):
         conn.execute(f"DELETE FROM {table} WHERE ReportDocumentID = ?", (report_id,))
     conn.execute("DELETE FROM curated_field_lineage WHERE ReportDocumentID = ?", (report_id,))
