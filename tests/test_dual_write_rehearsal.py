@@ -129,6 +129,7 @@ def test_dual_write_rehearsal_publishes_rpc_fixture_settlement(tmp_path: Path) -
         graph_sink=recording_graph_sink(graph_store),
         ingest_rpc_fixtures=True,
         skip_empty_dates=True,
+        rpc_fixture_dir=tmp_path / "rpc",
         output_path=tmp_path / "rpc_dual_write.json",
     )
 

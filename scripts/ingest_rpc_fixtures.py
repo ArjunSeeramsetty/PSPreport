@@ -12,8 +12,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from psp_pipeline.quality.rpc_fixtures import (
     default_rpc_fixture_dir,
+    ensure_canonical_rpc_fixtures,
     ingest_rpc_fixture_reports,
-    write_canonical_rpc_fixtures,
 )
 
 
@@ -29,7 +29,7 @@ def main() -> int:
     parser.add_argument("--fixture-dir", type=Path, default=default_rpc_fixture_dir())
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    write_canonical_rpc_fixtures(args.fixture_dir)
+    ensure_canonical_rpc_fixtures(args.fixture_dir)
     payload = ingest_rpc_fixture_reports(args.db, fixture_dir=args.fixture_dir)
     text = json.dumps(payload, indent=2)
     if args.output:

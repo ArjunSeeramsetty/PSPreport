@@ -142,6 +142,18 @@ def default_rpc_fixture_dir() -> Path:
     return DEFAULT_RPC_FIXTURE_DIR
 
 
+def ensure_canonical_rpc_fixtures(directory: Path | str | None = None) -> tuple[Path, ...]:
+    """Create missing canonical workbooks and drop stale filenames without rewriting bytes."""
+
+    root = Path(directory) if directory is not None else default_rpc_fixture_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    expected = {str(spec["filename"]) for spec in CANONICAL_RPC_FIXTURES}
+    present = {path.name for path in root.glob("*.xlsx")}
+    if present != expected:
+        return write_canonical_rpc_fixtures(root)
+    return tuple(root / str(spec["filename"]) for spec in CANONICAL_RPC_FIXTURES)
+
+
 def write_canonical_rpc_fixtures(directory: Path | str | None = None) -> tuple[Path, ...]:
     """Write deterministic DSM/REA workbooks for live settlement ingestion."""
 
@@ -185,7 +197,7 @@ def ingest_rpc_fixture_reports(
     paths = [Path(item) for item in (fixture_paths or ())]
     if not paths:
         root = Path(fixture_dir) if fixture_dir is not None else default_rpc_fixture_dir()
-        write_canonical_rpc_fixtures(root)
+        ensure_canonical_rpc_fixtures(root)
         paths = sorted(root.glob("*.xlsx"))
     persisted: list[dict[str, Any]] = []
     fact_counts: dict[str, int] = {}

@@ -16,7 +16,10 @@ from psp_pipeline.quality.rpc_fixtures import (
 def test_write_canonical_rpc_fixtures_replaces_stale_workbooks(tmp_path: Path) -> None:
     """Only the five-RPC week-35 DSM set and ERPC REA remain after rewrite."""
 
-    from psp_pipeline.quality.rpc_fixtures import CANONICAL_RPC_FIXTURES
+    from psp_pipeline.quality.rpc_fixtures import (
+        CANONICAL_RPC_FIXTURES,
+        ensure_canonical_rpc_fixtures,
+    )
 
     fixture_dir = tmp_path / "rpc"
     fixture_dir.mkdir()
@@ -27,6 +30,11 @@ def test_write_canonical_rpc_fixtures_replaces_stale_workbooks(tmp_path: Path) -
     assert names == {str(spec["filename"]) for spec in CANONICAL_RPC_FIXTURES}
     assert not stale.exists()
     assert {path.name for path in fixture_dir.glob("*.xlsx")} == names
+
+    marker = fixture_dir / "ERPC_DSM_Account_Week_35_of_2026.xlsx"
+    before = marker.read_bytes()
+    ensure_canonical_rpc_fixtures(fixture_dir)
+    assert marker.read_bytes() == before
 
 
 def test_canonical_rpc_fixtures_promote_settlement_facts(tmp_path: Path) -> None:

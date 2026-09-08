@@ -42,6 +42,7 @@ def run_dual_write_rehearsal(
     output_path: Path | str | None = None,
     ingest_rpc_fixtures: bool = False,
     skip_empty_dates: bool = False,
+    rpc_fixture_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """Walk each date in the window and dual-write that slice off SQLite.
 
@@ -54,13 +55,9 @@ def run_dual_write_rehearsal(
     db_path = Path(sqlite_db_path)
     rpc_ingest: dict[str, Any] | None = None
     if ingest_rpc_fixtures:
-        from psp_pipeline.quality.rpc_fixtures import (
-            ingest_rpc_fixture_reports,
-            write_canonical_rpc_fixtures,
-        )
+        from psp_pipeline.quality.rpc_fixtures import ingest_rpc_fixture_reports
 
-        write_canonical_rpc_fixtures()
-        rpc_ingest = ingest_rpc_fixture_reports(db_path)
+        rpc_ingest = ingest_rpc_fixture_reports(db_path, fixture_dir=rpc_fixture_dir)
     if not db_path.exists():
         raise FileNotFoundError(f"Curated SQLite database not found at {db_path}")
     date_results: list[dict[str, Any]] = []
