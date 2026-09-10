@@ -1226,7 +1226,7 @@ def _promote_split_international_rows(
     rows: list[dict[int, tuple[int, str]]],
 ) -> None:
     country: str | None = None
-    for row in rows:
+    for row_index, row in enumerate(rows):
         label = row.get(1, (0, ""))[1].strip()
         candidate = label.title()
         if candidate in {"Bhutan", "Bangladesh", "Nepal"}:
@@ -2782,10 +2782,22 @@ def _promote_2025_flat_physical_exchanges(
     report: int,
     date_id: int,
 ) -> None:
-    """Promote registry-resolved page-4 inter-regional physical exchanges."""
+    """Promote reported tie-line values, retaining unknown endpoint metadata.
+
+    Unregistered lines require verified headers and a published counterparty
+    heading. Their endpoint IDs remain NULL until registry enrichment exists.
+    """
     rows = _rows(conn, report, 4)
     in_section = False
-    for row in rows:
+    counterparty = None
+    verified_columns = None
+    aliases = {
+        "1900": "EveningPeakMW", "0300": "OffPeakMW",
+        "importmw": "MaximumImportMW", "exportmw": "MaximumExportMW",
+        "importinmu": "ImportEnergyMU", "exportinmu": "ExportEnergyMU",
+        "net": "NetEnergyMU",
+    }
+    for row_index, row in enumerate(rows):
         label = row.get(1, (0, ""))[1].strip()
         compact_label = _compact_text(label)
         if compact_label.startswith("4(a)") and "inter" in compact_label:
@@ -2796,9 +2808,36 @@ def _promote_2025_flat_physical_exchanges(
         if not in_section:
             continue
 
+        if row.get(2, (0, ""))[1].strip().lower() == "element":
+            columns = {}
+            duplicates = set()
+            for header in rows[row_index:row_index + 2]:
+                for col, (_, text) in header.items():
+                    token = re.sub(r"[^a-z0-9]", "", text.lower())
+                    field = aliases.get(token)
+                    if field:
+                        if field in columns and columns[field] != col:
+                            duplicates.add(field)
+                        columns[field] = col
+            verified_columns = columns if len(columns) == 7 and not duplicates else None
+        heading = re.sub(r"[^a-z]", "", label.lower())
+        if heading.startswith("importexportbetween"):
+            counterparties = {
+                "northregion": "Northern Region",
+                "northeastregion": "North Eastern Region",
+                "southregion": "Southern Region",
+                "westregion": "Western Region",
+            }
+            counterparty = next((region for token, region in counterparties.items()
+                                 if heading == f"importexportbetween{token}andeastregion"), None)
+            continue
+
         name = row.get(2, (0, ""))[1].strip()
         location = transmission_location(name)
-        if location.evidence == "unverified":
+        if location.evidence == "unverified" and not (
+            verified_columns and counterparty and name
+            and re.fullmatch(r"\d+", label)
+        ):
             continue
         fields = {
             "EveningPeakMW": _number(row, 9),
@@ -2809,6 +2848,8 @@ def _promote_2025_flat_physical_exchanges(
             "ExportEnergyMU": _number(row, 23),
             "NetEnergyMU": _number(row, 25),
         }
+        if verified_columns:
+            fields = {field: _number(row, col) for field, col in verified_columns.items()}
         _upsert_interregional_exchange(
             conn,
             report,
@@ -2816,6 +2857,7 @@ def _promote_2025_flat_physical_exchanges(
             name,
             location,
             fields,
+            counterparty=counterparty,
         )
 
 
@@ -2925,6 +2967,8 @@ def _upsert_interregional_exchange(
     name: str,
     location: object,
     fields: dict[str, tuple[float | None, int | None]],
+    *,
+    counterparty: str | None = None,
 ) -> None:
     """Persist a resolved physical exchange and the provenance of every value."""
     values = {field: value for field, (value, _) in fields.items() if value is not None}
@@ -2948,7 +2992,7 @@ def _upsert_interregional_exchange(
     ).fetchone()
     if element is None:
         return
-    counterparty = location.to_location.region_name or "unknown"
+    counterparty = counterparty or location.to_location.region_name or "unknown"
     conn.execute(
         "INSERT OR REPLACE INTO FactERLDCInterRegionalExchange("
         f"ReportDocumentID, DateID, ElementID, CounterpartyRegion, {', '.join(values)}) "

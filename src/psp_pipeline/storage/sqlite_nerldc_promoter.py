@@ -246,6 +246,15 @@ def _generation(
         rows = _rows(conn, report, 2, table)
         if not any("station/constituents" in row.get(1, (0, ""))[1].lower() for row in rows):
             continue
+        table_fields = dict(fields)
+        gross_columns = {
+            col for header in rows[:3] for col, (_, text) in header.items()
+            if re.sub(r"[^a-z]", "", text.lower()) == "grossmu"
+        }
+        if len(gross_columns) == 1:
+            gross_column = next(iter(gross_columns))
+            if gross_column not in table_fields.values():
+                table_fields["GrossEnergyMU"] = gross_column
         current_state_id: int | None = None
         for row in rows:
             label = row.get(1, (0, ""))[1].strip()
@@ -257,7 +266,7 @@ def _generation(
             if not label or capacity is None or current_state_id is None or "station/constituents" in label.lower():
                 continue
             is_total = re.sub(r"\s+", "", label).lower().startswith(("total", "subtotal"))
-            values, sources = _values(row, fields)
+            values, sources = _values(row, table_fields)
             canonical_label = generation_entity_canonical_name(label)
             try:
                 identity = resolve_generation_identity(

@@ -17,6 +17,45 @@ ERLDC_SPLIT_2025_TEMPLATE_ID = "erldc_daily_psp_v2025_split_11_column_generation
 ERLDC_SPLIT_2024_TEMPLATE_ID = "erldc_daily_psp_v2024_split_11_column_generation"
 
 
+@pytest.mark.parametrize("valid_header", [True, False])
+def test_reported_exchange_preserves_unknown_endpoints(valid_header: bool) -> None:
+    """Published line values need verified columns, not inferred endpoints."""
+    conn = sqlite3.connect(":memory:")
+    ensure_curated_sqlite_schema(conn)
+    _create_raw_tables(conn)
+    conn.execute(
+        "INSERT INTO psp_report_document VALUES "
+        "(91, 'erldc', 'fixture.pdf', '2026-01-01', ?, 0, NULL)",
+        (ERLDC_FLAT_2025_TEMPLATE_ID,),
+    )
+    rows = [
+        {1: "4(A) INTER-REGIONAL EXCHANGES"},
+        {2: "Element", 9: "19:00", 13: "03:00", 17: "Maximum Interchange (MW)",
+         21: "Import in MU", 23: "Export in MU", 25: "NET" if valid_header else "Unknown"},
+        {9: "MW", 13: "MW", 17: "Import(MW)", 19: "Export(MW)"},
+        {1: "Import/Export between NORTH REGION and EAST REGION"},
+        {1: "1", 2: "132KV-GARWAH-RIHAND", 9: "30", 13: "30",
+         17: "30", 21: "0.59", 23: "0", 25: "0.59"},
+        {1: "4(B) Inter Regional Schedule"},
+        {1: "2", 2: "132KV-OUTSIDE-SECTION", 9: "999"},
+    ]
+    for number, row in enumerate(rows, 1):
+        _insert_cells(conn, 91, 4, 1, number, row)
+    for _ in range(2):
+        promote_report_to_curated(conn, 91)
+    actual = conn.execute(
+        "SELECT f.CounterpartyRegion, f.NetEnergyMU, e.FromRegionID, e.ToRegionID "
+        "FROM FactERLDCInterRegionalExchange f JOIN DimTransmissionElements e "
+        "ON f.ElementID=e.ElementID WHERE f.ReportDocumentID=91"
+    ).fetchall()
+    assert actual == ([("Northern Region", 0.59, None, None)] if valid_header else [])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM curated_field_lineage WHERE ReportDocumentID=91 "
+        "AND DestinationTable='FactERLDCInterRegionalExchange'"
+    ).fetchone()[0] == (6 if valid_header else 0)
+    conn.close()
+
+
 def _create_raw_tables(conn: sqlite3.Connection) -> None:
     """Create raw tables required for local promotion testing."""
     conn.executescript(
