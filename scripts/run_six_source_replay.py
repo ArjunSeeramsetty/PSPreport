@@ -1,4 +1,10 @@
-"""Execute end-to-end 6-source daily PSP replay through SQLite, TimescaleDB, and Neo4j."""
+"""Execute end-to-end 6-source daily PSP replay through SQLite, TimescaleDB, and Neo4j.
+
+The default ``--db`` / ``--summary`` paths are the local 2026-01-01 joint replay
+artifact. ``python scripts/run_six_source_replay.py --rpc-fixtures --no-timescale
+--no-neo4j`` regenerates that SQLite database from the approved PDFs plus the
+canonical RPC DSM/REA fixtures.
+"""
 
 from __future__ import annotations
 
@@ -60,6 +66,32 @@ APPROVED_2026_FILES = {
     },
 }
 
+LOCAL_REPLAY_DB_PATH = ROOT / "data" / "sqlite" / "local_six_source_replay_2026_01_01.sqlite"
+LOCAL_REPLAY_SUMMARY_PATH = (
+    ROOT / "data" / "diagnostics" / "local_six_source_replay_2026_01_01.json"
+)
+
+
+def missing_approved_report_paths(target_date_str: str) -> list[Path]:
+    """Return approved PDF paths that are absent for ``target_date_str``."""
+
+    if target_date_str not in APPROVED_2026_FILES:
+        raise ValueError(f"Target date {target_date_str} not in approved 2026 files registry.")
+    return [path for path in APPROVED_2026_FILES[target_date_str].values() if not path.is_file()]
+
+
+def require_approved_report_paths(target_date_str: str) -> dict[str, Path]:
+    """Return the approved PDF map, or raise if any required file is missing."""
+
+    missing = missing_approved_report_paths(target_date_str)
+    if missing:
+        listed = "\n".join(f"  - {path}" for path in missing)
+        raise FileNotFoundError(
+            "Approved PSP PDFs are missing; cannot regenerate the joint replay "
+            f"artifact for {target_date_str}:\n{listed}"
+        )
+    return APPROVED_2026_FILES[target_date_str]
+
 
 def run_replay_for_date(
     target_date_str: str,
@@ -74,13 +106,11 @@ def run_replay_for_date(
 
     Optional ``ingest_rpc_fixtures`` adds the canonical DSM/REA workbooks to the
     same SQLite database. The summary OpenLineage facets then show six PSP
-    documents together with RPC ``floor_pass`` without claiming full coverage.
+    documents together with RPC ``floor_pass`` or ``full`` without claiming
+    ``full_psp_and_rpc_coverage``.
     """
-    if target_date_str not in APPROVED_2026_FILES:
-        raise ValueError(f"Target date {target_date_str} not in approved 2026 files registry.")
-
     target_date = date.fromisoformat(target_date_str)
-    file_map = APPROVED_2026_FILES[target_date_str]
+    file_map = require_approved_report_paths(target_date_str)
     inputs = [
         LocalReportInput(rldc=rldc, local_path=path, report_date=target_date)
         for rldc, path in file_map.items()
@@ -236,8 +266,18 @@ def run_replay_for_date(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Six-source daily PSP replay runner.")
     parser.add_argument("--date", default="2026-01-01", help="Target replay date (YYYY-MM-DD)")
-    parser.add_argument("--db", type=Path, default=ROOT / "data" / "sqlite" / "six_source_replay_2026_01_01.sqlite")
-    parser.add_argument("--summary", type=Path, default=ROOT / "data" / "diagnostics" / "six_source_replay_2026_01_01.json")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=LOCAL_REPLAY_DB_PATH,
+        help="SQLite output path (default: local 2026-01-01 joint replay artifact)",
+    )
+    parser.add_argument(
+        "--summary",
+        type=Path,
+        default=LOCAL_REPLAY_SUMMARY_PATH,
+        help="JSON summary output path for the local joint replay artifact",
+    )
     parser.add_argument("--no-timescale", action="store_true", help="Skip TimescaleDB load")
     parser.add_argument("--no-neo4j", action="store_true", help="Skip Neo4j sync")
     parser.add_argument(

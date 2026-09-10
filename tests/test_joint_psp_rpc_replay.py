@@ -170,6 +170,19 @@ def test_rpc_floor_pass_does_not_hide_a_missing_psp_document(tmp_path: Path) -> 
     )
 
 
+def _load_replay_script():
+    """Import ``scripts/run_six_source_replay.py`` as a module."""
+
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_six_source_replay.py"
+    spec = importlib.util.spec_from_file_location("run_six_source_replay", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _ATTEMPT2_PDFS = (
     Path("downloads/ERLDC_PSP/Power Supply Position Report_01012026.pdf"),
     Path("downloads/NERLDC_PSP/NER-PSP-REPORT-DATED-01-01-2026.pdf"),
@@ -189,14 +202,7 @@ def test_six_source_replay_stamps_joint_openlineage_with_rpc_fixtures(
 ) -> None:
     """The approved 2026-01-01 PDF replay plus RPC fixtures speak with one facet."""
 
-    import importlib.util
-
-    script = Path(__file__).resolve().parents[1] / "scripts" / "run_six_source_replay.py"
-    spec = importlib.util.spec_from_file_location("run_six_source_replay", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
+    module = _load_replay_script()
     summary = module.run_replay_for_date(
         "2026-01-01",
         tmp_path / "six.sqlite",
@@ -217,3 +223,36 @@ def test_six_source_replay_stamps_joint_openlineage_with_rpc_fixtures(
     assert facet["energy_reconciliation_certified"] is True
     assert summary["rpc_fixtures"]["reports_persisted"] == 6
     assert summary["openlineage"]["job"]["name"] == "psp.six_source_replay"
+
+
+def test_six_source_replay_cli_defaults_to_local_joint_artifact() -> None:
+    """``--rpc-fixtures`` without ``--db`` writes the documented local SQLite path."""
+
+    module = _load_replay_script()
+    assert module.LOCAL_REPLAY_DB_PATH.name == "local_six_source_replay_2026_01_01.sqlite"
+    assert module.LOCAL_REPLAY_SUMMARY_PATH.name == "local_six_source_replay_2026_01_01.json"
+    assert module.LOCAL_REPLAY_DB_PATH.as_posix().endswith(
+        "data/sqlite/local_six_source_replay_2026_01_01.sqlite"
+    )
+
+
+def test_replay_fails_fast_when_approved_pdfs_are_missing(tmp_path: Path) -> None:
+    """Do not silently ingest zero PDFs when the approved 2026 files are absent."""
+
+    module = _load_replay_script()
+    module.APPROVED_2026_FILES = {
+        "2026-01-01": {
+            source: tmp_path / f"{source}.pdf"
+            for source in module.APPROVED_2026_FILES["2026-01-01"]
+        }
+    }
+    with pytest.raises(FileNotFoundError, match="Approved PSP PDFs are missing"):
+        module.run_replay_for_date(
+            "2026-01-01",
+            tmp_path / "six.sqlite",
+            tmp_path / "six.json",
+            load_timescale=False,
+            sync_neo4j=False,
+            ingest_rpc_fixtures=True,
+        )
+    assert not (tmp_path / "six.sqlite").exists()

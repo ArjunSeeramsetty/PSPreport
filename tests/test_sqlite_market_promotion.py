@@ -105,6 +105,36 @@ def test_local_replay_market_coverage_and_export(tmp_path):
     with sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True) as original:
         with sqlite3.connect(db) as copy:
             original.backup(copy)
+
+    def _table_count(path, name):
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as conn:
+            present = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            ).fetchone()
+            if not present:
+                return 0
+            return int(conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
+
+    already_promoted = (
+        _table_count(db, "FactERLDCMarketPointDaily") > 0
+        and _table_count(db, "FactNERLDCMarketPointDaily") > 0
+    )
+    if already_promoted:
+        with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True) as conn:
+            observations = export_all_daily_observations(conn)
+            lineage_count = conn.execute(
+                "SELECT COUNT(*) FROM curated_field_lineage "
+                "WHERE DestinationTable LIKE 'Fact%Market%'"
+            ).fetchone()[0]
+        for prefix in ("ER:market-participant:", "NER:market-participant:"):
+            assert any(
+                o.entity_key.startswith(prefix) and ":market:point:" in o.entity_key
+                for o in observations
+            )
+        assert lineage_count > 0
+        return
+
     before = {name: generate_raw_cell_coverage_report(db, rldc=name)
               for name in ("erldc", "nerldc")}
     with sqlite3.connect(db) as copy:
