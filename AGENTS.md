@@ -48,6 +48,10 @@ Produce production-quality Python code for the Indian power-system ingestion pip
 - Use `wbes-controlled-access` for any WBES planning or implementation.
 - Use `liteparse` for local spatial document parsing and OCR fallback.
 
+## Cursor Cloud Specific Instructions
+- Approved 2026-01-01 daily PSP PDFs must be present under `downloads/` (bake them into the environment snapshot). Cloud VMs cannot reliably download directly from Indian RLDC/NLDC portals due to TLS handshake timeouts/EOFs.
+- The local replay SQLite database under `data/sqlite/` is gitignored. Database regeneration (`python scripts/run_six_source_replay.py --rpc-fixtures --no-timescale --no-neo4j`) is a local/environment step, not a git commit.
+
 ## Temporary Artifacts
 - If temporary scripts or files are created for inspection, migration, or generation, delete them before completing the task.
 - Before finishing, confirm no unnecessary scratch files, duplicated scripts, or dead imports remain.
